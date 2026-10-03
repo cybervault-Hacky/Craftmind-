@@ -1,5 +1,6 @@
 package com.craftmind.app
 
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -20,34 +21,34 @@ class CraftMindNavigationTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun homeRendersAndBuildsAndSettingsAreReachable() {
+    fun homeRendersAndBuildsAndProviderSettingsAreReachable() {
         composeRule.onNodeWithText("What would you like to build?").assertIsDisplayed()
         composeRule.onAllNodesWithText("Builds").onFirst().performClick()
         composeRule.onNodeWithText("Your builds will appear here.").assertIsDisplayed()
 
         composeRule.onAllNodesWithText("Settings").onFirst().performClick()
-        composeRule.onNodeWithText("AI provider").assertIsDisplayed()
+        composeRule.onNodeWithText("AI provider configuration").assertIsDisplayed()
         composeRule.onNodeWithText("API key configuration").assertIsDisplayed()
         composeRule.onNodeWithText("Appearance").assertIsDisplayed()
+        composeRule.onNodeWithText("Select a provider").performClick()
+        composeRule.onNodeWithText("OpenAI").assertIsDisplayed()
+        composeRule.onNodeWithText("Provider model identifier").assertIsDisplayed()
+        composeRule.onNodeWithText("API key").assertIsDisplayed()
     }
 
     @Test
-    fun pressingBuildDoesNotPretendToGenerateAPlan() {
-        composeRule.onNodeWithContentDescription("Check this input for a future AI build request")
-            .performScrollTo()
-            .performClick()
-        composeRule.onNodeWithText("Add a description, image, or reference URL to continue.")
-            .assertIsDisplayed()
-
+    fun textRequestShowsRealConfigurationFailureInsteadOfFakeProgressOrPlan() {
         composeRule.onNodeWithTag("builder-prompt").performTextInput("A quiet garden pavilion")
-        composeRule.onNodeWithContentDescription("Check this input for a future AI build request")
+        composeRule.onNodeWithContentDescription("Generate and validate a text-only build plan")
             .performScrollTo()
             .performClick()
-        composeRule.onNodeWithText("AI builder isn’t connected yet")
+        composeRule.onNodeWithText("Choose a provider in Settings.")
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithText("Nothing was sent and no build was generated. AI provider setup will arrive in a later phase.")
-            .performScrollTo()
+        composeRule.onNodeWithText("Requesting a structured plan…").assertDoesNotExist()
+
+        composeRule.onAllNodesWithText("Builds").onFirst().performClick()
+        composeRule.onNodeWithText("No plan has been generated in this app session. Configure OpenAI in Settings and request a text-only plan. No Minecraft blocks are placed in Phase 2.")
             .assertIsDisplayed()
     }
 }

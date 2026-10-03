@@ -49,6 +49,7 @@ import com.craftmind.app.core.designsystem.IconSize
 import com.craftmind.app.core.designsystem.LayoutBreakpoint
 import com.craftmind.app.core.designsystem.Space
 import com.craftmind.app.domain.media.ImageReferenceRepository
+import com.craftmind.app.domain.model.BuildResult
 import com.craftmind.app.presentation.builder.BuilderComposer
 import com.craftmind.app.presentation.builder.BuilderUiState
 
@@ -64,6 +65,9 @@ fun HomeScreen(
     onAddUrlReference: () -> Unit,
     onRemoveUrlReference: () -> Unit,
     onBuildPressed: () -> Unit,
+    onCancelGeneration: () -> Unit,
+    onRetryGeneration: () -> Unit,
+    onOpenSettings: () -> Unit,
     onDismissSubmissionNotice: () -> Unit,
     onOpenBuilds: () -> Unit,
 ) {
@@ -108,6 +112,10 @@ fun HomeScreen(
                         onAddUrlReference = onAddUrlReference,
                         onRemoveUrlReference = onRemoveUrlReference,
                         onBuildPressed = onBuildPressed,
+                        onCancelGeneration = onCancelGeneration,
+                        onRetryGeneration = onRetryGeneration,
+                        onOpenSettings = onOpenSettings,
+                        onOpenBuilds = onOpenBuilds,
                         onDismissSubmissionNotice = onDismissSubmissionNotice,
                         modifier = Modifier.weight(1.14f),
                     )
@@ -125,11 +133,15 @@ fun HomeScreen(
                     onAddUrlReference = onAddUrlReference,
                     onRemoveUrlReference = onRemoveUrlReference,
                     onBuildPressed = onBuildPressed,
+                    onCancelGeneration = onCancelGeneration,
+                    onRetryGeneration = onRetryGeneration,
+                    onOpenSettings = onOpenSettings,
+                    onOpenBuilds = onOpenBuilds,
                     onDismissSubmissionNotice = onDismissSubmissionNotice,
                 )
             }
 
-            RecentBuildsPreview(onOpenBuilds = onOpenBuilds)
+            RecentBuildsPreview(history = state.buildHistory, onOpenBuilds = onOpenBuilds)
         }
     }
 }
@@ -269,7 +281,7 @@ private fun CapabilityPill(
 }
 
 @Composable
-private fun RecentBuildsPreview(onOpenBuilds: () -> Unit) {
+private fun RecentBuildsPreview(history: List<BuildResult>, onOpenBuilds: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -321,13 +333,24 @@ private fun RecentBuildsPreview(onOpenBuilds: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(Space.xs),
                 ) {
+                    val latest = history.firstOrNull()
                     Text(
-                        text = stringResource(R.string.recent_empty_title),
+                        text = latest?.plan?.title ?: stringResource(R.string.recent_empty_title),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = stringResource(R.string.recent_empty_body),
+                        text = if (latest == null) {
+                            stringResource(R.string.recent_empty_body)
+                        } else {
+                            stringResource(
+                                R.string.recent_plan_summary,
+                                latest.plan.dimensions.width,
+                                latest.plan.dimensions.length,
+                                latest.plan.dimensions.height,
+                                latest.plan.operations.size,
+                            )
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,

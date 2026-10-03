@@ -17,7 +17,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
@@ -25,6 +24,11 @@ import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +37,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +50,10 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.craftmind.app.R
@@ -55,6 +64,9 @@ import com.craftmind.app.core.designsystem.IconSize
 import com.craftmind.app.core.designsystem.LayoutBreakpoint
 import com.craftmind.app.core.designsystem.Space
 import com.craftmind.app.domain.settings.AppearanceMode
+import com.craftmind.app.domain.ai.CredentialLimits
+import com.craftmind.app.domain.ai.ProviderId
+import com.craftmind.app.domain.model.BuildErrorCode
 
 private enum class SettingsDialog { ABOUT, PRIVACY }
 
@@ -62,7 +74,14 @@ private enum class SettingsDialog { ABOUT, PRIVACY }
 fun SettingsScreen(
     appearance: AppearanceMode,
     appVersion: String,
+    providerState: AiProviderSettingsUiState,
     onAppearanceSelected: (AppearanceMode) -> Unit,
+    onProviderSelected: (ProviderId) -> Unit,
+    onModelIdChanged: (String) -> Unit,
+    onSaveProviderConfiguration: () -> Unit,
+    onSaveApiKey: (CharArray) -> Unit,
+    onRemoveApiKey: () -> Unit,
+    onTestProviderConnection: () -> Unit,
 ) {
     var activeDialog by remember { mutableStateOf<SettingsDialog?>(null) }
 
@@ -114,18 +133,14 @@ fun SettingsScreen(
             }
 
             SettingsSection(title = stringResource(R.string.settings_connections_section)) {
-                SettingsStatusRow(
-                    icon = Icons.Outlined.AutoAwesome,
-                    title = stringResource(R.string.settings_ai_provider),
-                    status = stringResource(R.string.settings_ai_provider_status),
-                    description = stringResource(R.string.settings_ai_provider_body),
-                )
-                SettingsDivider()
-                SettingsStatusRow(
-                    icon = Icons.Outlined.Key,
-                    title = stringResource(R.string.settings_api_key),
-                    status = stringResource(R.string.settings_api_key_status),
-                    description = stringResource(R.string.settings_api_key_body),
+                AiProviderSettingsPanel(
+                    state = providerState,
+                    onProviderSelected = onProviderSelected,
+                    onModelIdChanged = onModelIdChanged,
+                    onSaveConfiguration = onSaveProviderConfiguration,
+                    onSaveApiKey = onSaveApiKey,
+                    onRemoveApiKey = onRemoveApiKey,
+                    onTestConnection = onTestProviderConnection,
                 )
             }
 
@@ -231,7 +246,7 @@ fun SettingsScreen(
             }
 
             Text(
-                text = stringResource(R.string.settings_status_unavailable),
+                text = stringResource(R.string.settings_phase_two_note),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = Space.xl),
@@ -264,6 +279,247 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun AiProviderSettingsPanel(
+    state: AiProviderSettingsUiState,
+    onProviderSelected: (ProviderId) -> Unit,
+    onModelIdChanged: (String) -> Unit,
+    onSaveConfiguration: () -> Unit,
+    onSaveApiKey: (CharArray) -> Unit,
+    onRemoveApiKey: () -> Unit,
+    onTestConnection: () -> Unit,
+) {
+    var providerMenuExpanded by remember { mutableStateOf(false) }
+    var apiKeyDraft by remember { mutableStateOf("") }
+    LaunchedEffect(state.providerId, state.apiKeyConfigured) { apiKeyDraft = "" }
+
+    Column(
+        modifier = Modifier.padding(Space.lg),
+        verticalArrangement = Arrangement.spacedBy(Space.md),
+    ) {
+        Text(
+            text = stringResource(R.string.ai_provider_section_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            text = stringResource(R.string.ai_provider_section_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        BoxWithConstraints {
+            val selectedProvider = state.providers.firstOrNull { it.id == state.providerId }
+            Button(
+                onClick = { providerMenuExpanded = true },
+                enabled = !state.isLoading && !state.isSavingConfiguration &&
+                    !state.isSavingCredential && state.connection != ProviderConnectionUiState.Testing &&
+                    state.providers.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = selectedProvider?.displayName ?: stringResource(R.string.select_ai_provider),
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null)
+            }
+            DropdownMenu(
+                expanded = providerMenuExpanded,
+                onDismissRequest = { providerMenuExpanded = false },
+                modifier = Modifier.widthIn(max = maxWidth),
+            ) {
+                state.providers.forEach { provider ->
+                    DropdownMenuItem(
+                        text = { Text(provider.displayName) },
+                        onClick = {
+                            providerMenuExpanded = false
+                            onProviderSelected(provider.id)
+                        },
+                    )
+                }
+            }
+        }
+        if (state.providers.isEmpty() && !state.isLoading) {
+            Text(
+                text = stringResource(R.string.no_ai_providers_available),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        OutlinedTextField(
+            value = state.modelId,
+            onValueChange = onModelIdChanged,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.ai_model_id)) },
+            placeholder = { Text(stringResource(R.string.ai_model_id_example)) },
+            supportingText = { Text(stringResource(R.string.ai_model_id_help)) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Ascii,
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+            ),
+            enabled = state.providerId != null && !state.isSavingConfiguration &&
+                state.connection != ProviderConnectionUiState.Testing,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = onSaveConfiguration,
+                enabled = state.providerId != null && !state.isSavingConfiguration &&
+                    !state.isSavingCredential && state.connection != ProviderConnectionUiState.Testing,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.save_provider_configuration))
+            }
+            Button(
+                onClick = onTestConnection,
+                enabled = state.providerId != null && !state.isSavingConfiguration &&
+                    !state.isSavingCredential && state.connection != ProviderConnectionUiState.Testing,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.connection == ProviderConnectionUiState.Testing) {
+                    CircularProgressIndicator(modifier = Modifier.size(IconSize.small), strokeWidth = 2.dp)
+                } else {
+                    Text(stringResource(R.string.test_provider_connection))
+                }
+            }
+        }
+
+        when (val connection = state.connection) {
+            ProviderConnectionUiState.Idle -> Unit
+            ProviderConnectionUiState.Testing -> Text(
+                text = stringResource(R.string.provider_connection_testing),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            ProviderConnectionUiState.Connected -> Text(
+                text = stringResource(R.string.provider_connection_success),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            is ProviderConnectionUiState.Failed -> Text(
+                text = stringResource(providerErrorString(connection.error.code)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Text(
+                text = stringResource(R.string.settings_api_key),
+                modifier = Modifier.weight(1f).padding(start = Space.sm),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(
+                    if (state.apiKeyConfigured) R.string.api_key_configured else R.string.api_key_missing,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = stringResource(R.string.api_key_secure_storage_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = apiKeyDraft,
+            onValueChange = { apiKeyDraft = it.take(CredentialLimits.MAX_API_KEY_CHARACTERS) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.api_key_input_label)) },
+            placeholder = { Text(stringResource(R.string.api_key_input_placeholder)) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+            ),
+            visualTransformation = PasswordVisualTransformation(),
+            enabled = state.providerId != null && !state.isSavingCredential && !state.isSavingConfiguration,
+            supportingText = if (state.apiKeyConfigured) {
+                { Text(stringResource(R.string.api_key_replace_help)) }
+            } else null,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state.apiKeyConfigured) {
+                TextButton(
+                    onClick = {
+                        apiKeyDraft = ""
+                        onRemoveApiKey()
+                    },
+                    enabled = !state.isSavingCredential && !state.isSavingConfiguration,
+                ) { Text(stringResource(R.string.remove_api_key)) }
+            }
+            Button(
+                onClick = {
+                    val pending = apiKeyDraft.toCharArray()
+                    apiKeyDraft = ""
+                    onSaveApiKey(pending)
+                },
+                enabled = state.providerId != null && apiKeyDraft.isNotBlank() &&
+                    !state.isSavingCredential && !state.isSavingConfiguration,
+            ) {
+                Text(
+                    stringResource(
+                        if (state.isSavingCredential) R.string.saving_api_key
+                        else if (state.apiKeyConfigured) R.string.replace_api_key
+                        else R.string.save_api_key,
+                    ),
+                )
+            }
+        }
+
+        state.message?.let { message ->
+            Text(
+                text = stringResource(
+                    when (message) {
+                        ProviderSettingsMessage.PROVIDER_REQUIRED -> R.string.provider_message_select_first
+                        ProviderSettingsMessage.MODEL_REQUIRED -> R.string.provider_message_model_required
+                        ProviderSettingsMessage.MODEL_INVALID -> R.string.provider_message_model_invalid
+                        ProviderSettingsMessage.API_KEY_EMPTY -> R.string.provider_message_key_empty
+                        ProviderSettingsMessage.API_KEY_TOO_LONG -> R.string.provider_message_key_invalid
+                        ProviderSettingsMessage.STORAGE_ERROR -> R.string.provider_message_storage_error
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+private fun providerErrorString(code: BuildErrorCode): Int = when (code) {
+    BuildErrorCode.INVALID_API_KEY -> R.string.build_error_invalid_api_key
+    BuildErrorCode.UNSUPPORTED_MODEL -> R.string.build_error_unsupported_model
+    BuildErrorCode.PROVIDER_UNAVAILABLE -> R.string.build_error_provider_unavailable
+    BuildErrorCode.NO_INTERNET -> R.string.build_error_no_internet
+    BuildErrorCode.REQUEST_TIMED_OUT -> R.string.build_error_timed_out
+    BuildErrorCode.RATE_LIMITED -> R.string.build_error_rate_limited
+    BuildErrorCode.PROVIDER_REJECTED_REQUEST -> R.string.build_error_rejected
+    BuildErrorCode.MALFORMED_RESPONSE -> R.string.build_error_malformed_response
+    BuildErrorCode.RESPONSE_TOO_LARGE -> R.string.build_error_response_too_large
+    BuildErrorCode.MISSING_API_KEY -> R.string.build_error_missing_api_key
+    BuildErrorCode.MISSING_PROVIDER -> R.string.build_error_missing_provider
+    BuildErrorCode.UNSUPPORTED_PROVIDER -> R.string.build_error_unsupported_provider
+    BuildErrorCode.MISSING_MODEL -> R.string.build_error_missing_model
+    BuildErrorCode.BUILD_PLAN_REJECTED -> R.string.build_error_plan_rejected
+    BuildErrorCode.CREDENTIAL_STORAGE_FAILED -> R.string.build_error_credential_storage
+    else -> R.string.build_error_unknown
+}
+
+@Composable
 private fun SettingsSection(
     title: String,
     content: @Composable () -> Unit,
@@ -282,66 +538,6 @@ private fun SettingsSection(
         ) {
             Column { content() }
         }
-    }
-}
-
-@Composable
-private fun SettingsStatusRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    status: String,
-    description: String,
-) {
-    Row(
-        modifier = Modifier.padding(Space.lg),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(Space.md),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(top = Space.xxs).size(IconSize.large),
-        )
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(Space.xs),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = title,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                )
-                StatusPill(status)
-            }
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatusPill(text: String) {
-    Surface(
-        shape = RoundedCornerShape(Corners.pill),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = Space.sm, vertical = Space.xs),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

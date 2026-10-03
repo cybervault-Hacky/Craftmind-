@@ -1,12 +1,13 @@
 package com.craftmind.app.domain.media
 
-import com.craftmind.app.domain.model.ReferenceInput
+import com.craftmind.app.domain.model.ImageReference
+import java.net.URI
 import java.util.Locale
 
 const val MAX_IMAGE_SIZE_BYTES: Long = 15L * 1024L * 1024L
 
 sealed interface ImageValidationResult {
-    data class Accepted(val image: ReferenceInput.Image) : ImageValidationResult
+    data class Accepted(val image: ImageReference) : ImageValidationResult
     data class Rejected(val reason: ImageValidationError) : ImageValidationResult
 }
 
@@ -37,7 +38,7 @@ object ImageReferenceValidator {
         displayName: String?,
         sizeBytes: Long?,
     ): ImageValidationResult {
-        if (uri.isBlank()) return ImageValidationResult.Rejected(ImageValidationError.UNREADABLE)
+        if (!isPickerContentUri(uri)) return ImageValidationResult.Rejected(ImageValidationError.UNREADABLE)
         if (sizeBytes == null || sizeBytes <= 0L) {
             return ImageValidationResult.Rejected(ImageValidationError.SIZE_UNAVAILABLE)
         }
@@ -72,13 +73,22 @@ object ImageReferenceValidator {
             ?.take(120)
             ?: "Reference image"
         return ImageValidationResult.Accepted(
-            ReferenceInput.Image(
+            ImageReference(
                 uri = uri,
                 mimeType = normalizedMime?.takeIf { it in supportedMimeTypes } ?: extensionMime,
                 displayName = safeName,
                 sizeBytes = sizeBytes,
             ),
         )
+    }
+
+    private fun isPickerContentUri(value: String): Boolean = try {
+        val uri = URI(value)
+        uri.scheme.equals("content", ignoreCase = true) &&
+            !uri.rawAuthority.isNullOrBlank() &&
+            uri.rawUserInfo == null
+    } catch (_: Exception) {
+        false
     }
 
     private fun mimeTypeFromExtension(extension: String?): String = when (extension) {

@@ -1,6 +1,8 @@
 package com.craftmind.app.domain
 
-import com.craftmind.app.domain.model.ReferenceInput
+import com.craftmind.app.domain.model.ImageReference
+import com.craftmind.app.domain.model.TextInput
+import com.craftmind.app.domain.model.UrlReference
 import com.craftmind.app.domain.validation.BuilderInputValidation
 import com.craftmind.app.domain.validation.BuilderInputValidator
 import org.junit.Assert.assertEquals
@@ -8,13 +10,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BuilderInputValidatorTest {
-    private val image = ReferenceInput.Image(
+    private val image = ImageReference(
         uri = "content://photo/1",
         mimeType = "image/jpeg",
         displayName = "reference.jpg",
         sizeBytes = 512_000,
     )
-    private val url = ReferenceInput.Url("https://example.com/build")
+    private val url = UrlReference("https://example.com/build")
 
     @Test
     fun blankPromptWithoutReferencesIsRejected() {
@@ -25,42 +27,38 @@ class BuilderInputValidatorTest {
     }
 
     @Test
-    fun promptIsTrimmedAndAccepted() {
+    fun promptIsTrimmedAndAcceptedAsTypedInput() {
         val result = BuilderInputValidator.validate("  stone bridge  ", image = null, url = null)
 
         assertTrue(result is BuilderInputValidation.Valid)
-        assertEquals("stone bridge", (result as BuilderInputValidation.Valid).request.prompt)
-        assertTrue(result.request.references.isEmpty())
+        assertEquals(listOf(TextInput("stone bridge")), (result as BuilderInputValidation.Valid).request.inputs)
     }
 
     @Test
-    fun imageOnlyAndUrlOnlyAreValidFutureRequests() {
-        val imageOnly = BuilderInputValidator.validate("", image, null)
-        val urlOnly = BuilderInputValidator.validate("", null, url)
+    fun imageOnlyAndUrlOnlyAreRepresentable() {
+        val imageOnly = BuilderInputValidator.validate("", image, null) as BuilderInputValidation.Valid
+        val urlOnly = BuilderInputValidator.validate("", null, url) as BuilderInputValidation.Valid
 
-        assertEquals(listOf(image), (imageOnly as BuilderInputValidation.Valid).request.references)
-        assertEquals(listOf(url), (urlOnly as BuilderInputValidation.Valid).request.references)
-        assertEquals(null, imageOnly.request.prompt)
-        assertEquals(null, urlOnly.request.prompt)
+        assertEquals(listOf(image), imageOnly.request.inputs)
+        assertEquals(listOf(url), urlOnly.request.inputs)
+        assertEquals(null, imageOnly.request.text)
+        assertEquals(null, urlOnly.request.text)
     }
 
     @Test
-    fun textCanBeCombinedWithEitherSingleReferenceType() {
+    fun textCanBeCombinedWithEitherReferenceType() {
         val textAndImage = BuilderInputValidator.validate("bridge", image, null) as BuilderInputValidation.Valid
         val textAndUrl = BuilderInputValidator.validate("bridge", null, url) as BuilderInputValidation.Valid
 
-        assertEquals("bridge", textAndImage.request.prompt)
-        assertEquals(listOf(image), textAndImage.request.references)
-        assertEquals("bridge", textAndUrl.request.prompt)
-        assertEquals(listOf(url), textAndUrl.request.references)
+        assertEquals(listOf(TextInput("bridge"), image), textAndImage.request.inputs)
+        assertEquals(listOf(TextInput("bridge"), url), textAndUrl.request.inputs)
     }
 
     @Test
     fun textImageAndUrlCanBeCombinedWithoutLosingInputs() {
         val result = BuilderInputValidator.validate("  tower  ", image, url) as BuilderInputValidation.Valid
 
-        assertEquals("tower", result.request.prompt)
-        assertEquals(listOf(image, url), result.request.references)
+        assertEquals(listOf(TextInput("tower"), image, url), result.request.inputs)
         assertTrue(result.request.hasInput)
     }
 

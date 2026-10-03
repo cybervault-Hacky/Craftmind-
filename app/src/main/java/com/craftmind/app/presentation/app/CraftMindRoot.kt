@@ -54,21 +54,37 @@ import com.craftmind.app.presentation.builder.BuilderViewModel
 import com.craftmind.app.presentation.builds.BuildsScreen
 import com.craftmind.app.presentation.home.HomeScreen
 import com.craftmind.app.presentation.settings.SettingsScreen
+import com.craftmind.app.presentation.settings.AiProviderSettingsViewModel
 import com.craftmind.app.presentation.settings.SettingsViewModel
 import androidx.compose.foundation.isSystemInDarkTheme
 
 @Composable
 fun CraftMindRoot(container: AppContainer) {
-    val builderFactory = remember(container.imageReferenceRepository) {
-        BuilderViewModel.Factory(container.imageReferenceRepository)
+    val builderFactory = remember(container.imageReferenceRepository, container.generateBuildPlanUseCase) {
+        BuilderViewModel.Factory(container.imageReferenceRepository, container.generateBuildPlanUseCase)
     }
     val settingsFactory = remember(container.settingsRepository) {
         SettingsViewModel.Factory(container.settingsRepository)
     }
+    val providerSettingsFactory = remember(
+        container.providerConfigurationRepository,
+        container.credentialStore,
+        container.aiProviderRegistry,
+        container.testProviderConnectionUseCase,
+    ) {
+        AiProviderSettingsViewModel.Factory(
+            container.providerConfigurationRepository,
+            container.credentialStore,
+            container.aiProviderRegistry,
+            container.testProviderConnectionUseCase,
+        )
+    }
     val builderViewModel: BuilderViewModel = viewModel(factory = builderFactory)
     val settingsViewModel: SettingsViewModel = viewModel(factory = settingsFactory)
+    val providerSettingsViewModel: AiProviderSettingsViewModel = viewModel(factory = providerSettingsFactory)
     val builderState by builderViewModel.uiState.collectAsStateWithLifecycle()
     val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val providerSettingsState by providerSettingsViewModel.uiState.collectAsStateWithLifecycle()
     val darkTheme = settingsState.appearance.resolveDarkTheme(isSystemInDarkTheme())
 
     CraftMindTheme(darkTheme = darkTheme) {
@@ -78,6 +94,8 @@ fun CraftMindRoot(container: AppContainer) {
             builderState = builderState,
             settingsViewModel = settingsViewModel,
             settingsAppearance = settingsState.appearance,
+            providerSettingsViewModel = providerSettingsViewModel,
+            providerSettingsState = providerSettingsState,
             appVersion = BuildConfig.VERSION_NAME,
         )
     }
@@ -90,6 +108,8 @@ private fun CraftMindNavigation(
     builderState: com.craftmind.app.presentation.builder.BuilderUiState,
     settingsViewModel: SettingsViewModel,
     settingsAppearance: com.craftmind.app.domain.settings.AppearanceMode,
+    providerSettingsViewModel: AiProviderSettingsViewModel,
+    providerSettingsState: com.craftmind.app.presentation.settings.AiProviderSettingsUiState,
     appVersion: String,
 ) {
     val navController = rememberNavController()
@@ -165,12 +185,16 @@ private fun CraftMindNavigation(
                             onAddUrlReference = builderViewModel::onAddUrlReference,
                             onRemoveUrlReference = builderViewModel::onRemoveUrlReference,
                             onBuildPressed = builderViewModel::onBuildPressed,
+                            onCancelGeneration = builderViewModel::cancelGeneration,
+                            onRetryGeneration = builderViewModel::retryGeneration,
+                            onOpenSettings = { navigateTo(navController, AppDestination.SETTINGS) },
                             onDismissSubmissionNotice = builderViewModel::dismissSubmissionNotice,
                             onOpenBuilds = { navigateTo(navController, AppDestination.BUILDS) },
                         )
                     }
                     composable(AppDestination.BUILDS.route) {
                         BuildsScreen(
+                            history = builderState.buildHistory,
                             onStartBuild = { navigateTo(navController, AppDestination.HOME) },
                         )
                     }
@@ -178,7 +202,14 @@ private fun CraftMindNavigation(
                         SettingsScreen(
                             appearance = settingsAppearance,
                             appVersion = appVersion,
+                            providerState = providerSettingsState,
                             onAppearanceSelected = settingsViewModel::setAppearance,
+                            onProviderSelected = providerSettingsViewModel::selectProvider,
+                            onModelIdChanged = providerSettingsViewModel::onModelIdChanged,
+                            onSaveProviderConfiguration = providerSettingsViewModel::saveConfiguration,
+                            onSaveApiKey = providerSettingsViewModel::saveApiKey,
+                            onRemoveApiKey = providerSettingsViewModel::removeApiKey,
+                            onTestProviderConnection = providerSettingsViewModel::testConnection,
                         )
                     }
                 }

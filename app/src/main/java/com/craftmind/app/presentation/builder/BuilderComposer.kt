@@ -93,11 +93,11 @@ import com.craftmind.app.core.designsystem.MotionDuration
 import com.craftmind.app.core.designsystem.Space
 import com.craftmind.app.domain.media.ImageReferenceRepository
 import com.craftmind.app.domain.media.ImageValidationError
-import com.craftmind.app.domain.model.BuildError
-import com.craftmind.app.domain.model.BuildPhase
-import com.craftmind.app.domain.model.BuildProgress
+import com.craftmind.app.domain.model.BuildErrorCode
+import com.craftmind.app.domain.model.BuildPlanValidationIssue
 import com.craftmind.app.domain.model.BuildResult
-import com.craftmind.app.domain.model.ReferenceInput
+import com.craftmind.app.domain.model.ImageReference
+import com.craftmind.app.domain.model.UrlReference
 import com.craftmind.app.domain.validation.UrlValidationError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -114,6 +114,10 @@ fun BuilderComposer(
     onAddUrlReference: () -> Unit,
     onRemoveUrlReference: () -> Unit,
     onBuildPressed: () -> Unit,
+    onCancelGeneration: () -> Unit,
+    onRetryGeneration: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenBuilds: () -> Unit,
     onDismissSubmissionNotice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -134,6 +138,7 @@ fun BuilderComposer(
         com.craftmind.app.domain.validation.BuilderInputValidator.MAX_PROMPT_LENGTH,
     )
     val buildButtonDescription = stringResource(R.string.build_button_accessibility)
+    val cancelButtonDescription = stringResource(R.string.cancel_generation)
 
     Surface(
         modifier = modifier
@@ -329,15 +334,24 @@ fun BuilderComposer(
                 animationSpec = tween(MotionDuration.quickMillis),
                 label = "build-button-hover",
             )
+            val isWorking = state.submission == BuilderSubmissionState.Validating ||
+                state.submission == BuilderSubmissionState.Generating ||
+                state.submission == BuilderSubmissionState.ValidatingPlan
             Button(
-                onClick = onBuildPressed,
+                onClick = if (isWorking) onCancelGeneration else onBuildPressed,
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = ComponentSize.buttonHeight)
                     .graphicsLayer { scaleX = scale; scaleY = scale }
                     .hoverable(interactionSource)
                     .pointerHoverIcon(PointerIcon.Hand)
-                    .semantics { contentDescription = buildButtonDescription },
+                    .semantics {
+                        contentDescription = if (isWorking) {
+                            cancelButtonDescription
+                        } else {
+                            buildButtonDescription
+                        }
+                    },
                 interactionSource = interactionSource,
                 shape = RoundedCornerShape(Corners.medium),
                 colors = ButtonDefaults.buttonColors(
@@ -346,16 +360,24 @@ fun BuilderComposer(
                 ),
             ) {
                 Text(
-                    text = stringResource(R.string.build_button),
+                    text = stringResource(if (isWorking) R.string.cancel_generation else R.string.build_button),
                     style = MaterialTheme.typography.labelLarge,
                     letterSpacing = 1.2.sp,
                 )
                 Spacer(Modifier.size(Space.xs))
-                Icon(
-                    imageVector = Icons.Outlined.ArrowUpward,
-                    contentDescription = null,
-                    modifier = Modifier.size(IconSize.medium),
-                )
+                if (isWorking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(IconSize.medium),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.ArrowUpward,
+                        contentDescription = null,
+                        modifier = Modifier.size(IconSize.medium),
+                    )
+                }
             }
 
             Row(
@@ -384,11 +406,30 @@ fun BuilderComposer(
             ) {
                 when (val submission = state.submission) {
                     BuilderSubmissionState.Idle -> Unit
-                    BuilderSubmissionState.AiNotConnected -> NotConnectedNotice(onDismissSubmissionNotice)
-                    is BuilderSubmissionState.InProgress -> BuildProgressNotice(submission.progress)
-                    is BuilderSubmissionState.Completed -> BuildCompletedNotice(submission.result)
-                    is BuilderSubmissionState.Failed -> BuildFailedNotice(submission.error)
-                    BuilderSubmissionState.Cancelled -> BuildCancelledNotice()
+                    BuilderSubmissionState.Validating -> BuildWorkingNotice(
+                        title = stringResource(R.string.build_validating_request),
+                        onCancel = onCancelGeneration,
+                    )
+                    BuilderSubmissionState.Generating -> BuildWorkingNotice(
+                        title = stringResource(R.string.build_generating_plan),
+                        onCancel = onCancelGeneration,
+                    )
+                    BuilderSubmissionState.ValidatingPlan -> BuildWorkingNotice(
+                        title = stringResource(R.string.build_validating_plan),
+                        onCancel = onCancelGeneration,
+                    )
+                    is BuilderSubmissionState.Ready -> BuildCompletedNotice(
+                        result = submission.result,
+                        onOpenBuilds = onOpenBuilds,
+                        onDismiss = onDismissSubmissionNotice,
+                    )
+                    is BuilderSubmissionState.Failed -> BuildFailedNotice(
+                        error = submission.error,
+                        onRetry = onRetryGeneration,
+                        onOpenSettings = onOpenSettings,
+                        onDismiss = onDismissSubmissionNotice,
+                    )
+                    BuilderSubmissionState.Cancelled -> BuildCancelledNotice(onDismissSubmissionNotice)
                 }
             }
         }
@@ -418,7 +459,7 @@ private fun ComposerAction(
 
 @Composable
 private fun ImageReferencePreview(
-    image: ReferenceInput.Image,
+    image: ImageReference,
     repository: ImageReferenceRepository,
     onRemove: () -> Unit,
 ) {
@@ -506,7 +547,7 @@ private fun ImageReferencePreview(
 
 @Composable
 private fun UrlReferencePreview(
-    url: ReferenceInput.Url,
+    url: UrlReference,
     onRemove: () -> Unit,
 ) {
     Surface(
@@ -624,58 +665,10 @@ private fun UrlReferenceEditor(
 }
 
 @Composable
-private fun NotConnectedNotice(onDismiss: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
-        shape = RoundedCornerShape(Corners.medium),
-        color = MaterialTheme.colorScheme.primaryContainer,
-    ) {
-        Row(
-            modifier = Modifier.padding(Space.md),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.SmartToy,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.padding(top = Space.xxs).size(IconSize.large),
-            )
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(Space.xxs),
-            ) {
-                Text(
-                    text = stringResource(R.string.build_status_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Text(
-                    text = stringResource(R.string.build_status_body),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = Icons.Outlined.Close,
-                    contentDescription = stringResource(R.string.dismiss_status),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun BuildProgressNotice(progress: BuildProgress) {
-    val phaseText = when (progress.phase) {
-        BuildPhase.ANALYZING_REQUEST, BuildPhase.PLANNING -> stringResource(R.string.build_phase_planning)
-        BuildPhase.PROCESSING_REFERENCES -> stringResource(R.string.build_phase_references)
-        BuildPhase.VALIDATING -> stringResource(R.string.build_phase_validation)
-        BuildPhase.CONNECTING, BuildPhase.EXECUTING -> stringResource(R.string.build_phase_execution)
-        else -> stringResource(R.string.build_phase_generic)
-    }
+private fun BuildWorkingNotice(
+    title: String,
+    onCancel: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         shape = RoundedCornerShape(Corners.medium),
@@ -691,106 +684,179 @@ private fun BuildProgressNotice(progress: BuildProgress) {
                 strokeWidth = 2.dp,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-            Column(verticalArrangement = Arrangement.spacedBy(Space.xxs)) {
-                Text(
-                    text = stringResource(R.string.build_progress_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Text(
-                    text = phaseText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                val completed = progress.completedOperations
-                val total = progress.totalOperations
-                if (completed != null && total != null && total > 0) {
-                    Text(
-                        text = stringResource(R.string.build_progress_operations, completed.coerceIn(0, total), total),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.cancel_generation))
             }
         }
     }
 }
 
 @Composable
-private fun BuildCompletedNotice(result: BuildResult) {
+private fun BuildCompletedNotice(
+    result: BuildResult,
+    onOpenBuilds: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         shape = RoundedCornerShape(Corners.medium),
         color = MaterialTheme.colorScheme.secondaryContainer,
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(Space.md),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.md),
+            verticalArrangement = Arrangement.spacedBy(Space.xs),
         ) {
-            Icon(
-                imageVector = Icons.Outlined.SmartToy,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier.size(IconSize.large),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(Space.xxs)) {
-                Text(
-                    text = stringResource(R.string.build_completed_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.SmartToy,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(IconSize.large),
                 )
-                Text(
-                    text = result.plan.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-                Text(
-                    text = stringResource(R.string.build_completed_summary, result.plan.operations.size),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
+                Column(
+                    modifier = Modifier.weight(1f).padding(horizontal = Space.sm),
+                    verticalArrangement = Arrangement.spacedBy(Space.xxs),
+                ) {
+                    Text(
+                        text = stringResource(R.string.build_completed_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Text(
+                        text = result.plan.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.build_completed_summary,
+                            result.plan.dimensions.width,
+                            result.plan.dimensions.length,
+                            result.plan.dimensions.height,
+                            result.plan.operations.size,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.dismiss_status),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
             }
+            Text(
+                text = stringResource(R.string.build_no_execution_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            TextButton(onClick = onOpenBuilds) { Text(stringResource(R.string.view_build_plan)) }
         }
     }
 }
 
 @Composable
-private fun BuildFailedNotice(error: BuildError) {
+private fun BuildFailedNotice(
+    error: com.craftmind.app.domain.model.BuildError,
+    onRetry: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val needsSetup = error.code in setOf(
+        BuildErrorCode.MISSING_PROVIDER,
+        BuildErrorCode.UNSUPPORTED_PROVIDER,
+        BuildErrorCode.MISSING_MODEL,
+        BuildErrorCode.UNSUPPORTED_MODEL,
+        BuildErrorCode.MISSING_API_KEY,
+        BuildErrorCode.CREDENTIAL_STORAGE_FAILED,
+    )
+    val message = when (error.code) {
+        BuildErrorCode.INVALID_INPUT -> stringResource(R.string.build_error_invalid_input)
+        BuildErrorCode.UNSUPPORTED_REFERENCE -> stringResource(R.string.build_error_unsupported_reference)
+        BuildErrorCode.MISSING_PROVIDER -> stringResource(R.string.build_error_missing_provider)
+        BuildErrorCode.UNSUPPORTED_PROVIDER -> stringResource(R.string.build_error_unsupported_provider)
+        BuildErrorCode.MISSING_MODEL -> stringResource(R.string.build_error_missing_model)
+        BuildErrorCode.UNSUPPORTED_MODEL -> stringResource(R.string.build_error_unsupported_model)
+        BuildErrorCode.MISSING_API_KEY -> stringResource(R.string.build_error_missing_api_key)
+        BuildErrorCode.INVALID_API_KEY -> stringResource(R.string.build_error_invalid_api_key)
+        BuildErrorCode.PROVIDER_UNAVAILABLE -> stringResource(R.string.build_error_provider_unavailable)
+        BuildErrorCode.NO_INTERNET -> stringResource(R.string.build_error_no_internet)
+        BuildErrorCode.REQUEST_TIMED_OUT -> stringResource(R.string.build_error_timed_out)
+        BuildErrorCode.RATE_LIMITED -> stringResource(R.string.build_error_rate_limited)
+        BuildErrorCode.PROVIDER_REJECTED_REQUEST -> stringResource(R.string.build_error_rejected)
+        BuildErrorCode.MALFORMED_RESPONSE -> stringResource(R.string.build_error_malformed_response)
+        BuildErrorCode.RESPONSE_TOO_LARGE -> stringResource(R.string.build_error_response_too_large)
+        BuildErrorCode.BUILD_PLAN_REJECTED -> stringResource(
+            when (error.validationIssue) {
+                BuildPlanValidationIssue.UNSUPPORTED_SCHEMA_VERSION -> R.string.build_error_unsupported_schema
+                BuildPlanValidationIssue.UNSUPPORTED_MATERIAL,
+                BuildPlanValidationIssue.UNSUPPORTED_BLOCK -> R.string.build_error_unsupported_material
+                BuildPlanValidationIssue.TOO_MANY_OPERATIONS,
+                BuildPlanValidationIssue.PLAN_VOLUME_TOO_LARGE -> R.string.build_error_plan_too_large
+                else -> R.string.build_error_plan_rejected
+            },
+        )
+        BuildErrorCode.CREDENTIAL_STORAGE_FAILED -> stringResource(R.string.build_error_credential_storage)
+        BuildErrorCode.CANCELLED -> stringResource(R.string.build_error_cancelled)
+        BuildErrorCode.UNKNOWN -> stringResource(R.string.build_error_unknown)
+    }
     Surface(
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         shape = RoundedCornerShape(Corners.medium),
         color = MaterialTheme.colorScheme.errorContainer,
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(Space.md),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            verticalArrangement = Arrangement.spacedBy(Space.xs),
         ) {
-            Icon(
-                imageVector = Icons.Outlined.ErrorOutline,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.size(IconSize.large),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(Space.xxs)) {
-                Text(
-                    text = stringResource(R.string.build_failed_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(IconSize.large),
                 )
-                Text(
-                    text = error.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                )
+                Column(
+                    modifier = Modifier.weight(1f).padding(horizontal = Space.sm),
+                    verticalArrangement = Arrangement.spacedBy(Space.xxs),
+                ) {
+                    Text(
+                        text = stringResource(R.string.build_failed_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.dismiss_status),
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                if (error.retryable) TextButton(onClick = onRetry) { Text(stringResource(R.string.retry_request)) }
+                if (needsSetup) TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.configure_provider)) }
             }
         }
     }
 }
 
 @Composable
-private fun BuildCancelledNotice() {
+private fun BuildCancelledNotice(onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         shape = RoundedCornerShape(Corners.medium),
@@ -809,9 +875,11 @@ private fun BuildCancelledNotice() {
             )
             Text(
                 text = stringResource(R.string.build_cancelled_title),
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss_status)) }
         }
     }
 }

@@ -1,17 +1,25 @@
 package com.craftmind.app.presentation.builder
 
+import com.craftmind.app.domain.ai.BuildGenerationEvent
+import com.craftmind.app.domain.ai.BuildPlanGenerationUseCase
 import com.craftmind.app.domain.media.ImageReferenceRepository
 import com.craftmind.app.domain.media.ImageThumbnail
 import com.craftmind.app.domain.media.ImageValidationError
 import com.craftmind.app.domain.media.ImageValidationResult
-import com.craftmind.app.domain.model.ReferenceInput
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.craftmind.app.domain.model.BuildError
+import com.craftmind.app.domain.model.BuildErrorCode
+import com.craftmind.app.domain.model.BuildRequest
+import com.craftmind.app.domain.model.ImageReference
 import kotlinx.coroutines.CompletableDeferred
-import org.junit.Rule
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -23,7 +31,7 @@ class BuilderViewModelTest {
 
     @Test
     fun promptInputIsBoundedAndRemainsLocalInViewState() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
         val overLimit = "x".repeat(2_050)
 
         viewModel.onPromptChanged(overLimit)
@@ -35,7 +43,7 @@ class BuilderViewModelTest {
 
     @Test
     fun promptTruncationDoesNotSplitASurrogatePair() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
 
         viewModel.onPromptChanged("a".repeat(1_999) + "😀" + "b")
 
@@ -44,8 +52,8 @@ class BuilderViewModelTest {
     }
 
     @Test
-    fun emptyBuildShowsValidationAndValidTextShowsHonestUnavailableState() {
-        val viewModel = BuilderViewModel(repository)
+    fun emptyBuildShowsValidationAndConfiguredTextRequestShowsTypedMissingProviderError() {
+        val viewModel = newViewModel()
 
         viewModel.onBuildPressed()
         assertEquals(BuilderInputError.MissingInput, viewModel.uiState.value.inputError)
@@ -54,12 +62,15 @@ class BuilderViewModelTest {
         viewModel.onPromptChanged("A small stone bridge")
         viewModel.onBuildPressed()
         assertNull(viewModel.uiState.value.inputError)
-        assertEquals(BuilderSubmissionState.AiNotConnected, viewModel.uiState.value.submission)
+        assertEquals(
+            BuilderSubmissionState.Failed(BuildError(BuildErrorCode.MISSING_PROVIDER)),
+            viewModel.uiState.value.submission,
+        )
     }
 
     @Test
     fun urlCanBeAddedReplacedAndRemovedThroughViewModelState() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
 
         viewModel.onUrlEditorVisibilityChanged(true)
         viewModel.onUrlDraftChanged("example.com/first")
@@ -79,7 +90,7 @@ class BuilderViewModelTest {
 
     @Test
     fun invalidUrlStaysInEditorAndExposesAValidationReason() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
 
         viewModel.onUrlEditorVisibilityChanged(true)
         viewModel.onUrlDraftChanged("javascript:alert(1)")
@@ -92,7 +103,7 @@ class BuilderViewModelTest {
 
     @Test
     fun unconfirmedUrlDraftMustBeAddedOrCancelledBeforeBuild() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
         viewModel.onPromptChanged("A small bridge")
         viewModel.onUrlEditorVisibilityChanged(true)
         viewModel.onUrlDraftChanged("not a url yet")
@@ -104,12 +115,15 @@ class BuilderViewModelTest {
 
         viewModel.onUrlEditorVisibilityChanged(false)
         viewModel.onBuildPressed()
-        assertEquals(BuilderSubmissionState.AiNotConnected, viewModel.uiState.value.submission)
+        assertEquals(
+            BuilderSubmissionState.Failed(BuildError(BuildErrorCode.UNSUPPORTED_REFERENCE)),
+            viewModel.uiState.value.submission,
+        )
     }
 
     @Test
     fun imageCanBeSelectedReplacedAndRemoved() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
         repository.nextResult = ImageValidationResult.Accepted(image("content://photo/one", "one.jpg"))
         viewModel.onImageSelected("content://photo/one")
         assertEquals("one.jpg", viewModel.uiState.value.image?.displayName)
@@ -126,7 +140,7 @@ class BuilderViewModelTest {
 
     @Test
     fun rejectedReplacementPreservesTheLastValidAttachmentAndShowsError() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
         repository.nextResult = ImageValidationResult.Accepted(image("content://photo/one", "one.jpg"))
         viewModel.onImageSelected("content://photo/one")
 
@@ -140,7 +154,7 @@ class BuilderViewModelTest {
 
     @Test
     fun buildIsBlockedWhileImageMetadataIsBeingChecked() {
-        val viewModel = BuilderViewModel(repository)
+        val viewModel = newViewModel()
         repository.pendingInspection = CompletableDeferred()
 
         viewModel.onImageSelected("content://photo/pending")
@@ -155,22 +169,82 @@ class BuilderViewModelTest {
     }
 
     @Test
-    fun imageOnlyRequestIsAcceptedButNeverCreatesAPlan() {
-        val viewModel = BuilderViewModel(repository)
+    fun imageOnlyRequestIsRejectedAsUnsupportedInsteadOfBeingSilentlyOmitted() {
+        val viewModel = newViewModel()
         repository.nextResult = ImageValidationResult.Accepted(image("content://photo/one", "one.jpg"))
         viewModel.onImageSelected("content://photo/one")
 
         viewModel.onBuildPressed()
 
-        assertEquals(BuilderSubmissionState.AiNotConnected, viewModel.uiState.value.submission)
+        assertEquals(
+            BuilderSubmissionState.Failed(BuildError(BuildErrorCode.UNSUPPORTED_REFERENCE)),
+            viewModel.uiState.value.submission,
+        )
         assertNull(viewModel.uiState.value.inputError)
     }
+
+    @Test
+    fun retryIsOnlyAvailableAfterAnExplicitRetryableFailure() {
+        var attempts = 0
+        val useCase = BuildPlanGenerationUseCase {
+            attempts++
+            flow {
+                emit(
+                    BuildGenerationEvent.Failed(
+                        BuildError(BuildErrorCode.PROVIDER_UNAVAILABLE, retryable = attempts == 1),
+                    ),
+                )
+            }
+        }
+        val viewModel = newViewModel(useCase)
+        viewModel.onPromptChanged("A cabin")
+        viewModel.onBuildPressed()
+        assertEquals(1, attempts)
+
+        viewModel.retryGeneration()
+        assertEquals(2, attempts)
+        assertFalse((viewModel.uiState.value.submission as BuilderSubmissionState.Failed).error.retryable)
+        viewModel.retryGeneration()
+        assertEquals(2, attempts)
+    }
+
+    @Test
+    fun generationCanBeCancelledAndDoesNotFabricateCompletion() {
+        val useCase = BuildPlanGenerationUseCase {
+            flow {
+                emit(BuildGenerationEvent.Generating)
+                awaitCancellation()
+            }
+        }
+        val viewModel = newViewModel(useCase)
+        viewModel.onPromptChanged("A cabin")
+        viewModel.onBuildPressed()
+        assertEquals(BuilderSubmissionState.Generating, viewModel.uiState.value.submission)
+
+        viewModel.cancelGeneration()
+
+        assertEquals(BuilderSubmissionState.Cancelled, viewModel.uiState.value.submission)
+        assertTrue(viewModel.uiState.value.buildHistory.isEmpty())
+    }
+
+    private fun newViewModel(
+        useCase: BuildPlanGenerationUseCase = BuildPlanGenerationUseCase { request ->
+            flow {
+                val error = if (request.imageReferences.isNotEmpty() || request.urlReferences.isNotEmpty()) {
+                    BuildError(BuildErrorCode.UNSUPPORTED_REFERENCE)
+                } else {
+                    BuildError(BuildErrorCode.MISSING_PROVIDER)
+                }
+                emit(BuildGenerationEvent.Failed(error))
+            }
+        },
+    ) = BuilderViewModel(repository, useCase)
 
     private fun image(
         uri: String,
         name: String,
         mime: String = "image/jpeg",
-    ) = ReferenceInput.Image(
+    ) = ImageReference(
         uri = uri,
         mimeType = mime,
         displayName = name,
