@@ -12,16 +12,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,11 +43,13 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.settings.ThemeMode
 
 private enum class SettingsInfo {
-    AI,
     MINECRAFT,
 }
 
@@ -47,6 +57,8 @@ private enum class SettingsInfo {
 fun SettingsScreen(
     themeMode: ThemeMode,
     onThemeModeSelected: (ThemeMode) -> Unit,
+    providerState: ProviderSettingsState,
+    onProviderEvent: (ProviderSettingsEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var openInfo by remember { mutableStateOf<SettingsInfo?>(null) }
@@ -61,7 +73,7 @@ fun SettingsScreen(
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("Settings", style = MaterialTheme.typography.headlineLarge)
             Text(
-                text = "Preferences and foundations for future phases.",
+                text = "Configure an AI provider, its key, and a verified model independently.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -78,10 +90,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
-                            .clickable(
-                                role = Role.RadioButton,
-                                onClick = { onThemeModeSelected(option) },
-                            )
+                            .clickable(role = Role.RadioButton, onClick = { onThemeModeSelected(option) })
                             .semantics { this.selected = selected }
                             .padding(end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -97,26 +106,16 @@ fun SettingsScreen(
             }
         }
 
-        SettingsCard(
-            title = "AI providers",
-            subtitle = "Provider keys and model selection are separate parts of the future AI setup.",
-        ) {
-            SettingsActionRow(
-                icon = Icons.Default.Settings,
-                title = "Provider configuration",
-                subtitle = "Not available in Phase 1",
-                onClick = { openInfo = SettingsInfo.AI },
-            )
-        }
+        ProviderSettingsCard(state = providerState, onEvent = onProviderEvent)
 
         SettingsCard(
             title = "Minecraft",
-            subtitle = "Connection and execution will be added after AI build-plan validation.",
+            subtitle = "Plan review is available; world pairing and block execution are not implemented.",
         ) {
             SettingsActionRow(
                 icon = Icons.Default.Info,
                 title = "World connection",
-                subtitle = "Not available in Phase 1",
+                subtitle = "Not implemented in Phase 2",
                 onClick = { openInfo = SettingsInfo.MINECRAFT },
             )
         }
@@ -125,19 +124,16 @@ fun SettingsScreen(
             title = "About",
             subtitle = "CraftMind · AI Minecraft Builder",
         ) {
+            Text("Describe it. Show it. Build it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Describe it. Show it. Build it.",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = "Phase 1 — Foundation/UI",
+                text = "Phase 2 · AI plan generation and review",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         Text(
-            text = "Phase 1 does not collect credentials, send prompts, upload images, fetch URLs, or connect to a Minecraft world.",
+            text = "Prompts go directly to the selected provider over HTTPS. Keys are encrypted with Android Keystore and are never sent to CraftMind. Image and URL references are preserved locally but not analyzed. Minecraft execution is not available.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -146,22 +142,191 @@ fun SettingsScreen(
 
     openInfo?.let { info ->
         val (title, message) = when (info) {
-            SettingsInfo.AI -> "AI provider setup is coming later" to
-                "No API key or model is configured, collected, or stored in Phase 1. The future architecture keeps each provider's credential separate from the selected model."
-
             SettingsInfo.MINECRAFT -> "Minecraft is not connected" to
-                "The bridge contract is being established, but there is no pairing, connection, status, or block execution in this phase."
+                "CraftMind can show a successfully generated and validated plan for review. It does not pair with Minecraft or place blocks in a world."
         }
         AlertDialog(
             onDismissRequest = { openInfo = null },
             icon = { Icon(Icons.Default.Info, contentDescription = null) },
             title = { Text(title) },
             text = { Text(message) },
-            confirmButton = {
-                TextButton(onClick = { openInfo = null }) { Text("Got it") }
-            },
+            confirmButton = { TextButton(onClick = { openInfo = null }) { Text("Got it") } },
         )
     }
+}
+
+@Composable
+private fun ProviderSettingsCard(
+    state: ProviderSettingsState,
+    onEvent: (ProviderSettingsEvent) -> Unit,
+) {
+    val activeProvider = state.providers.firstOrNull { it.id == state.activeProviderId }
+    var providerMenuExpanded by remember { mutableStateOf(false) }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+
+    SettingsCard(
+        title = "AI provider",
+        subtitle = "Keys belong to providers. Model choice is stored separately and requires a live connection test.",
+    ) {
+        if (state.providers.size > 1) {
+            Column {
+                OutlinedButton(onClick = { providerMenuExpanded = true }) {
+                    Text(activeProvider?.displayName ?: "Choose provider")
+                }
+                DropdownMenu(
+                    expanded = providerMenuExpanded,
+                    onDismissRequest = { providerMenuExpanded = false },
+                ) {
+                    state.providers.forEach { provider ->
+                        DropdownMenuItem(
+                            text = { Text(provider.displayName) },
+                            onClick = {
+                                providerMenuExpanded = false
+                                onEvent(ProviderSettingsEvent.SelectProvider(provider.id))
+                            },
+                        )
+                    }
+                }
+            }
+        } else if (activeProvider != null) {
+            Text(activeProvider.displayName, style = MaterialTheme.typography.titleMedium)
+        } else {
+            Text(
+                "No supported provider adapter is installed.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+
+        activeProvider?.let { provider ->
+            Text(
+                text = if (state.savedCredentialExists) {
+                    "An API key is saved encrypted on this device. Its value is never displayed."
+                } else {
+                    "No saved API key. Add your provider-owned key below."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = state.keyDraft,
+                onValueChange = { onEvent(ProviderSettingsEvent.KeyDraftChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(if (state.savedCredentialExists) "Replace API key" else "Provider API key") },
+                placeholder = { Text("Paste a key from ${provider.displayName}") },
+                singleLine = true,
+                enabled = !state.isSavingCredential,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = { onEvent(ProviderSettingsEvent.SaveCredential) },
+                    enabled = state.keyDraft.isNotBlank() && !state.isSavingCredential,
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    if (state.isSavingCredential) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text(if (state.savedCredentialExists) "Replace key" else "Save key")
+                    }
+                }
+                if (state.savedCredentialExists) {
+                    OutlinedButton(
+                        onClick = { onEvent(ProviderSettingsEvent.RemoveCredential) },
+                        enabled = !state.isSavingCredential,
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("Remove key") }
+                }
+            }
+
+            OutlinedButton(
+                onClick = { onEvent(ProviderSettingsEvent.TestConnection) },
+                enabled = state.savedCredentialExists &&
+                    !state.isSavingCredential && !state.isSavingSelection &&
+                    state.connection !is ProviderConnectionState.Testing,
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                if (state.connection is ProviderConnectionState.Testing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("  Testing provider…")
+                } else {
+                    Text("Test connection")
+                }
+            }
+
+            ConnectionStatus(state.connection)
+
+            if (state.connection is ProviderConnectionState.Verified) {
+                Text("Choose model", style = MaterialTheme.typography.titleSmall)
+                Column {
+                    OutlinedButton(
+                        onClick = { modelMenuExpanded = true },
+                        enabled = !state.isSavingSelection,
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        val selected = state.models.firstOrNull { it.id == state.selectedModelId }
+                        Text(selected?.displayName ?: "Select a verified model")
+                    }
+                    DropdownMenu(
+                        expanded = modelMenuExpanded,
+                        onDismissRequest = { modelMenuExpanded = false },
+                    ) {
+                        state.models.forEach { model ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(model.displayName)
+                                        Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                },
+                                onClick = {
+                                    modelMenuExpanded = false
+                                    onEvent(ProviderSettingsEvent.SelectModel(model.id))
+                                },
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = "Text generation with JSON output is supported. Vision, URL fetching, and image analysis are not supported by this adapter.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        state.message?.let { message ->
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = message,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatus(state: ProviderConnectionState) {
+    val text = when (state) {
+        ProviderConnectionState.Unverified -> "Not verified. Run a live test to check the saved key and model list."
+        ProviderConnectionState.Testing -> "A real provider request is in progress."
+        is ProviderConnectionState.Verified -> "Verified by live API response · ${state.compatibleModelCount} compatible model(s)."
+        is ProviderConnectionState.Failed -> "Connection test failed (${state.code.name.lowercase().replace('_', ' ')})."
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (state is ProviderConnectionState.Failed) MaterialTheme.colorScheme.error
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
@@ -182,11 +347,7 @@ private fun SettingsCard(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge)
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             content()
         }

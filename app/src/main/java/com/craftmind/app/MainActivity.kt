@@ -3,6 +3,7 @@ package com.craftmind.app
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -17,12 +18,16 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.craftmind.app.designsystem.CraftMindTheme
-import com.craftmind.app.domain.build.BuildInput
+import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.settings.ThemeMode
 import com.craftmind.app.presentation.app.CraftMindApp
 import com.craftmind.app.presentation.home.BuildComposerEvent
+import com.craftmind.app.presentation.builds.BuildsViewModel
+import com.craftmind.app.presentation.builds.BuildsViewModelFactory
 import com.craftmind.app.presentation.home.HomeViewModel
 import com.craftmind.app.presentation.home.HomeViewModelFactory
+import com.craftmind.app.presentation.settings.ProviderSettingsViewModel
+import com.craftmind.app.presentation.settings.ProviderSettingsViewModelFactory
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -34,8 +39,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by appContainer.themePreferences.themeMode
                 .collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
-            val homeViewModel: HomeViewModel = viewModel(factory = remember { HomeViewModelFactory() })
+            val homeViewModel: HomeViewModel = viewModel(
+                factory = remember(appContainer) { HomeViewModelFactory(appContainer.aiBuildEngine, appContainer.localBuilds) },
+            )
             val composerState by homeViewModel.state.collectAsStateWithLifecycle()
+            val providerSettingsViewModel: ProviderSettingsViewModel = viewModel(
+                factory = remember(appContainer) { ProviderSettingsViewModelFactory(appContainer.aiBuildEngine) },
+            )
+            val providerSettingsState by providerSettingsViewModel.state.collectAsStateWithLifecycle()
+            val buildsViewModel: BuildsViewModel = viewModel(
+                factory = remember(appContainer) { BuildsViewModelFactory(appContainer.localBuilds) },
+            )
+            val buildsState by buildsViewModel.state.collectAsStateWithLifecycle()
             val preferenceScope = rememberCoroutineScope()
             val writeThemeMode: (ThemeMode) -> Unit = remember(appContainer.themePreferences, preferenceScope) {
                 { selected: ThemeMode ->
@@ -61,9 +76,15 @@ class MainActivity : ComponentActivity() {
             }
 
             val imagePicker = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.GetContent(),
+                contract = ActivityResultContracts.OpenDocument(),
             ) { uri: Uri? ->
                 if (uri != null) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
                     homeViewModel.dispatch(
                         BuildComposerEvent.ImageSelected(readImageReference(context, uri)),
                     )
@@ -74,10 +95,12 @@ class MainActivity : ComponentActivity() {
                 CraftMindApp(
                     composerState = composerState,
                     onComposerEvent = homeViewModel::dispatch,
-                    onPickImage = { imagePicker.launch("image/*") },
+                    onPickImage = { imagePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp")) },
                     themeMode = themeMode,
-                    // Only the appearance choice is persisted in Phase 1.
                     onThemeModeSelected = writeThemeMode,
+                    providerSettingsState = providerSettingsState,
+                    onProviderSettingsEvent = providerSettingsViewModel::dispatch,
+                    buildsState = buildsState,
                 )
             }
         }

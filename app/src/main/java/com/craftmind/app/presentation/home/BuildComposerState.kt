@@ -1,15 +1,17 @@
 package com.craftmind.app.presentation.home
 
-import com.craftmind.app.domain.build.BuildInput
-import com.craftmind.app.domain.build.BuildRequest
-import com.craftmind.app.domain.build.BuildRequestDraft
-import com.craftmind.app.domain.build.BuildRequestValidationError
-import com.craftmind.app.domain.build.BuildRequestValidationResult
-import com.craftmind.app.domain.build.BuildRequestValidator
-import com.craftmind.app.domain.build.UrlValidationResult
+import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.buildplan.BuildInput
+import com.craftmind.app.domain.buildplan.BuildRequest
+import com.craftmind.app.domain.buildplan.BuildRequestDraft
+import com.craftmind.app.domain.buildplan.BuildRequestValidationError
+import com.craftmind.app.domain.buildplan.BuildRequestValidationResult
+import com.craftmind.app.domain.buildplan.BuildRequestValidator
+import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.buildplan.UrlValidationResult
+import com.craftmind.app.domain.buildplan.ValidatedBuildPlan
 import java.util.Locale
 
-/** Explicit state for the composer; generation never enters a pretend loading/success state. */
 data class BuildComposerState(
     val prompt: String = "",
     val imageReference: BuildInput.ImageReference? = null,
@@ -24,18 +26,22 @@ data class BuildComposerState(
 
 sealed interface UrlEditorState {
     data object Closed : UrlEditorState
-    data class Editing(
-        val draft: String,
-        val error: BuildRequestValidationError? = null,
-    ) : UrlEditorState
+    data class Editing(val draft: String, val error: BuildRequestValidationError? = null) : UrlEditorState
 }
 
 sealed interface BuildGenerationState {
     data object Idle : BuildGenerationState
     data class ValidationBlocked(val error: BuildRequestValidationError) : BuildGenerationState
-
-    /** The request was validated locally only; no provider call was attempted. */
-    data class AiUnavailable(val request: BuildRequest) : BuildGenerationState
+    data class Prepared(val request: BuildRequest) : BuildGenerationState
+    data class Generating(val request: BuildRequest) : BuildGenerationState
+    data class Failed(val request: BuildRequest, val code: AiErrorCode, val retryable: Boolean) : BuildGenerationState
+    data class Cancelled(val request: BuildRequest) : BuildGenerationState
+    data class Ready(
+        val request: BuildRequest,
+        val plan: ValidatedBuildPlan,
+        val localRecord: LocalBuildRecord?,
+        val localSaveFailed: Boolean,
+    ) : BuildGenerationState
 }
 
 sealed interface BuildComposerEvent {
@@ -48,18 +54,17 @@ sealed interface BuildComposerEvent {
     data object CloseUrlEditor : BuildComposerEvent
     data object RemoveUrl : BuildComposerEvent
     data object Generate : BuildComposerEvent
+    data object Retry : BuildComposerEvent
+    data object CancelGeneration : BuildComposerEvent
     data object DismissGenerationNotice : BuildComposerEvent
 }
 
-/** Pure state reducer makes the Phase 1 interaction transitions deterministic and testable. */
+/** Pure input reducer; the ViewModel alone starts or cancels real provider work. */
 class BuildComposerReducer(
     private val validator: BuildRequestValidator = BuildRequestValidator(),
 ) {
     fun reduce(state: BuildComposerState, event: BuildComposerEvent): BuildComposerState = when (event) {
-        is BuildComposerEvent.PromptChanged -> state.copy(
-            prompt = event.value,
-            generation = BuildGenerationState.Idle,
-        )
+        is BuildComposerEvent.PromptChanged -> state.copy(prompt = event.value, generation = BuildGenerationState.Idle)
 
         is BuildComposerEvent.ImageSelected -> {
             val error = validator.validateImage(event.reference)
@@ -97,42 +102,32 @@ class BuildComposerReducer(
 
         BuildComposerEvent.SaveUrl -> {
             val editing = state.urlEditor as? UrlEditorState.Editing
-            if (editing == null) {
-                state
-            } else {
-                when (val result = validator.validateUrl(editing.draft)) {
-                    is UrlValidationResult.Valid -> state.copy(
-                        urlReference = BuildInput.UrlReference(result.normalizedUrl),
-                        urlEditor = UrlEditorState.Closed,
-                        generation = BuildGenerationState.Idle,
-                    )
-
-                    is UrlValidationResult.Invalid -> state.copy(
-                        urlEditor = editing.copy(error = result.error),
-                    )
-                }
+            if (editing == null) state else when (val result = validator.validateUrl(editing.draft)) {
+                is UrlValidationResult.Valid -> state.copy(
+                    urlReference = BuildInput.UrlReference(result.normalizedUrl),
+                    urlEditor = UrlEditorState.Closed,
+                    generation = BuildGenerationState.Idle,
+                )
+                is UrlValidationResult.Invalid -> state.copy(urlEditor = editing.copy(error = result.error))
             }
         }
 
         BuildComposerEvent.CloseUrlEditor -> state.copy(urlEditor = UrlEditorState.Closed)
-
         BuildComposerEvent.RemoveUrl -> state.copy(
             urlReference = null,
             urlEditor = UrlEditorState.Closed,
             generation = BuildGenerationState.Idle,
         )
-
-        BuildComposerEvent.Generate -> generate(state)
+        BuildComposerEvent.Generate -> prepare(state)
+        BuildComposerEvent.Retry,
+        BuildComposerEvent.CancelGeneration -> state
         BuildComposerEvent.DismissGenerationNotice -> state.copy(generation = BuildGenerationState.Idle)
     }
 
-    private fun generate(state: BuildComposerState): BuildComposerState {
+    private fun prepare(state: BuildComposerState): BuildComposerState {
         state.imageError?.let { return state.copy(generation = BuildGenerationState.ValidationBlocked(it)) }
-
         val urlError = (state.urlEditor as? UrlEditorState.Editing)?.error
-        if (urlError != null) {
-            return state.copy(generation = BuildGenerationState.ValidationBlocked(urlError))
-        }
+        if (urlError != null) return state.copy(generation = BuildGenerationState.ValidationBlocked(urlError))
 
         return when (
             val result = validator.create(
@@ -146,10 +141,7 @@ class BuildComposerReducer(
             is BuildRequestValidationResult.Invalid -> state.copy(
                 generation = BuildGenerationState.ValidationBlocked(result.error),
             )
-
-            is BuildRequestValidationResult.Valid -> state.copy(
-                generation = BuildGenerationState.AiUnavailable(result.request),
-            )
+            is BuildRequestValidationResult.Valid -> state.copy(generation = BuildGenerationState.Prepared(result.request))
         }
     }
 }

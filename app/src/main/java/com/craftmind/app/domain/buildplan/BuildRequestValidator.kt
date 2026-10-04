@@ -1,4 +1,4 @@
-package com.craftmind.app.domain.build
+package com.craftmind.app.domain.buildplan
 
 import java.net.URI
 import java.util.Locale
@@ -59,6 +59,9 @@ class BuildRequestValidator(
         if (normalized.isEmpty()) {
             return UrlValidationResult.Invalid(BuildRequestValidationError.INVALID_URL)
         }
+        if (normalized.length > MAX_URL_LENGTH) {
+            return UrlValidationResult.Invalid(BuildRequestValidationError.URL_TOO_LONG)
+        }
 
         val uri = try {
             URI(normalized)
@@ -113,6 +116,7 @@ class BuildRequestValidator(
 
     companion object {
         const val MAX_PROMPT_LENGTH: Int = 800
+        const val MAX_URL_LENGTH: Int = 2_048
         const val MAX_IMAGE_SIZE_BYTES: Long = 12L * 1024L * 1024L
         val SUPPORTED_IMAGE_MEDIA_TYPES: Set<String> = setOf(
             "image/jpeg",

@@ -1,7 +1,7 @@
 package com.craftmind.app.domain.minecraft
 
-import com.craftmind.app.domain.build.BlockPosition
-import com.craftmind.app.domain.build.ReviewedBuildPlan
+import com.craftmind.app.domain.buildplan.BlockPosition
+import com.craftmind.app.domain.buildplan.ReviewedBuildPlan
 import kotlinx.coroutines.flow.StateFlow
 
 /** A bridge session contains connection metadata only; pairing tokens are transient and not modeled as settings. */
@@ -89,7 +89,7 @@ sealed interface MinecraftBridgeResult<out T> {
 
 /**
  * Platform-independent API for a future companion/local-world adapter. No bridge implementation,
- * connection, or block execution exists in Phase 1.
+ * connection, or block execution exists in Phase 2.
  */
 interface MinecraftBridge {
     val connectionState: StateFlow<MinecraftConnectionState>

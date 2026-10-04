@@ -32,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,9 +55,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalFocusManager
-import com.craftmind.app.domain.build.BuildInput
-import com.craftmind.app.domain.build.BuildRequestValidationError
-import com.craftmind.app.domain.build.BuildRequestValidator
+import com.craftmind.app.domain.buildplan.BuildInput
+import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.buildplan.BuildRequest
+import com.craftmind.app.domain.buildplan.BuildRequestValidationError
+import com.craftmind.app.domain.buildplan.BuildRequestValidator
+import com.craftmind.app.domain.buildplan.ValidatedBuildPlan
 import com.craftmind.app.presentation.home.BuildComposerEvent
 import com.craftmind.app.presentation.home.BuildComposerState
 import com.craftmind.app.presentation.home.BuildGenerationState
@@ -69,6 +73,7 @@ fun HomeScreen(
     state: BuildComposerState,
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
+    onReviewPlan: (ValidatedBuildPlan, BuildRequest) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize().imePadding()) {
@@ -95,7 +100,7 @@ fun HomeScreen(
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState()),
                 ) {
-                    BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage)
+                    BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage, onReviewPlan = onReviewPlan)
                 }
             }
         } else {
@@ -107,10 +112,10 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 HomeIntroduction(showFoundationDetails = false)
-                BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage)
+                BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage, onReviewPlan = onReviewPlan)
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     PlannedPipelineCard()
-                    PhaseOneNotice()
+                    PhaseTwoNotice()
                 }
             }
         }
@@ -165,7 +170,7 @@ private fun HomeIntroduction(showFoundationDetails: Boolean) {
 
         if (showFoundationDetails) {
             PlannedPipelineCard()
-            PhaseOneNotice()
+            PhaseTwoNotice()
         }
     }
 }
@@ -233,7 +238,7 @@ private fun PlannedPipelineCard() {
             )
             PipelineStep(number = "01", title = "Your prompt + references")
             PipelineStep(number = "02", title = "AI-generated BuildPlan", emphasized = true)
-            PipelineStep(number = "03", title = "Validation, then Minecraft bridge")
+            PipelineStep(number = "03", title = "Validation, review, and local record")
         }
     }
 }
@@ -272,7 +277,7 @@ private fun PipelineStep(number: String, title: String, emphasized: Boolean = fa
 }
 
 @Composable
-private fun PhaseOneNotice() {
+private fun PhaseTwoNotice() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -289,9 +294,9 @@ private fun PhaseOneNotice() {
                 tint = MaterialTheme.colorScheme.primary,
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Phase 1 · Foundation/UI", style = MaterialTheme.typography.titleMedium)
+                Text("Phase 2 · AI plans, no world execution", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "AI generation, reference analysis, URL fetching, and Minecraft execution are not connected yet. Your inputs stay on this device.",
+                    text = "A validated plan comes from a real configured AI provider. Images and URLs are preserved but not analyzed; CraftMind does not connect to Minecraft or place blocks.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -305,6 +310,7 @@ private fun BuildComposerCard(
     state: BuildComposerState,
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
+    onReviewPlan: (ValidatedBuildPlan, BuildRequest) -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
     val promptError = (state.generation as? BuildGenerationState.ValidationBlocked)
@@ -417,7 +423,7 @@ private fun BuildComposerCard(
             }
 
             when (val generation = state.generation) {
-                BuildGenerationState.Idle -> Unit
+                BuildGenerationState.Idle, is BuildGenerationState.Prepared -> Unit
                 is BuildGenerationState.ValidationBlocked -> {
                     if (generation.error !in setOf(
                             BuildRequestValidationError.EMPTY_PROMPT,
@@ -431,16 +437,38 @@ private fun BuildComposerCard(
                         )
                     }
                 }
-
-                is BuildGenerationState.AiUnavailable -> InlineNotice(
-                    title = "AI generation is not available yet",
-                    message = "This Phase 1 app has no AI provider connected. Your request was validated locally, remains on this device, and was not sent.",
+                is BuildGenerationState.Generating -> Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Text("Waiting for a real AI response…", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = { onEvent(BuildComposerEvent.CancelGeneration) }) { Text("Cancel") }
+                }
+                is BuildGenerationState.Failed -> InlineNotice(
+                    title = "Plan generation failed",
+                    message = generationMessage(generation.code),
                     onDismiss = { onEvent(BuildComposerEvent.DismissGenerationNotice) },
+                )
+                is BuildGenerationState.Cancelled -> InlineNotice(
+                    title = "Generation cancelled",
+                    message = "The provider request was cancelled. No plan was created.",
+                    onDismiss = { onEvent(BuildComposerEvent.DismissGenerationNotice) },
+                )
+                is BuildGenerationState.Ready -> GeneratedPlanCard(
+                    state = generation,
+                    onReview = { onReviewPlan(generation.plan, generation.request) },
                 )
             }
 
+            val generationInProgress = state.generation is BuildGenerationState.Generating
+            val retryableFailure = (state.generation as? BuildGenerationState.Failed)?.retryable == true
             Button(
-                onClick = { onEvent(BuildComposerEvent.Generate) },
+                onClick = {
+                    onEvent(if (retryableFailure) BuildComposerEvent.Retry else BuildComposerEvent.Generate)
+                },
+                enabled = !generationInProgress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp),
@@ -450,17 +478,78 @@ private fun BuildComposerCard(
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                 ),
             ) {
-                Text("Generate with AI", style = MaterialTheme.typography.labelLarge)
+                Text(if (retryableFailure) "Retry generation" else "Generate with AI", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.width(8.dp))
                 Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
             }
             Text(
-                text = "No AI request is sent in Phase 1. Image and URL references are not analyzed.",
+                text = "Your prompt is sent directly to the selected AI provider. Image and URL references stay local and are not analyzed.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
+}
+
+@Composable
+private fun GeneratedPlanCard(
+    state: BuildGenerationState.Ready,
+    onReview: () -> Unit,
+) {
+    val plan = state.plan.plan
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Text("VALIDATED AI PLAN READY FOR REVIEW", style = MaterialTheme.typography.labelSmall, letterSpacing = 0.8.sp)
+            Text(plan.metadata.title, style = MaterialTheme.typography.titleLarge)
+            Text(plan.metadata.summary, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "${plan.metadata.dimensions.width} × ${plan.metadata.dimensions.height} × ${plan.metadata.dimensions.depth} blocks · ${plan.operations.size} placements · ${plan.metadata.providerId} / ${plan.metadata.modelId}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.localSaveFailed) {
+                Text(
+                    "The validated plan is available for review but could not be saved to the local Builds list.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else {
+                Text("Saved locally. Nothing has been placed in Minecraft.", style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(onClick = onReview, shape = RoundedCornerShape(14.dp)) {
+                Text("Review plan details")
+            }
+        }
+    }
+}
+
+private fun generationMessage(code: AiErrorCode): String = when (code) {
+    AiErrorCode.INVALID_API_KEY -> "The selected provider rejected its saved API key. Update it in Settings."
+    AiErrorCode.PROVIDER_UNAVAILABLE -> "The provider is temporarily unavailable. You can retry the request."
+    AiErrorCode.MODEL_UNAVAILABLE -> "The selected model is unavailable. Test the connection and choose another model in Settings."
+    AiErrorCode.RATE_LIMITED -> "The provider rate-limited this request. Wait before retrying."
+    AiErrorCode.NETWORK_TIMEOUT -> "The provider request timed out. Check your connection and retry."
+    AiErrorCode.NETWORK_UNAVAILABLE -> "Could not reach the provider. Check your internet connection and retry."
+    AiErrorCode.INVALID_AI_RESPONSE -> "The provider response was malformed or did not match the required JSON format."
+    AiErrorCode.INVALID_BUILD_PLAN -> "The AI plan failed CraftMind's block, state, coordinate, or safety validation."
+    AiErrorCode.UNSUPPORTED_SCHEMA_VERSION -> "The AI returned an unsupported BuildPlan schema version."
+    AiErrorCode.BUILD_TOO_LARGE -> "The AI plan exceeded CraftMind's size or dimension limits."
+    AiErrorCode.RESPONSE_TOO_LARGE -> "The AI response exceeded CraftMind's response-size limit."
+    AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected provider or model cannot return the required structured plan."
+    AiErrorCode.MISSING_CREDENTIAL -> "Save an API key for the selected provider in Settings before generating."
+    AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted provider key could not be accessed. Check Settings and device security."
+    AiErrorCode.NO_PROVIDER_SELECTED -> "Choose a supported provider in Settings."
+    AiErrorCode.NO_MODEL_SELECTED -> "Test the provider connection and select a model in Settings."
+    AiErrorCode.NO_MODELS_AVAILABLE -> "The provider returned no models compatible with plan generation."
+    AiErrorCode.CANCELLED -> "The provider request was cancelled. No plan was created."
+    AiErrorCode.UNKNOWN_PROVIDER_ERROR -> "The provider request failed. No raw response or secret was displayed."
 }
 
 @Composable
@@ -568,7 +657,7 @@ private fun RequestPreview(state: BuildComposerState) {
         if (state.imageReference != null) PreviewReferenceRow("Reference image", "Attached")
         state.urlReference?.let { PreviewReferenceRow("Public URL", hostAndPath(it.url)) }
         Text(
-            text = "Local preview only · nothing has been sent or analyzed.",
+            text = "Prompt is sent to the selected provider. Image and URL references stay local and are not analyzed.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -654,7 +743,7 @@ private fun UrlEntryDialog(
                     },
                 )
                 Text(
-                    text = "Only the URL syntax is checked. CraftMind will not fetch or analyze this page in Phase 1.",
+                    text = "Only the URL syntax is checked. CraftMind does not fetch or analyze this page; the reference stays on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

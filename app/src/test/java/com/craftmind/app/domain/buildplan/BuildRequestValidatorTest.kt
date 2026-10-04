@@ -1,4 +1,4 @@
-package com.craftmind.app.domain.build
+package com.craftmind.app.domain.buildplan
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

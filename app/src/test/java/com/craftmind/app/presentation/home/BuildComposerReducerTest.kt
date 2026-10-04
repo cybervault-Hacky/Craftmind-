@@ -1,8 +1,8 @@
 package com.craftmind.app.presentation.home
 
-import com.craftmind.app.domain.build.BuildInput
-import com.craftmind.app.domain.build.BuildRequestValidationError
-import com.craftmind.app.domain.build.BuildRequestValidator
+import com.craftmind.app.domain.buildplan.BuildInput
+import com.craftmind.app.domain.buildplan.BuildRequestValidationError
+import com.craftmind.app.domain.buildplan.BuildRequestValidator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -24,17 +24,17 @@ class BuildComposerReducerTest {
     }
 
     @Test
-    fun validGenerateCreatesOnlyAnUnavailableNoticeAndNeverAGeneratingState() {
+    fun validGeneratePreparesValidatedInputWithoutPretendingTheProviderAlreadyResponded() {
         val withPrompt = reducer.reduce(
             BuildComposerState(),
             BuildComposerEvent.PromptChanged("  A stone observatory  "),
         )
         val next = reducer.reduce(withPrompt, BuildComposerEvent.Generate)
 
-        assertTrue(next.generation is BuildGenerationState.AiUnavailable)
-        val unavailable = next.generation as BuildGenerationState.AiUnavailable
-        assertEquals("A stone observatory", unavailable.request.prompt)
-        assertEquals("request-123", unavailable.request.requestId)
+        assertTrue(next.generation is BuildGenerationState.Prepared)
+        val prepared = next.generation as BuildGenerationState.Prepared
+        assertEquals("A stone observatory", prepared.request.prompt)
+        assertEquals("request-123", prepared.request.requestId)
     }
 
     @Test
@@ -43,8 +43,8 @@ class BuildComposerReducerTest {
             BuildComposerState(),
             BuildComposerEvent.PromptChanged("A greenhouse"),
         )
-        val unavailable = reducer.reduce(initial, BuildComposerEvent.Generate)
-        val edited = reducer.reduce(unavailable, BuildComposerEvent.PromptChanged("A larger greenhouse"))
+        val prepared = reducer.reduce(initial, BuildComposerEvent.Generate)
+        val edited = reducer.reduce(prepared, BuildComposerEvent.PromptChanged("A larger greenhouse"))
 
         val invalidImage = reducer.reduce(
             edited,

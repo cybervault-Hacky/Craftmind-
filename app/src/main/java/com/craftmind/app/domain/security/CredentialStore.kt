@@ -3,10 +3,20 @@ package com.craftmind.app.domain.security
 import com.craftmind.app.domain.ai.AiProviderId
 
 /**
- * Secure credential boundary for future provider adapters. Phase 1 deliberately provides no
- * implementation and collects or stores no API keys. A future Android implementation must use an
- * encrypted, Keystore-backed store and must never log values.
+ * Secure credential boundary for provider adapters. The Android implementation encrypts entries
+ * with an AES key held by Android Keystore. Provider IDs are keys; model IDs never select a secret.
+ * Implementations and callers must never log credential values.
  */
+enum class CredentialStoreError {
+    INVALID_PROVIDER_ID,
+    TOO_LARGE,
+    CORRUPTED_CREDENTIAL,
+    KEY_UNAVAILABLE,
+    STORAGE_FAILURE,
+}
+
+class CredentialStoreException(val error: CredentialStoreError) : Exception(error.name)
+
 interface CredentialStore {
     suspend fun read(providerId: AiProviderId): ProviderCredential?
     suspend fun write(providerId: AiProviderId, credential: ProviderCredential)
