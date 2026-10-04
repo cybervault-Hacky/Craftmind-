@@ -1,5 +1,7 @@
 package com.craftmind.app.domain.ai
 
+import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildDiff
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.ValidatedBuildPlan
 import com.craftmind.app.domain.security.ProviderCredential
@@ -75,6 +77,12 @@ data class AiGenerationResponse(
     val usage: AiUsage?,
 )
 
+data class AiRefinementResponse(
+    val plan: ValidatedBuildPlan,
+    val diff: BuildDiff,
+    val usage: AiUsage?,
+)
+
 data class AiUsage(
     val inputTokens: Long? = null,
     val outputTokens: Long? = null,
@@ -84,6 +92,10 @@ data class AiUsage(
 /** One adapter per vendor/API family. UI code receives metadata, never transport details. */
 interface AiBuildGenerator {
     suspend fun generate(request: BuildRequest): AiGenerationResponse
+}
+
+interface AiBuildRefiner {
+    suspend fun refine(request: BuildEditRequest): AiRefinementResponse
 }
 
 interface AiProviderAdapter {

@@ -22,6 +22,8 @@ import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.settings.ThemeMode
 import com.craftmind.app.presentation.app.CraftMindApp
 import com.craftmind.app.presentation.home.BuildComposerEvent
+import com.craftmind.app.presentation.builds.BuildRefinementViewModel
+import com.craftmind.app.presentation.builds.BuildRefinementViewModelFactory
 import com.craftmind.app.presentation.builds.BuildsViewModel
 import com.craftmind.app.presentation.builds.BuildsViewModelFactory
 import com.craftmind.app.presentation.home.HomeViewModel
@@ -51,6 +53,12 @@ class MainActivity : ComponentActivity() {
                 factory = remember(appContainer) { BuildsViewModelFactory(appContainer.localBuilds) },
             )
             val buildsState by buildsViewModel.state.collectAsStateWithLifecycle()
+            val refinementViewModel: BuildRefinementViewModel = viewModel(
+                factory = remember(appContainer) {
+                    BuildRefinementViewModelFactory(appContainer.aiBuildEngine, appContainer.localBuilds)
+                },
+            )
+            val refinementState by refinementViewModel.state.collectAsStateWithLifecycle()
             val preferenceScope = rememberCoroutineScope()
             val writeThemeMode: (ThemeMode) -> Unit = remember(appContainer.themePreferences, preferenceScope) {
                 { selected: ThemeMode ->
@@ -101,6 +109,8 @@ class MainActivity : ComponentActivity() {
                     providerSettingsState = providerSettingsState,
                     onProviderSettingsEvent = providerSettingsViewModel::dispatch,
                     buildsState = buildsState,
+                    refinementState = refinementState,
+                    onRefinementEvent = refinementViewModel::dispatch,
                 )
             }
         }

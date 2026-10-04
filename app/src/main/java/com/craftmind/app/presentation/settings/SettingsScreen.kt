@@ -115,7 +115,7 @@ fun SettingsScreen(
             SettingsActionRow(
                 icon = Icons.Default.Info,
                 title = "World connection",
-                subtitle = "Not implemented in Phase 2",
+                subtitle = "Not implemented",
                 onClick = { openInfo = SettingsInfo.MINECRAFT },
             )
         }
@@ -124,9 +124,9 @@ fun SettingsScreen(
             title = "About",
             subtitle = "CraftMind · AI Minecraft Builder",
         ) {
-            Text("Describe it. Show it. Build it.", style = MaterialTheme.typography.titleMedium)
+            Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 2 · AI plan generation and review",
+                text = "Phase 3 · AI plan generation, review, and local refinement",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -258,6 +258,7 @@ private fun ProviderSettingsCard(
             ConnectionStatus(state.connection)
 
             if (state.connection is ProviderConnectionState.Verified) {
+                val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
                 Text("Choose model", style = MaterialTheme.typography.titleSmall)
                 Column {
                     OutlinedButton(
@@ -265,8 +266,7 @@ private fun ProviderSettingsCard(
                         enabled = !state.isSavingSelection,
                         shape = RoundedCornerShape(14.dp),
                     ) {
-                        val selected = state.models.firstOrNull { it.id == state.selectedModelId }
-                        Text(selected?.displayName ?: "Select a verified model")
+                        Text(selectedModel?.displayName ?: "Select a verified model")
                     }
                     DropdownMenu(
                         expanded = modelMenuExpanded,
@@ -292,6 +292,20 @@ private fun ProviderSettingsCard(
                     text = "Text generation with JSON output is supported. Vision, URL fetching, and image analysis are not supported by this adapter.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val semanticRefinementSupported = provider.capabilities.textGeneration &&
+                    provider.capabilities.structuredOutput == com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE &&
+                    selectedModel != null &&
+                    selectedModel.capabilities.textGeneration &&
+                    selectedModel.capabilities.structuredOutput == com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE
+                Text(
+                    text = when {
+                        selectedModel == null -> "Select a model to check the text and JSON capabilities required for semantic refinement."
+                        semanticRefinementSupported -> "Selected model supports the required text and structured JSON capabilities for semantic refinement."
+                        else -> "Selected model lacks a required text or JSON capability. CraftMind will reject refinement without switching or downgrading."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (semanticRefinementSupported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

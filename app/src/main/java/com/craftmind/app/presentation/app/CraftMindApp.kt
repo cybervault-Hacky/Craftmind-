@@ -22,11 +22,12 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -35,11 +36,14 @@ import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.builds.BuildRefinementEvent
+import com.craftmind.app.presentation.builds.BuildRefinementState
 import com.craftmind.app.presentation.builds.BuildsScreen
 import com.craftmind.app.presentation.builds.BuildsState
 import com.craftmind.app.presentation.builds.PlanReviewScreen
 import com.craftmind.app.presentation.home.BuildComposerEvent
 import com.craftmind.app.presentation.home.BuildComposerState
+import com.craftmind.app.presentation.home.BuildGenerationState
 import com.craftmind.app.presentation.home.HomeScreen
 import com.craftmind.app.presentation.navigation.MainDestination
 import com.craftmind.app.presentation.settings.ProviderSettingsEvent
@@ -47,7 +51,11 @@ import com.craftmind.app.presentation.settings.ProviderSettingsState
 import com.craftmind.app.presentation.settings.SettingsScreen
 
 private data class AppNavigationItem(val destination: MainDestination, val icon: ImageVector)
-private data class PlanReviewContent(val plan: BuildPlan, val request: BuildRequestSnapshot)
+private data class PlanReviewContent(
+    val plan: BuildPlan,
+    val request: BuildRequestSnapshot,
+    val record: LocalBuildRecord?,
+)
 
 private val NavigationItems = listOf(
     AppNavigationItem(MainDestination.HOME, Icons.Default.Home),
@@ -65,13 +73,33 @@ fun CraftMindApp(
     providerSettingsState: ProviderSettingsState,
     onProviderSettingsEvent: (ProviderSettingsEvent) -> Unit,
     buildsState: BuildsState,
+    refinementState: BuildRefinementState,
+    onRefinementEvent: (BuildRefinementEvent) -> Unit,
 ) {
     var selectedRoute by rememberSaveable { mutableStateOf(MainDestination.HOME.route) }
     var reviewContent by remember { mutableStateOf<PlanReviewContent?>(null) }
     val destination = MainDestination.fromRoute(selectedRoute)
+    val completedRevision = when (refinementState) {
+        is BuildRefinementState.Accepted -> refinementState.record
+        is BuildRefinementState.Reverted -> refinementState.record
+        else -> null
+    }
+    LaunchedEffect(completedRevision?.recordId) {
+        val completed = completedRevision ?: return@LaunchedEffect
+        val activeReview = reviewContent ?: return@LaunchedEffect
+        if (activeReview.record?.buildId == completed.buildId) {
+            reviewContent = PlanReviewContent(completed.plan, completed.request, completed)
+        }
+    }
 
     BackHandler(enabled = reviewContent != null || destination != MainDestination.HOME) {
-        if (reviewContent != null) reviewContent = null else selectedRoute = MainDestination.HOME.route
+        if (reviewContent != null) {
+            if (refinementState is BuildRefinementState.Generating) onRefinementEvent(BuildRefinementEvent.Cancel)
+            reviewContent = null
+            onRefinementEvent(BuildRefinementEvent.DismissResult)
+        } else {
+            selectedRoute = MainDestination.HOME.route
+        }
     }
 
     BoxWithConstraints(
@@ -80,9 +108,7 @@ fun CraftMindApp(
             .background(androidx.compose.material3.MaterialTheme.colorScheme.background),
     ) {
         if (maxWidth >= 840.dp) {
-            Row(
-                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
-            ) {
+            Row(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                 NavigationRail(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface) {
                     NavigationItems.forEach { item ->
                         NavigationRailItem(
@@ -109,10 +135,14 @@ fun CraftMindApp(
                         providerSettingsState = providerSettingsState,
                         onProviderSettingsEvent = onProviderSettingsEvent,
                         buildsState = buildsState,
-                        onReviewGeneratedPlan = { plan, request ->
-                            reviewContent = PlanReviewContent(plan.plan, request.toSnapshot())
+                        onReviewGeneratedPlan = { ready ->
+                            onRefinementEvent(BuildRefinementEvent.DismissResult)
+                            reviewContent = PlanReviewContent(ready.plan.plan, ready.request.toSnapshot(), ready.localRecord)
                         },
-                        onReviewSavedPlan = { record -> reviewContent = PlanReviewContent(record.plan, record.request) },
+                        onReviewSavedPlan = { record ->
+                            onRefinementEvent(BuildRefinementEvent.DismissResult)
+                            reviewContent = PlanReviewContent(record.plan, record.request, record)
+                        },
                         onNavigate = { selectedRoute = it.route },
                     )
                 }
@@ -148,10 +178,14 @@ fun CraftMindApp(
                         providerSettingsState = providerSettingsState,
                         onProviderSettingsEvent = onProviderSettingsEvent,
                         buildsState = buildsState,
-                        onReviewGeneratedPlan = { plan, request ->
-                            reviewContent = PlanReviewContent(plan.plan, request.toSnapshot())
+                        onReviewGeneratedPlan = { ready ->
+                            onRefinementEvent(BuildRefinementEvent.DismissResult)
+                            reviewContent = PlanReviewContent(ready.plan.plan, ready.request.toSnapshot(), ready.localRecord)
                         },
-                        onReviewSavedPlan = { record -> reviewContent = PlanReviewContent(record.plan, record.request) },
+                        onReviewSavedPlan = { record ->
+                            onRefinementEvent(BuildRefinementEvent.DismissResult)
+                            reviewContent = PlanReviewContent(record.plan, record.request, record)
+                        },
                         onNavigate = { selectedRoute = it.route },
                     )
                 }
@@ -160,7 +194,24 @@ fun CraftMindApp(
     }
 
     reviewContent?.let { review ->
-        PlanReviewScreen(plan = review.plan, request = review.request, onDismiss = { reviewContent = null })
+        val persistedRecord = review.record?.let { selected ->
+            buildsState.records.firstOrNull { it.recordId == selected.recordId } ?: selected
+        }
+        val currentPlan = persistedRecord?.plan ?: review.plan
+        val currentRequest = persistedRecord?.request ?: review.request
+        val history = persistedRecord?.let { buildsState.versionsFor(it.buildId) }.orEmpty()
+        PlanReviewScreen(
+            plan = currentPlan,
+            request = currentRequest,
+            record = persistedRecord,
+            versions = history,
+            refinementState = refinementState,
+            onRefinementEvent = onRefinementEvent,
+            onDismiss = {
+                reviewContent = null
+                onRefinementEvent(BuildRefinementEvent.DismissResult)
+            },
+        )
     }
 }
 
@@ -175,7 +226,7 @@ private fun DestinationContent(
     providerSettingsState: ProviderSettingsState,
     onProviderSettingsEvent: (ProviderSettingsEvent) -> Unit,
     buildsState: BuildsState,
-    onReviewGeneratedPlan: (com.craftmind.app.domain.buildplan.ValidatedBuildPlan, BuildRequest) -> Unit,
+    onReviewGeneratedPlan: (BuildGenerationState.Ready) -> Unit,
     onReviewSavedPlan: (LocalBuildRecord) -> Unit,
     onNavigate: (MainDestination) -> Unit,
 ) {

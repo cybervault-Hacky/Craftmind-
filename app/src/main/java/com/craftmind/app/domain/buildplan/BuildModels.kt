@@ -3,10 +3,7 @@ package com.craftmind.app.domain.buildplan
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Validated user input to the generation pipeline. The Phase 2 engine rejects unsupported
- * references before sending anything to a provider; it never silently drops them.
- */
+/** Validated user input to the generation pipeline. */
 data class BuildRequest(
     val requestId: String,
     val prompt: String,
@@ -93,7 +90,39 @@ data class BuildPlanMetadata(
     val summary: String,
     val generatedAtEpochMillis: Long,
     val dimensions: BuildDimensions,
+    /** Null is valid only for plans created before semantic BuildPlan v2. */
+    val intent: BuildIntent? = null,
 )
+
+/** AI-derived description of the user's construction intent; no app-side structure templates. */
+@Serializable
+data class BuildIntent(
+    val structureType: String,
+    val style: String? = null,
+    val approximateScale: String? = null,
+    val floorCount: Int? = null,
+    val rooms: List<String> = emptyList(),
+    val specialFeatures: List<String> = emptyList(),
+    val materials: List<String> = emptyList(),
+    val environment: String? = null,
+    val constraints: List<String> = emptyList(),
+)
+
+@Serializable
+enum class BuildComponentType {
+    /** Honest marker used when reading Phase 2 v1 records that had no semantic type field. */
+    UNSPECIFIED,
+    BUILDING,
+    FOUNDATION,
+    FLOOR,
+    ROOM,
+    ROOF,
+    INTERIOR_FEATURE,
+    EXTERIOR_FEATURE,
+    LANDSCAPE,
+    UTILITY,
+    DECORATION,
+}
 
 @Serializable
 data class BuildPlanComponent(
@@ -101,6 +130,10 @@ data class BuildPlanComponent(
     val name: String,
     val purpose: String,
     val bounds: BlockBounds? = null,
+    /** Defaults keep Phase 2 v1 local records readable; v2 validation requires semantic values. */
+    val type: BuildComponentType = BuildComponentType.UNSPECIFIED,
+    val parentComponentId: String? = null,
+    val constructionOrder: Int = 0,
 )
 
 /** One placement in local, non-negative plan coordinates. */
@@ -132,7 +165,55 @@ data class BlockBounds(
     val dimensions: BuildDimensions,
 )
 
-/** Versioned wire document returned verbatim by an AI provider before domain metadata is added. */
+/** Required semantic component record used by the v2 provider wire schema. */
+@Serializable
+data class AiBuildComponentDocument(
+    val componentId: String,
+    val type: BuildComponentType,
+    val name: String,
+    val purpose: String,
+    val bounds: BlockBounds,
+    val parentComponentId: String?,
+    val constructionOrder: Int,
+) {
+    fun toDomain(): BuildPlanComponent = BuildPlanComponent(
+        componentId = componentId,
+        name = name,
+        purpose = purpose,
+        bounds = bounds,
+        type = type,
+        parentComponentId = parentComponentId,
+        constructionOrder = constructionOrder,
+    )
+}
+
+/** All fields are required on the v2 wire; nullable fields must be present with null when unused. */
+@Serializable
+data class AiBuildIntentDocument(
+    val structureType: String,
+    val style: String?,
+    val approximateScale: String?,
+    val floorCount: Int?,
+    val rooms: List<String>,
+    val specialFeatures: List<String>,
+    val materials: List<String>,
+    val environment: String?,
+    val constraints: List<String>,
+) {
+    fun toDomain(): BuildIntent = BuildIntent(
+        structureType = structureType,
+        style = style,
+        approximateScale = approximateScale,
+        floorCount = floorCount,
+        rooms = rooms,
+        specialFeatures = specialFeatures,
+        materials = materials,
+        environment = environment,
+        constraints = constraints,
+    )
+}
+
+/** Versioned BuildPlan v2 document returned by a provider before trusted metadata is added. */
 @Serializable
 data class AiBuildPlanDocument(
     val schemaVersion: Int,
@@ -141,7 +222,8 @@ data class AiBuildPlanDocument(
     val description: String,
     val dimensions: BuildDimensions,
     val originStrategy: BuildOriginStrategy,
-    val components: List<BuildPlanComponent>,
+    val intent: AiBuildIntentDocument,
+    val components: List<AiBuildComponentDocument>,
     val operations: List<AiBlockOperationDocument>,
 )
 
@@ -155,10 +237,31 @@ data class AiBlockOperationDocument(
     val componentId: String,
 )
 
-/** The provider validator creates this wrapper only after a complete plan passes all limits. */
+/** Compact semantic edit document. Unmentioned components and their blocks remain unchanged. */
+@Serializable
+data class AiBuildEditDocument(
+    val schemaVersion: Int,
+    val editSummary: String,
+    val targetComponentIds: List<String>,
+    val preservedComponentIds: List<String>,
+    val removedComponentIds: List<String>,
+    val upsertComponents: List<AiBuildComponentDocument>,
+    val replacementOperations: List<AiComponentOperationSetDocument>,
+    val title: String? = null,
+    val description: String? = null,
+    val dimensions: BuildDimensions? = null,
+    val intent: AiBuildIntentDocument? = null,
+)
+
+@Serializable
+data class AiComponentOperationSetDocument(
+    val componentId: String,
+    val operations: List<AiBlockOperationDocument>,
+)
+
+/** A validated BuildPlan wrapper can only be created after central validation succeeds. */
 data class ValidatedBuildPlan internal constructor(val plan: BuildPlan)
 
-/** Minecraft execution will require explicit user review of a validated, AI-generated plan. */
 data class ReviewedBuildPlan internal constructor(
     val validatedPlan: ValidatedBuildPlan,
     val reviewedAtEpochMillis: Long,
@@ -180,9 +283,10 @@ internal fun AiBuildPlanDocument.toDomainPlan(
         summary = description,
         generatedAtEpochMillis = generatedAtEpochMillis,
         dimensions = dimensions,
+        intent = intent.toDomain(),
     ),
     originStrategy = originStrategy,
-    components = components,
+    components = components.map(AiBuildComponentDocument::toDomain),
     operations = operations.mapIndexed { index, operation ->
         BuildPlanOperation(
             sequence = index,

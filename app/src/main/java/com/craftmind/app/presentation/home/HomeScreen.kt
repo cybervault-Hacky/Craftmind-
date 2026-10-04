@@ -57,10 +57,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalFocusManager
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.ai.AiErrorCode
-import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestValidationError
 import com.craftmind.app.domain.buildplan.BuildRequestValidator
-import com.craftmind.app.domain.buildplan.ValidatedBuildPlan
 import com.craftmind.app.presentation.home.BuildComposerEvent
 import com.craftmind.app.presentation.home.BuildComposerState
 import com.craftmind.app.presentation.home.BuildGenerationState
@@ -73,7 +71,7 @@ fun HomeScreen(
     state: BuildComposerState,
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
-    onReviewPlan: (ValidatedBuildPlan, BuildRequest) -> Unit,
+    onReviewPlan: (BuildGenerationState.Ready) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize().imePadding()) {
@@ -157,7 +155,7 @@ private fun HomeIntroduction(showFoundationDetails: Boolean) {
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "Describe it.\nShow it.\nBuild it.",
+                text = "Describe it.\nReview it.\nRefine it.",
                 style = MaterialTheme.typography.displayMedium,
                 color = MaterialTheme.colorScheme.onBackground,
             )
@@ -294,7 +292,7 @@ private fun PhaseTwoNotice() {
                 tint = MaterialTheme.colorScheme.primary,
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Phase 2 · AI plans, no world execution", style = MaterialTheme.typography.titleMedium)
+                Text("Phase 3 · AI plans and local refinement · no world execution", style = MaterialTheme.typography.titleMedium)
                 Text(
                     text = "A validated plan comes from a real configured AI provider. Images and URLs are preserved but not analyzed; CraftMind does not connect to Minecraft or place blocks.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -310,7 +308,7 @@ private fun BuildComposerCard(
     state: BuildComposerState,
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
-    onReviewPlan: (ValidatedBuildPlan, BuildRequest) -> Unit,
+    onReviewPlan: (BuildGenerationState.Ready) -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
     val promptError = (state.generation as? BuildGenerationState.ValidationBlocked)
@@ -458,7 +456,7 @@ private fun BuildComposerCard(
                 )
                 is BuildGenerationState.Ready -> GeneratedPlanCard(
                     state = generation,
-                    onReview = { onReviewPlan(generation.plan, generation.request) },
+                    onReview = { onReviewPlan(generation) },
                 )
             }
 
@@ -539,6 +537,12 @@ private fun generationMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.NETWORK_UNAVAILABLE -> "Could not reach the provider. Check your internet connection and retry."
     AiErrorCode.INVALID_AI_RESPONSE -> "The provider response was malformed or did not match the required JSON format."
     AiErrorCode.INVALID_BUILD_PLAN -> "The AI plan failed CraftMind's block, state, coordinate, or safety validation."
+    AiErrorCode.INVALID_BUILD_EDIT -> "The AI proposed an unsafe or inconsistent change. The previous plan remains unchanged."
+    AiErrorCode.NO_CHANGES_PROPOSED -> "The AI did not propose a validated change."
+    AiErrorCode.REFINEMENT_CONTEXT_TOO_LARGE -> "This build is too large for a safe refinement with the selected model. Try a narrower change."
+    AiErrorCode.BUILD_VERSION_CONFLICT -> "The saved version changed. Reopen the current build before refining."
+    AiErrorCode.BUILD_HISTORY_FAILURE -> "The new local version could not be saved; the previous version remains available."
+    AiErrorCode.BUILD_HISTORY_LIMIT_REACHED -> "Local history reached its storage limit; no earlier version was removed."
     AiErrorCode.UNSUPPORTED_SCHEMA_VERSION -> "The AI returned an unsupported BuildPlan schema version."
     AiErrorCode.BUILD_TOO_LARGE -> "The AI plan exceeded CraftMind's size or dimension limits."
     AiErrorCode.RESPONSE_TOO_LARGE -> "The AI response exceeded CraftMind's response-size limit."

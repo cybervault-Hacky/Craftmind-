@@ -14,6 +14,9 @@ import com.craftmind.app.domain.buildplan.toDomainPlan
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.charset.StandardCharsets
 
 /** Strict JSON parser: unknown fields and malformed structures are errors, never silently repaired. */
@@ -32,6 +35,19 @@ class BuildPlanParser(
             throw AiProviderException(AiFailure(AiErrorCode.RESPONSE_TOO_LARGE, retryable = false))
         }
 
+        val schemaVersion = try {
+            json.parseToJsonElement(content).jsonObject["schemaVersion"]?.jsonPrimitive?.intOrNull
+        } catch (_: SerializationException) {
+            null
+        } catch (_: IllegalArgumentException) {
+            null
+        } catch (_: IllegalStateException) {
+            null
+        } ?: throw AiProviderException(AiFailure(AiErrorCode.INVALID_AI_RESPONSE, retryable = false))
+        if (schemaVersion != BuildPlanLimits.CURRENT_SCHEMA_VERSION) {
+            throw AiProviderException(AiFailure(AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, retryable = false))
+        }
+
         val document = try {
             json.decodeFromString<AiBuildPlanDocument>(content)
         } catch (_: SerializationException) {
@@ -40,10 +56,6 @@ class BuildPlanParser(
             throw AiProviderException(AiFailure(AiErrorCode.INVALID_AI_RESPONSE, retryable = false))
         } catch (_: IllegalStateException) {
             throw AiProviderException(AiFailure(AiErrorCode.INVALID_AI_RESPONSE, retryable = false))
-        }
-
-        if (document.schemaVersion != BuildPlanLimits.CURRENT_SCHEMA_VERSION) {
-            throw AiProviderException(AiFailure(AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, retryable = false))
         }
         if (document.operations.size > BuildPlanLimits.MAX_OPERATIONS ||
             document.components.size > BuildPlanLimits.MAX_COMPONENTS

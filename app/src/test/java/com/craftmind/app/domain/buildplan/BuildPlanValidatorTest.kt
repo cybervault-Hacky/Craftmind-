@@ -63,6 +63,41 @@ class BuildPlanValidatorTest {
     }
 
     @Test
+    fun rejectsMalformedSemanticIntentComponentBoundsAndOperationOutsideComponent() {
+        val valid = BuildPlanTestFixtures.semanticPlan()
+        val missingIntent = valid.copy(metadata = valid.metadata.copy(intent = null))
+        val intentResult = validator.validate(missingIntent) as BuildPlanValidationResult.Invalid
+        assertTrue(BuildPlanValidationIssue.INVALID_INTENT in intentResult.issues)
+
+        val badParent = valid.copy(components = valid.components.map { component ->
+            if (component.componentId == "roof") component.copy(parentComponentId = "missing") else component
+        })
+        val parentResult = validator.validate(badParent) as BuildPlanValidationResult.Invalid
+        assertTrue(BuildPlanValidationIssue.INVALID_COMPONENT_PARENT in parentResult.issues)
+
+        val outsideBounds = valid.copy(
+            operations = valid.operations.mapIndexed { index, operation ->
+                if (index == 2) operation.copy(position = BlockPosition(7, 0, 7)) else operation
+            },
+        )
+        val boundsResult = validator.validate(outsideBounds) as BuildPlanValidationResult.Invalid
+        assertTrue(BuildPlanValidationIssue.OPERATION_OUTSIDE_COMPONENT_BOUNDS in boundsResult.issues)
+    }
+
+    @Test
+    fun rejectsV2PlansWithoutOperationsForEachComponentOrInConstructionOrder() {
+        val valid = BuildPlanTestFixtures.semanticPlan()
+        val missingComponentOperations = valid.copy(operations = valid.operations.take(2))
+        val missingResult = validator.validate(missingComponentOperations) as BuildPlanValidationResult.Invalid
+        assertTrue(BuildPlanValidationIssue.MISSING_COMPONENT_OPERATIONS in missingResult.issues)
+
+        val wrongOrder = valid.copy(operations = listOf(valid.operations[2], valid.operations[0], valid.operations[1], valid.operations[3])
+            .mapIndexed { index, operation -> operation.copy(sequence = index) })
+        val orderResult = validator.validate(wrongOrder) as BuildPlanValidationResult.Invalid
+        assertTrue(BuildPlanValidationIssue.INVALID_OPERATION_ORDER in orderResult.issues)
+    }
+
+    @Test
     fun rejectsUnsupportedOperationsAndNonSequentialOrdering() {
         val plan = validPlan().copy(
             operations = listOf(validPlan().operations.first().copy(sequence = 1, kind = BuildPlanOperationKind.REMOVE_BLOCK)),
@@ -83,9 +118,30 @@ class BuildPlanValidatorTest {
             summary = "A stone floor for a quiet garden pavilion.",
             generatedAtEpochMillis = 1_700_000_000_000,
             dimensions = BuildDimensions(8, 5, 8),
+            intent = BuildIntent(
+                structureType = "pavilion",
+                style = "stone",
+                approximateScale = "small",
+                floorCount = 1,
+                rooms = emptyList(),
+                specialFeatures = emptyList(),
+                materials = listOf("stone"),
+                environment = "garden",
+                constraints = emptyList(),
+            ),
         ),
         originStrategy = BuildOriginStrategy.CENTERED_GROUND,
-        components = listOf(BuildPlanComponent("main", "Pavilion", "Covered gathering area")),
+        components = listOf(
+            BuildPlanComponent(
+                componentId = "main",
+                name = "Pavilion",
+                purpose = "Covered gathering area",
+                bounds = BlockBounds(BlockPosition(0, 0, 0), BuildDimensions(8, 5, 8)),
+                type = BuildComponentType.BUILDING,
+                parentComponentId = null,
+                constructionOrder = 0,
+            ),
+        ),
         operations = listOf(
             BuildPlanOperation(
                 sequence = 0,

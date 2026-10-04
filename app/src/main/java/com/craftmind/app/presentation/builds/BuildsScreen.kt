@@ -69,11 +69,16 @@ fun BuildsScreen(
                     color = MaterialTheme.colorScheme.onErrorContainer,
                 )
             }
-        } else if (state.records.isEmpty()) {
+        } else if (state.currentRecords.isEmpty()) {
             EmptyBuildsCard(onStartBuilding)
         } else {
-            state.records.forEach { record ->
-                BuildRecordCard(record = record, onReview = { onReview(record) })
+            state.currentRecords.forEach { record ->
+                val versionCount = state.versionsFor(record.buildId).size
+                BuildRecordCard(
+                    record = record,
+                    versionCount = versionCount,
+                    onReview = { onReview(record) },
+                )
             }
         }
     }
@@ -119,7 +124,7 @@ private fun EmptyBuildsCard(onStartBuilding: () -> Unit) {
 }
 
 @Composable
-private fun BuildRecordCard(record: LocalBuildRecord, onReview: () -> Unit) {
+private fun BuildRecordCard(record: LocalBuildRecord, versionCount: Int, onReview: () -> Unit) {
     val plan = record.plan
     Card(
         modifier = Modifier.fillMaxWidth().widthIn(max = 800.dp),
@@ -137,7 +142,7 @@ private fun BuildRecordCard(record: LocalBuildRecord, onReview: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "${plan.metadata.dimensions.width} × ${plan.metadata.dimensions.height} × ${plan.metadata.dimensions.depth} · ${plan.operations.size} placements · ${plan.metadata.providerId} / ${plan.metadata.modelId}",
+                "Version ${record.version} · $versionCount saved version(s) · ${plan.metadata.dimensions.width} × ${plan.metadata.dimensions.height} × ${plan.metadata.dimensions.depth} · ${plan.operations.size} placements · ${plan.metadata.providerId} / ${plan.metadata.modelId}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

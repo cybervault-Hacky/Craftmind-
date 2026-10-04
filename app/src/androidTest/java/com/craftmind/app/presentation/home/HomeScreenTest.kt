@@ -48,7 +48,7 @@ class HomeScreenTest {
                     state = state,
                     onEvent = {},
                     onPickImage = {},
-                    onReviewPlan = { _, _ -> },
+                    onReviewPlan = {},
                 )
             }
         }

@@ -13,18 +13,45 @@ data class BuildRequestSnapshot(
     val urlReference: String? = null,
 )
 
+/** One immutable, locally stored version in a build's recoverable history. */
 @Serializable
 data class LocalBuildRecord(
     val recordId: String,
     val plan: BuildPlan,
     val request: BuildRequestSnapshot,
     val savedAtEpochMillis: Long,
+    /** Defaults migrate Phase 2's flat records into independent v1 histories without data loss. */
+    val buildId: String = recordId,
+    val version: Int = 1,
+    val parentRecordId: String? = null,
+    val refinementInstruction: String? = null,
+    val changeSummary: String? = null,
+    val diff: BuildDiff? = null,
+    val restoredFromVersion: Int? = null,
 )
 
 interface LocalBuildRepository {
+    /** All immutable versions, ordered newest first. */
     val records: StateFlow<List<LocalBuildRecord>>
     suspend fun load()
-    suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest)
+    suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord
+    suspend fun appendRefinement(
+        baseRecordId: String,
+        plan: ValidatedBuildPlan,
+        request: BuildEditRequest,
+        diff: BuildDiff,
+    ): LocalBuildRecord
+    suspend fun revertTo(buildId: String, targetVersion: Int, expectedCurrentRecordId: String): LocalBuildRecord
 }
 
-class BuildRepositoryException : Exception("Local build records could not be read or saved")
+enum class BuildRepositoryError {
+    INVALID_RECORD,
+    NOT_FOUND,
+    STALE_VERSION,
+    HISTORY_LIMIT_REACHED,
+    STORAGE_FAILURE,
+}
+
+class BuildRepositoryException(
+    val error: BuildRepositoryError = BuildRepositoryError.STORAGE_FAILURE,
+) : Exception("Local build history operation failed (${error.name})")

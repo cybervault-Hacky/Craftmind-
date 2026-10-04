@@ -12,10 +12,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class BuildsState(
+    /** Every retained version; history is local and never replaces older validated records. */
     val records: List<LocalBuildRecord> = emptyList(),
     val isLoading: Boolean = true,
     val loadFailed: Boolean = false,
-)
+) {
+    val currentRecords: List<LocalBuildRecord>
+        get() = records.groupBy(LocalBuildRecord::buildId).values
+            .mapNotNull { versions -> versions.maxByOrNull(LocalBuildRecord::version) }
+            .sortedByDescending(LocalBuildRecord::savedAtEpochMillis)
+
+    fun versionsFor(buildId: String): List<LocalBuildRecord> = records
+        .filter { it.buildId == buildId }
+        .sortedBy(LocalBuildRecord::version)
+}
 
 class BuildsViewModel(private val repository: LocalBuildRepository) : ViewModel() {
     private val mutableState = MutableStateFlow(BuildsState())

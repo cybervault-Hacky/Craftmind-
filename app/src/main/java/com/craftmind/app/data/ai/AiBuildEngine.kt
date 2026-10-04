@@ -1,8 +1,9 @@
 package com.craftmind.app.data.ai
 
+import com.craftmind.app.domain.ai.AiBuildGenerator
+import com.craftmind.app.domain.ai.AiBuildRefiner
 import com.craftmind.app.domain.ai.AiErrorCode
 import com.craftmind.app.domain.ai.AiFailure
-import com.craftmind.app.domain.ai.AiBuildGenerator
 import com.craftmind.app.domain.ai.AiGenerationResponse
 import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.ai.AiProviderAdapter
@@ -11,21 +12,30 @@ import com.craftmind.app.domain.ai.AiProviderId
 import com.craftmind.app.domain.ai.AiProviderRegistry
 import com.craftmind.app.domain.ai.AiProviderSelection
 import com.craftmind.app.domain.ai.AiProviderSelectionRepository
+import com.craftmind.app.domain.ai.AiRefinementResponse
 import com.craftmind.app.domain.ai.StructuredOutputMode
-import com.craftmind.app.domain.buildplan.BuildRequest
+import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildPlanLimits
+import com.craftmind.app.domain.buildplan.BuildPlanValidationResult
+import com.craftmind.app.domain.buildplan.BuildPlanValidator
+import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
+import com.craftmind.app.domain.buildplan.BuildStatus
 import com.craftmind.app.domain.security.CredentialStore
 import com.craftmind.app.domain.security.CredentialStoreException
 import com.craftmind.app.domain.security.ProviderCredential
 import kotlinx.coroutines.flow.first
 
-/** Provider-independent generation and configuration boundary used by presentation view models. */
+/** Provider-independent pipeline. Credentials and transport remain behind Phase 2 boundaries. */
 class AiBuildEngine(
     private val registry: AiProviderRegistry,
     private val credentialStore: CredentialStore,
     private val selections: AiProviderSelectionRepository,
     private val parser: BuildPlanParser,
     private val nowEpochMillis: () -> Long = System::currentTimeMillis,
-) : AiBuildGenerator {
+    private val planValidator: BuildPlanValidator = DefaultBuildPlanValidator(),
+    private val contextSerializer: BuildPlanContextSerializer = BuildPlanContextSerializer(),
+    private val editParser: BuildPlanEditParser = BuildPlanEditParser(planValidator),
+) : AiBuildGenerator, AiBuildRefiner {
     fun providers() = registry.providers()
 
     suspend fun hasCredential(providerId: AiProviderId): Boolean {
@@ -89,7 +99,7 @@ class AiBuildEngine(
 
     suspend fun currentSelection(): AiProviderSelection? = selections.selection.first()
 
-    override suspend fun generate(request: BuildRequest): AiGenerationResponse {
+    override suspend fun generate(request: com.craftmind.app.domain.buildplan.BuildRequest): AiGenerationResponse {
         val selection = selections.selection.first() ?: throw providerFailure(
             if (registry.providers().isEmpty()) AiErrorCode.NO_PROVIDER_SELECTED else AiErrorCode.NO_MODEL_SELECTED,
         )
@@ -102,13 +112,10 @@ class AiBuildEngine(
             ) {
                 throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
             }
-            val models = adapter.listModels(credential)
-            val model = models.firstOrNull { it.id == selection.modelId }
-                ?: throw providerFailure(AiErrorCode.MODEL_UNAVAILABLE)
-            if (model.providerId != selection.providerId || !model.capabilities.textGeneration) {
-                throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
-            }
-            if (model.capabilities.structuredOutput != StructuredOutputMode.JSON_MIME_TYPE) {
+            val model = findSelectedModel(adapter, credential, selection)
+            if (!model.capabilities.textGeneration ||
+                model.capabilities.structuredOutput != StructuredOutputMode.JSON_MIME_TYPE
+            ) {
                 throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
             }
 
@@ -125,6 +132,66 @@ class AiBuildEngine(
             )
             AiGenerationResponse(plan = plan, usage = providerResponse.usage)
         }
+    }
+
+    override suspend fun refine(request: BuildEditRequest): AiRefinementResponse {
+        if (request.instruction.isBlank() || request.instruction.length > BuildPlanLimits.MAX_EDIT_INSTRUCTION_LENGTH ||
+            request.baseRecordId.isBlank() || request.buildId.isBlank() || request.baseVersion < 1 ||
+            request.basePlan.status != BuildStatus.READY ||
+            planValidator.validate(request.basePlan) !is BuildPlanValidationResult.Valid
+        ) {
+            throw providerFailure(AiErrorCode.INVALID_BUILD_EDIT)
+        }
+        val selection = selections.selection.first() ?: throw providerFailure(
+            if (registry.providers().isEmpty()) AiErrorCode.NO_PROVIDER_SELECTED else AiErrorCode.NO_MODEL_SELECTED,
+        )
+        if (selection.providerId.value.isBlank()) throw providerFailure(AiErrorCode.NO_PROVIDER_SELECTED)
+        if (selection.modelId.isBlank()) throw providerFailure(AiErrorCode.NO_MODEL_SELECTED)
+
+        return withCredential(selection.providerId) { adapter, credential ->
+            if (!adapter.definition.capabilities.textGeneration ||
+                adapter.definition.capabilities.structuredOutput != StructuredOutputMode.JSON_MIME_TYPE
+            ) {
+                throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
+            }
+            val model = findSelectedModel(adapter, credential, selection)
+            if (!model.capabilities.textGeneration ||
+                model.capabilities.structuredOutput != StructuredOutputMode.JSON_MIME_TYPE
+            ) {
+                throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
+            }
+            val context = when (val result = contextSerializer.serialize(request, model)) {
+                is BuildPlanContextResult.Ready -> result.context
+                BuildPlanContextResult.TooLarge -> throw providerFailure(AiErrorCode.REFINEMENT_CONTEXT_TOO_LARGE)
+            }
+            val providerRequest = if (context.targetComponentHints.isNotEmpty()) {
+                BuildComponentModificationPrompt.forRequest(request, model, context)
+            } else {
+                BuildPlanRefinementPrompt.forRequest(request, model, context)
+            }
+            val providerResponse = adapter.generateContent(providerRequest, credential)
+            editParser.parse(
+                content = providerResponse.content,
+                request = request,
+                providerId = selection.providerId.value,
+                modelId = model.id,
+                generatedAtEpochMillis = nowEpochMillis(),
+                componentsWithFullOperationContext = context.fullOperationComponentIds,
+                usage = providerResponse.usage,
+            )
+        }
+    }
+
+    private suspend fun findSelectedModel(
+        adapter: AiProviderAdapter,
+        credential: ProviderCredential,
+        selection: AiProviderSelection,
+    ): AiModel {
+        val models = adapter.listModels(credential)
+        val model = models.firstOrNull { it.id == selection.modelId }
+            ?: throw providerFailure(AiErrorCode.MODEL_UNAVAILABLE)
+        if (model.providerId != selection.providerId) throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
+        return model
     }
 
     private suspend fun <T> withCredential(

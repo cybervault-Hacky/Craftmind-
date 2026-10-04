@@ -9,6 +9,7 @@ import com.craftmind.app.data.security.AndroidKeystoreCredentialStore
 import com.craftmind.app.data.settings.DataStoreAiProviderSelectionRepository
 import com.craftmind.app.data.settings.DataStoreThemePreferenceRepository
 import com.craftmind.app.domain.ai.AiProviderRegistry
+import com.craftmind.app.domain.buildplan.BuildHistoryPolicy
 import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.buildplan.LocalBuildRepository
 import com.craftmind.app.domain.security.CredentialStore
@@ -28,6 +29,8 @@ class AppContainer(context: Context) {
         credentialStore = credentialStore,
         selections = providerSelections,
         parser = buildPlanParser,
+        planValidator = buildPlanValidator,
     )
-    val localBuilds: LocalBuildRepository = AtomicLocalBuildRepository(appContext)
+    val buildHistoryPolicy = BuildHistoryPolicy(buildPlanValidator)
+    val localBuilds: LocalBuildRepository = AtomicLocalBuildRepository(appContext, historyPolicy = buildHistoryPolicy)
 }

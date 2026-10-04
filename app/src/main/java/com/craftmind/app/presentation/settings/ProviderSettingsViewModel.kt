@@ -241,8 +241,13 @@ class ProviderSettingsViewModel(
         AiErrorCode.MISSING_CREDENTIAL -> "Save a provider API key before testing the connection."
         AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted key could not be accessed. Check device security and try again."
         AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected provider or model does not support structured plan generation."
-        AiErrorCode.INVALID_AI_RESPONSE, AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, AiErrorCode.INVALID_BUILD_PLAN ->
+        AiErrorCode.INVALID_AI_RESPONSE, AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, AiErrorCode.INVALID_BUILD_PLAN,
+        AiErrorCode.INVALID_BUILD_EDIT, AiErrorCode.NO_CHANGES_PROPOSED ->
             "The provider returned data that CraftMind could not safely validate."
+        AiErrorCode.REFINEMENT_CONTEXT_TOO_LARGE -> "This plan is too large for safe refinement with the selected model."
+        AiErrorCode.BUILD_VERSION_CONFLICT -> "The saved build version changed. Reopen its current version."
+        AiErrorCode.BUILD_HISTORY_FAILURE -> "The local build version could not be saved."
+        AiErrorCode.BUILD_HISTORY_LIMIT_REACHED -> "Local build history reached its limit. Existing versions were kept."
         AiErrorCode.BUILD_TOO_LARGE, AiErrorCode.RESPONSE_TOO_LARGE -> "The provider response exceeded CraftMind's safety limits."
         AiErrorCode.NO_PROVIDER_SELECTED -> "Choose a supported AI provider."
         AiErrorCode.NO_MODEL_SELECTED -> "Choose a verified model before generating a plan."

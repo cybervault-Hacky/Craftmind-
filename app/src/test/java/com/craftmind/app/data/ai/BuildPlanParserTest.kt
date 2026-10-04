@@ -31,6 +31,9 @@ class BuildPlanParserTest {
         assertEquals("gemini-test", plan.metadata.modelId)
         assertEquals(456L, plan.metadata.generatedAtEpochMillis)
         assertEquals(BuildStatus.READY, plan.status)
+        assertEquals(BuildPlanLimits.CURRENT_SCHEMA_VERSION, plan.metadata.schemaVersion)
+        assertEquals("pavilion", plan.metadata.intent?.structureType)
+        assertEquals("BUILDING", plan.components.single().type.name)
         assertEquals(2, plan.operations.size)
         assertEquals(0, plan.operations.first().sequence)
     }
@@ -55,7 +58,7 @@ class BuildPlanParserTest {
 
     @Test
     fun rejectsUnsupportedSchemaVersion() {
-        val response = validDocument().replace("\"schemaVersion\": 1", "\"schemaVersion\": 2")
+        val response = validDocument().replace("\"schemaVersion\": 2", "\"schemaVersion\": 3")
         assertFailure(AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, response)
     }
 
@@ -99,14 +102,15 @@ class BuildPlanParserTest {
 
     private fun validDocument(): String = """
         {
-          "schemaVersion": 1,
+          "schemaVersion": 2,
           "buildId": "generated-garden",
           "title": "Stone Garden Pavilion",
           "description": "A compact open pavilion with a stone floor and a low garden wall.",
           "dimensions": {"width": 8, "height": 5, "depth": 8},
           "originStrategy": "CENTERED_GROUND",
+          "intent": {"structureType":"pavilion", "style":"stone", "approximateScale":"small", "floorCount":1, "rooms":[], "specialFeatures":[], "materials":["stone"], "environment":"garden", "constraints":[]},
           "components": [
-            {"componentId": "main", "name": "Pavilion", "purpose": "Covered gathering area"}
+            {"componentId": "main", "type":"BUILDING", "name": "Pavilion", "purpose": "Covered gathering area", "bounds":{"origin":{"x":0,"y":0,"z":0},"dimensions":{"width":8,"height":5,"depth":8}}, "parentComponentId":null, "constructionOrder":0}
           ],
           "operations": [
             {"x": 0, "y": 0, "z": 0, "blockId": "minecraft:stone", "blockState": {}, "componentId": "main"},

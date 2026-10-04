@@ -182,14 +182,26 @@ class HomeViewModelTest {
         var saveCount = 0
 
         override suspend fun load() = Unit
-        override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest) {
+        override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord {
             saveCount++
-            mutableRecords.value = mutableRecords.value + LocalBuildRecord(
+            val record = LocalBuildRecord(
                 recordId = "${request.requestId}:${plan.plan.planId}",
                 plan = plan.plan,
                 request = com.craftmind.app.domain.buildplan.BuildRequestSnapshot(prompt = request.prompt),
                 savedAtEpochMillis = 456L,
             )
+            mutableRecords.value = listOf(record) + mutableRecords.value
+            return record
         }
+
+        override suspend fun appendRefinement(
+            baseRecordId: String,
+            plan: ValidatedBuildPlan,
+            request: com.craftmind.app.domain.buildplan.BuildEditRequest,
+            diff: com.craftmind.app.domain.buildplan.BuildDiff,
+        ): LocalBuildRecord = error("Refinement is not used by these generation tests")
+
+        override suspend fun revertTo(buildId: String, targetVersion: Int, expectedCurrentRecordId: String): LocalBuildRecord =
+            error("Revert is not used by these generation tests")
     }
 }
