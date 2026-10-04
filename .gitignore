@@ -1,0 +1,22 @@
+# Android / Gradle
+.gradle/
+/build/
+/*/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing and local secrets
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+.env
+.env.*
+
+# Test / tooling output
+.kotlin/
