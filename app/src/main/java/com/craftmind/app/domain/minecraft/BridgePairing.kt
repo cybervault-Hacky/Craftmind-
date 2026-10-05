@@ -47,7 +47,11 @@ data class BridgeCapabilitiesSnapshot(
     val platform: MinecraftRuntimePlatform = MinecraftRuntimePlatform.UNKNOWN,
     /** Bedrock host/runtime version where safely reported; null otherwise. */
     val platformVersion: String? = null,
-    /** Integration limitations declared by the reported runtime; only Bedrock reports them. */
+    /**
+     * Integration limitations declared by the reported runtime. A Bedrock bridge, a non-release Java runtime, or a
+     * Java runtime that an explicitly declared legacy/experimental contract recognizes may report them; the
+     * production release runtime may not.
+     */
     val limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
     val supportedCapabilities: Set<MinecraftCapability>,
     val worldAccess: Boolean,
