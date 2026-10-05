@@ -61,7 +61,7 @@ class SettingsScreenTest {
             }
         }
 
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+        compose.onAllNodes(hasSetTextAction()).assertCountEquals(5)
         compose.onAllNodes(hasSetTextAction()).onFirst().assertTextEquals("")
         compose.onNodeWithText("An API key is saved encrypted on this device. Its value is never displayed.").assertExists()
         compose.onNodeWithText("Test connection").assertIsEnabled().performClick()

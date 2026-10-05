@@ -28,6 +28,8 @@ import com.craftmind.app.presentation.builds.BuildsViewModel
 import com.craftmind.app.presentation.builds.BuildsViewModelFactory
 import com.craftmind.app.presentation.home.HomeViewModel
 import com.craftmind.app.presentation.home.HomeViewModelFactory
+import com.craftmind.app.presentation.settings.BridgePairingViewModel
+import com.craftmind.app.presentation.settings.BridgePairingViewModelFactory
 import com.craftmind.app.presentation.settings.ProviderSettingsViewModel
 import com.craftmind.app.presentation.settings.ProviderSettingsViewModelFactory
 import kotlinx.coroutines.launch
@@ -49,6 +51,10 @@ class MainActivity : ComponentActivity() {
                 factory = remember(appContainer) { ProviderSettingsViewModelFactory(appContainer.aiBuildEngine) },
             )
             val providerSettingsState by providerSettingsViewModel.state.collectAsStateWithLifecycle()
+            val bridgePairingViewModel: BridgePairingViewModel = viewModel(
+                factory = remember(appContainer) { BridgePairingViewModelFactory(appContainer.minecraftBridge) },
+            )
+            val bridgePairingState by bridgePairingViewModel.state.collectAsStateWithLifecycle()
             val buildsViewModel: BuildsViewModel = viewModel(
                 factory = remember(appContainer) { BuildsViewModelFactory(appContainer.localBuilds) },
             )
@@ -108,6 +114,8 @@ class MainActivity : ComponentActivity() {
                     onThemeModeSelected = writeThemeMode,
                     providerSettingsState = providerSettingsState,
                     onProviderSettingsEvent = providerSettingsViewModel::dispatch,
+                    bridgePairingState = bridgePairingState,
+                    onBridgePairingEvent = bridgePairingViewModel::dispatch,
                     buildsState = buildsState,
                     refinementState = refinementState,
                     onRefinementEvent = refinementViewModel::dispatch,

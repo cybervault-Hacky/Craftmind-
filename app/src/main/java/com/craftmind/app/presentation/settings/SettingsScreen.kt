@@ -13,10 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -29,7 +25,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,19 +44,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.settings.ThemeMode
 
-private enum class SettingsInfo {
-    MINECRAFT,
-}
-
 @Composable
 fun SettingsScreen(
     themeMode: ThemeMode,
     onThemeModeSelected: (ThemeMode) -> Unit,
     providerState: ProviderSettingsState,
     onProviderEvent: (ProviderSettingsEvent) -> Unit,
+    bridgeState: BridgePairingState = BridgePairingState(),
+    onBridgeEvent: (BridgePairingEvent) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    var openInfo by remember { mutableStateOf<SettingsInfo?>(null) }
 
     Column(
         modifier = modifier
@@ -109,15 +101,10 @@ fun SettingsScreen(
         ProviderSettingsCard(state = providerState, onEvent = onProviderEvent)
 
         SettingsCard(
-            title = "Minecraft",
-            subtitle = "Plan review is available; world pairing and block execution are not implemented.",
+            title = "Minecraft bridge",
+            subtitle = "Pair this Android device with a private-LAN Fabric server. Pairing verifies identity; it does not send a BuildPlan or place blocks.",
         ) {
-            SettingsActionRow(
-                icon = Icons.Default.Info,
-                title = "World connection",
-                subtitle = "Not implemented",
-                onClick = { openInfo = SettingsInfo.MINECRAFT },
-            )
+            MinecraftBridgeSettingsContent(state = bridgeState, onEvent = onBridgeEvent)
         }
 
         SettingsCard(
@@ -126,33 +113,20 @@ fun SettingsScreen(
         ) {
             Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 3 · AI plan generation, review, and local refinement",
+                text = "Phase 4 · secure bridge pairing foundation; Minecraft construction disabled",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         Text(
-            text = "Prompts go directly to the selected provider over HTTPS. Keys are encrypted with Android Keystore and are never sent to CraftMind. Image and URL references are preserved locally but not analyzed. Minecraft execution is not available.",
+            text = "AI requests go directly to the selected provider over HTTPS; provider keys never enter the Minecraft bridge. The bridge uses pinned private-LAN HTTPS and an Android Keystore device key. Local build history is unchanged. No BuildPlan is sent, and Minecraft construction remains disabled.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
         )
     }
 
-    openInfo?.let { info ->
-        val (title, message) = when (info) {
-            SettingsInfo.MINECRAFT -> "Minecraft is not connected" to
-                "CraftMind can show a successfully generated and validated plan for review. It does not pair with Minecraft or place blocks in a world."
-        }
-        AlertDialog(
-            onDismissRequest = { openInfo = null },
-            icon = { Icon(Icons.Default.Info, contentDescription = null) },
-            title = { Text(title) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = { openInfo = null }) { Text("Got it") } },
-        )
-    }
 }
 
 @Composable
@@ -365,37 +339,6 @@ private fun SettingsCard(
             }
             content()
         }
-    }
-}
-
-@Composable
-private fun SettingsActionRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 64.dp)
-            .clickable(onClick = onClick)
-            .semantics { role = Role.Button }
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Icon(
-            imageVector = Icons.Default.ArrowForward,
-            contentDescription = "More information about $title",
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

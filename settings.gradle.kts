@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "CraftMind"
-include(":app")
+include(":app", ":bridge-protocol")

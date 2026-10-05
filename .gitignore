@@ -13,10 +13,17 @@ captures/
 # Signing and local secrets
 *.jks
 *.keystore
+*.p12
+*.pfx
 keystore.properties
 secrets.properties
 .env
 .env.*
+
+# Fabric development/runtime data (includes private bridge identity)
+/minecraft-bridge/run/
+**/craftmind-bridge.properties
+**/craftmind-bridge/
 
 # Test / tooling output
 .kotlin/

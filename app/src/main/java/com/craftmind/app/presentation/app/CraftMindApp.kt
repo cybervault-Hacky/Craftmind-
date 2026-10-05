@@ -46,6 +46,8 @@ import com.craftmind.app.presentation.home.BuildComposerState
 import com.craftmind.app.presentation.home.BuildGenerationState
 import com.craftmind.app.presentation.home.HomeScreen
 import com.craftmind.app.presentation.navigation.MainDestination
+import com.craftmind.app.presentation.settings.BridgePairingEvent
+import com.craftmind.app.presentation.settings.BridgePairingState
 import com.craftmind.app.presentation.settings.ProviderSettingsEvent
 import com.craftmind.app.presentation.settings.ProviderSettingsState
 import com.craftmind.app.presentation.settings.SettingsScreen
@@ -72,6 +74,8 @@ fun CraftMindApp(
     onThemeModeSelected: (ThemeMode) -> Unit,
     providerSettingsState: ProviderSettingsState,
     onProviderSettingsEvent: (ProviderSettingsEvent) -> Unit,
+    bridgePairingState: BridgePairingState,
+    onBridgePairingEvent: (BridgePairingEvent) -> Unit,
     buildsState: BuildsState,
     refinementState: BuildRefinementState,
     onRefinementEvent: (BuildRefinementEvent) -> Unit,
@@ -134,6 +138,8 @@ fun CraftMindApp(
                         onThemeModeSelected = onThemeModeSelected,
                         providerSettingsState = providerSettingsState,
                         onProviderSettingsEvent = onProviderSettingsEvent,
+                        bridgePairingState = bridgePairingState,
+                        onBridgePairingEvent = onBridgePairingEvent,
                         buildsState = buildsState,
                         onReviewGeneratedPlan = { ready ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
@@ -177,6 +183,8 @@ fun CraftMindApp(
                         onThemeModeSelected = onThemeModeSelected,
                         providerSettingsState = providerSettingsState,
                         onProviderSettingsEvent = onProviderSettingsEvent,
+                        bridgePairingState = bridgePairingState,
+                        onBridgePairingEvent = onBridgePairingEvent,
                         buildsState = buildsState,
                         onReviewGeneratedPlan = { ready ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
@@ -225,6 +233,8 @@ private fun DestinationContent(
     onThemeModeSelected: (ThemeMode) -> Unit,
     providerSettingsState: ProviderSettingsState,
     onProviderSettingsEvent: (ProviderSettingsEvent) -> Unit,
+    bridgePairingState: BridgePairingState,
+    onBridgePairingEvent: (BridgePairingEvent) -> Unit,
     buildsState: BuildsState,
     onReviewGeneratedPlan: (BuildGenerationState.Ready) -> Unit,
     onReviewSavedPlan: (LocalBuildRecord) -> Unit,
@@ -247,6 +257,8 @@ private fun DestinationContent(
             onThemeModeSelected = onThemeModeSelected,
             providerState = providerSettingsState,
             onProviderEvent = onProviderSettingsEvent,
+            bridgeState = bridgePairingState,
+            onBridgeEvent = onBridgePairingEvent,
         )
     }
 }

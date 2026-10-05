@@ -88,8 +88,9 @@ sealed interface MinecraftBridgeResult<out T> {
 }
 
 /**
- * Platform-independent API for a future companion/local-world adapter. No bridge implementation,
- * connection, or block execution exists in Phase 2.
+ * Legacy platform-independent execution abstraction retained for a future construction phase. Phase 4
+ * pairing/session transport lives in BridgePairing.kt; it deliberately does not implement these
+ * world-reading or construction methods.
  */
 interface MinecraftBridge {
     val connectionState: StateFlow<MinecraftConnectionState>
