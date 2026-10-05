@@ -76,6 +76,8 @@ fun HomeScreen(
     onReviewPlan: (BuildGenerationState.Ready) -> Unit,
     selectedModelId: String? = null,
     selectedModel: AiModel? = null,
+    providerSettingsLoaded: Boolean = false,
+    providerCredentialSaved: Boolean = false,
     onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -102,7 +104,15 @@ fun HomeScreen(
                         .weight(1.1f)
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
+                    GettingStartedCard(
+                        providerSettingsLoaded = providerSettingsLoaded,
+                        providerCredentialSaved = providerCredentialSaved,
+                        selectedModelId = selectedModelId,
+                        selectedModel = selectedModel,
+                        onOpenSettings = onOpenSettings,
+                    )
                     BuildComposerCard(
                         state = state,
                         onEvent = onEvent,
@@ -123,6 +133,13 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 HomeIntroduction(showFoundationDetails = false)
+                GettingStartedCard(
+                    providerSettingsLoaded = providerSettingsLoaded,
+                    providerCredentialSaved = providerCredentialSaved,
+                    selectedModelId = selectedModelId,
+                    selectedModel = selectedModel,
+                    onOpenSettings = onOpenSettings,
+                )
                 BuildComposerCard(
                     state = state,
                     onEvent = onEvent,
@@ -176,12 +193,12 @@ private fun HomeIntroduction(showFoundationDetails: Boolean) {
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "Describe it.\nReview it.\nRefine it.",
+                text = "Describe it.\nShow it.\nBuild it.",
                 style = MaterialTheme.typography.displayMedium,
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = "A prompt and at most one supported visual reference begin an AI-generated Minecraft build plan—not a manual block layout.",
+                text = "Turn a written idea and, optionally, one supported visual reference into a reviewable AI build plan. In-game construction always needs a separate bridge preflight and your confirmation.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -195,44 +212,63 @@ private fun HomeIntroduction(showFoundationDetails: Boolean) {
 }
 
 @Composable
+private fun GettingStartedCard(
+    providerSettingsLoaded: Boolean,
+    providerCredentialSaved: Boolean,
+    selectedModelId: String?,
+    selectedModel: AiModel?,
+    onOpenSettings: () -> Unit,
+) {
+    val setupStatus = when {
+        !providerSettingsLoaded -> "Checking the saved provider setup on this device…"
+        !providerCredentialSaved -> "No provider key is saved. Add your own Google Gemini API key in Settings; CraftMind has no hosted AI backend."
+        selectedModelId == null -> "Your key is saved, but no verified model is selected yet. In Settings, test the connection if needed, then choose a model returned by Google."
+        selectedModel == null -> "Your saved model has not been verified in this session. Recheck the provider connection in Settings before generating."
+        else -> "A compatible Gemini model is verified this session. AI plans work without Minecraft; pairing is needed only to build in game."
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 720.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Text("QUICK START", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, letterSpacing = 1.1.sp)
+            Text("Your first build", style = MaterialTheme.typography.titleLarge)
+            Text(setupStatus, style = MaterialTheme.typography.bodyMedium)
+            Text("1. Save your provider key, test the connection, and choose a compatible model.", style = MaterialTheme.typography.bodySmall)
+            Text("2. Describe a build; optionally add one image or a supported public MP4/WebM reference.", style = MaterialTheme.typography.bodySmall)
+            Text("3. Review the AI plan. A paired Fabric server runs preflight, then waits for your separate confirmation.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp)) {
+                Text(
+                    when {
+                        !providerSettingsLoaded -> "Open AI settings"
+                        providerCredentialSaved -> "Open provider & bridge settings"
+                        else -> "Set up AI provider"
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun BrandMark() {
     Box(
         modifier = Modifier
             .size(42.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 9.dp, top = 9.dp)
-                .size(10.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.primary),
-        )
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = 9.dp, top = 9.dp)
-                .size(10.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.tertiary),
-        )
-        Box(
-            Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 9.dp, bottom = 9.dp)
-                .size(10.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.secondary),
-        )
-        Box(
-            Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 9.dp, bottom = 9.dp)
-                .size(10.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.58f)),
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.res.painterResource(com.craftmind.app.R.drawable.ic_launcher_foreground),
+            contentDescription = null,
+            modifier = Modifier.size(40.dp),
         )
     }
 }

@@ -1,6 +1,6 @@
 # CraftMind
 
-**AI Minecraft Build Planner** · *Describe it. Review it. Refine it.*
+**AI Minecraft Builder** · *Describe it. Show it. Build it.*
 
 CraftMind is an Android app for turning a written request into an AI-designed, validated Minecraft build plan. The selected provider/model must return every plan and refinement; CraftMind has no manual block-layout editor, picker, drag-and-drop designer, or built-in structure templates.
 
@@ -110,6 +110,7 @@ A provider is reported as connected only after a real authenticated HTTPS reques
 ## Project and verification
 
 - Application ID: `com.craftmind.app`
+- Configured release: versionName `1.0.0`, versionCode `10000` (not yet built or published)
 - Android: Kotlin, Jetpack Compose, Material 3
 - Architecture: `presentation/`, `domain/`, `data/`, and `designsystem/` boundaries
 - Minimum Android version: API 26; compile/target SDK: 35
@@ -134,3 +135,35 @@ cd minecraft-bridge
 `test` from the root includes Android unit tests and `bridge-protocol` tests; it does **not** build the separate Fabric project. `connectedDebugAndroidTest` requires a configured Android SDK and attached emulator/device. `build` in `minecraft-bridge/` produces the remapped mod jar when successful.
 
 **Checkout verification status:** `java`, `javac`, `kotlinc`, `adb`, and `sdkmanager` are unavailable in this environment, and `JAVA_HOME`/`ANDROID_HOME` are unset. Both `./gradlew test` and `cd minecraft-bridge && ../gradlew test build` were attempted; each stopped in the wrapper before Gradle launched with `JAVA_HOME is not set and no 'java' command could be found`. No tests or compilation ran. Android `lint`, APK assembly, connected-device tests, and real Minecraft integration were not run; no APK, placed blocks, or successful integration is claimed. The compatibility versions are configured targets, not a verified matrix. A repository text scan for Google/AWS credential patterns, private-key PEM markers, and literal bridge-keystore-password assignments found no matches; no dedicated SAST or dependency-vulnerability scanner is available here. A tool-only fetch of a public sample MP4 returned bytes beginning with the MP4 `ftyp` signature, but that did not test HTTP Range behavior. A shell `curl` range probe could not complete because the sandbox's TLS connection failed (`SSL_ERROR_SYSCALL`), so live source access and range support remain unverified. No authenticated provider request was made. These checks are not a full security audit; the bridge has not undergone an independent security audit.
+
+## Phase 8 — v1.0.0 release preparation
+
+**Status: prepared, not released.** CraftMind's configured Android version is `1.0.0` / versionCode `10000`, with the existing application ID `com.craftmind.app`. No APK has been built, signed, installed, or published. Do not treat source configuration or prior unit-test source files as a verified runtime release.
+
+### Implemented in source
+
+- A signed-APK release variant reads its keystore path, passwords, and alias only from `CRAFTMIND_RELEASE_*` environment variables. Partial signing configuration is rejected; a supplied keystore must exist outside the repository. Release packaging fails rather than silently producing an unsigned APK.
+- Release R8 code shrinking and resource shrinking are enabled. A narrow keep rule preserves the shared Gson-serialized bridge protocol classes and their wire names. This configuration still needs a successful minified release build and smoke test.
+- The launcher uses an adaptive CraftMind cube mark, light/dark startup window resources, and an Android 12+ splash icon. The home screen now has short setup guidance and an explicit no-key / unverified-model status; Settings includes a product privacy/data-flow summary.
+- `website/` contains a responsive, accessible, dependency-free static site. Its `DOWNLOAD APK` action points to an intentionally disabled status button until a signed artifact exists. A manual-only GitHub Pages workflow template is in `website/github-pages-workflow.yml.example`; it is not installed as an active workflow and does not deploy from this branch.
+- [`RELEASE_NOTES_v1.0.0.md`](RELEASE_NOTES_v1.0.0.md), [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md), and [`website/README.md`](website/README.md) record the intended release scope, external signing setup, distribution limits, and deployment steps. Signing keys, provider keys, and generated APKs must stay out of Git.
+
+### Verified in this checkout (static checks only)
+
+- The app manifest still disables cleartext traffic and backups; inspected provider, public-video, and bridge client routes use HTTPS with redirects disabled. A source scan found no application logging calls for secrets or provider responses. This is static source review, not a network/runtime security test.
+- `python3 scripts/check_release_config.py` passed static checks for app ID/version, environment-only external signing, the R8 bridge-protocol keep rule, manifest cleartext/backup settings, the adaptive icon, app-source logging/cleartext patterns, and known key/keystore/APK patterns in tracked files. This is a narrow pattern scan, not SAST or a security audit.
+- `python3 scripts/check_website.py` passed required product/release-status copy, in-page/local link targets, responsive/reduced-motion/accessibility markers, and the intentionally disabled APK button. Python's HTML parser also accepted the static page.
+- All 12 Android XML resources parsed as well-formed XML; Python checker bytecode compilation and `bash -n scripts/verify-release-apk.sh` passed. These are static checks and do not mean the app compiles or the website is deployed.
+- After staging, `git diff --cached --check` and `python3 scripts/check_release_config.py` passed across the tracked release changes. No credential, keystore, or APK was found. The scanner is a bounded pattern/configuration check, not a substitute for SAST, Gradle verification, or review of external signer identity.
+
+### Environment-blocked / not verified
+
+- This checkout has no Java/JDK, Android SDK, Gradle executable, or `adb`; `JAVA_HOME`, `ANDROID_HOME`, and `ANDROID_SDK_ROOT` are unset. The wrapper's earlier test/build attempts stopped before Gradle could launch. Android tests, lint, debug/release APK builds, APK signature inspection, and device installation therefore remain unrun.
+- No provider credential/account, Android device/emulator, or live supported Minecraft server was available. Gemini authentication, image/video generation, bridge pairing/construction, and an end-to-end smoke test are not claimed.
+- GitHub Pages has not been enabled or deployed. If enabled for this repository, the expected project URL is `https://cybervault-hacky.github.io/Craftmind-/`; a successful manual deployment reports the authoritative URL. The URL is a target only, not a live-site claim. The deployment template remains outside `.github/workflows` because the connected GitHub App rejected this branch's first push without the `workflows` permission.
+
+### Release workflow
+
+Create the external keystore and load its values into a local shell or CI secret store, then run `./gradlew :app:assembleRelease`. Inspect a produced APK with `scripts/verify-release-apk.sh`; it checks the application ID/version, invokes `apksigner` verification, prints the public signer-certificate SHA-256 fingerprint, and calculates the APK SHA-256. Compare the certificate fingerprint with a previously recorded trusted value; the helper does not establish runtime compatibility or replace device/provider/Minecraft tests. Publish only a verified signed APK and matching checksum. The `1.0.0` release versionCode is `10000`; future releases must increase it. See [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) before making a public release.
+
+The website's disabled APK button must be changed only after the exact signed release asset exists. Then rerun `python3 scripts/check_website.py`. To use GitHub Pages, configure Pages for GitHub Actions and, from a GitHub connection permitted to manage workflow files, copy `website/github-pages-workflow.yml.example` to `.github/workflows/publish-website.yml` and trigger it manually. No deployment is active in this branch. No Play Store release, AAB-only distribution, monetization, ads, or CraftMind backend is part of this release scope.

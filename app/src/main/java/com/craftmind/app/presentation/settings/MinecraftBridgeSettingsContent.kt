@@ -27,10 +27,22 @@ internal fun MinecraftBridgeSettingsContent(
     state: BridgePairingState,
     onEvent: (BridgePairingEvent) -> Unit,
 ) {
-    if (state.profile == null) {
+    if (!state.isProfileLoaded) {
+        Text(
+            "Checking saved Minecraft bridge setup…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else if (state.profile == null) {
+        Text("No Minecraft bridge is paired.", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "AI plan generation and local build history remain available. Pairing is optional and only needed to request an in-game build from an accepted plan.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             "On the Minecraft server, verify the public TLS fingerprint with /craftmind identity, then open a private one-time window with /craftmind pair open. Enter that fingerprint and the code shown only to the in-game operator.",
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(

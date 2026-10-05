@@ -102,7 +102,7 @@ fun SettingsScreen(
 
         SettingsCard(
             title = "Minecraft bridge",
-            subtitle = "Pair this Android device with a private-LAN Fabric server. Pairing verifies identity; a BuildPlan can be sent only from plan review after preflight and a separate final confirmation.",
+            subtitle = "Optional: AI plans and local history work without a bridge. Pair a supported private-LAN Fabric server only when you want to build in game; execution requires preflight and your separate final confirmation.",
         ) {
             MinecraftBridgeSettingsContent(state = bridgeState, onEvent = onBridgeEvent)
         }
@@ -111,22 +111,55 @@ fun SettingsScreen(
             title = "About",
             subtitle = "CraftMind · AI Minecraft Builder",
         ) {
-            Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
+            Text("Describe it. Show it. Build it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 7 · bounded public-video analysis · Phase 5 construction safety",
+                text = "Configured target 1.0.0 · BuildPlan v2 · Android 8+ · Minecraft 1.20.1 / Fabric Loader 0.16.10",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        Text(
-            text = "AI requests go directly to the selected provider over HTTPS; provider keys never enter the Minecraft bridge. The bridge uses pinned private-LAN HTTPS and an Android Keystore device key. Accepted plan versions remain immutable; separate execution records report only bridge-reported status. Block placement requires server preflight and a separate final confirmation, and cannot be rolled back by CraftMind.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-        )
+        SettingsCard(
+            title = "Privacy & data",
+            subtitle = "AI requests go directly to Google Gemini over HTTPS. Google’s terms govern provider-side processing and retention.",
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                PrivacyDisclosure(
+                    heading = "YOUR KEY",
+                    body = "The API key you supply is encrypted with a key in Android Keystore and kept in app-private no-backup storage. It is used for direct Google requests and is never sent to the Minecraft bridge or a CraftMind server.",
+                )
+                PrivacyDisclosure(
+                    heading = "AI REQUESTS",
+                    body = "When you generate a plan, your prompt and any chosen visual input go directly to Google over HTTPS. For supported video, this device reads bounded byte ranges and sends up to five sampled frames; the direct video URL is not sent to the AI model. Refinement uses text notes and does not resend images or fetch the video again.",
+                )
+                PrivacyDisclosure(
+                    heading = "ON THIS DEVICE",
+                    body = "Accepted plan versions and reference metadata (including a saved video URL and temporary image URI details) are kept in app-private local history. CraftMind has no account or cloud sync; Android app backups are disabled. Raw image, video, and sampled-frame bytes are not kept in build history.",
+                )
+                PrivacyDisclosure(
+                    heading = "MINECRAFT",
+                    body = "Pairing uses pinned private-LAN HTTPS. Only an accepted plan can proceed after server preflight and your separate confirmation. Progress is based on bridge reports; placed blocks cannot be rolled back by CraftMind.",
+                )
+            }
+        }
     }
 
+}
+
+@Composable
+private fun PrivacyDisclosure(heading: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            heading,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
@@ -142,7 +175,13 @@ private fun ProviderSettingsCard(
         title = "AI provider",
         subtitle = "Keys belong to providers. Model choice is stored separately and requires a live connection test.",
     ) {
-        if (state.providers.size > 1) {
+        if (state.providers.isEmpty()) {
+            Text(
+                "Loading AI provider setup…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (state.providers.size > 1) {
             Column {
                 OutlinedButton(onClick = { providerMenuExpanded = true }) {
                     Text(activeProvider?.displayName ?: "Choose provider")

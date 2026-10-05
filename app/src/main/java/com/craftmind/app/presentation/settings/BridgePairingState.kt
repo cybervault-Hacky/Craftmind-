@@ -9,6 +9,7 @@ data class BridgePairingState(
     val tlsFingerprint: String = "",
     val pairingCode: String = "",
     val profile: TrustedMinecraftBridge? = null,
+    val isProfileLoaded: Boolean = false,
     val connection: BridgeConnectionState = BridgeConnectionState.Disconnected,
     val isWorking: Boolean = false,
     val message: String? = null,

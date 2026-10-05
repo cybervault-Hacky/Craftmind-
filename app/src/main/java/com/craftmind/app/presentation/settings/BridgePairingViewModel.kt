@@ -14,12 +14,12 @@ import kotlinx.coroutines.launch
 class BridgePairingViewModel(
     private val bridge: MinecraftBridgePairingRepository,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(BridgePairingState())
+    private val mutableState = MutableStateFlow(BridgePairingState(isProfileLoaded = false))
     val state = mutableState.asStateFlow()
 
     init {
         viewModelScope.launch {
-            bridge.profile.collect { profile -> mutableState.update { it.copy(profile = profile) } }
+            bridge.profile.collect { profile -> mutableState.update { it.copy(profile = profile, isProfileLoaded = true) } }
         }
         viewModelScope.launch {
             bridge.connectionState.collect { connection -> mutableState.update { it.copy(connection = connection) } }

@@ -270,6 +270,8 @@ private fun DestinationContent(
             selectedModel = providerSettingsState.models.firstOrNull {
                 it.id == providerSettingsState.selectedModelId && it.providerId == providerSettingsState.activeProviderId
             },
+            providerSettingsLoaded = providerSettingsState.providers.isNotEmpty(),
+            providerCredentialSaved = providerSettingsState.savedCredentialExists,
             onOpenSettings = { onNavigate(MainDestination.SETTINGS) },
         )
         MainDestination.BUILDS -> BuildsScreen(
