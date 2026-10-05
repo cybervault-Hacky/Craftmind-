@@ -28,8 +28,7 @@ class MinecraftCompatibilityResolver(
         }
 
         val profiles = registry.allProfiles()
-        if (runtime.edition in setOf(MinecraftEdition.BEDROCK, MinecraftEdition.LEGACY) &&
-            profiles.none { it.edition == runtime.edition }) {
+        if (runtime.edition != MinecraftEdition.UNKNOWN && runtime.edition !in registry.declaredEditions()) {
             return unresolved(
                 status = MinecraftCompatibilityStatus.UNSUPPORTED,
                 requirements = requirements,
@@ -50,6 +49,19 @@ class MinecraftCompatibilityResolver(
 
         val exactIdentityProfiles = profiles.filter { it.matchesRuntimeIdentity(runtime) }
         if (exactIdentityProfiles.isEmpty()) {
+            // Contract-keyed adapters (Bedrock) recognize a runtime without a version-keyed Java-style profile.
+            // Java adapters return null here whenever no version-keyed profile matches, so this changes nothing
+            // for Java resolution and never routes one edition through another edition's adapter.
+            val contractMatches = registry.compatibilityChecks(runtime, requirements)
+            if (contractMatches.size == 1) return contractMatches.single()
+            if (contractMatches.size > 1) {
+                return unresolved(
+                    status = MinecraftCompatibilityStatus.UNKNOWN,
+                    requirements = requirements,
+                    reasons = listOf("More than one registered adapter claims this exact runtime; adapter selection is blocked."),
+                    reasonCodes = setOf(MinecraftCompatibilityReasonCode.AMBIGUOUS_ADAPTER_PROFILE),
+                )
+            }
             return unresolvedForUnsupportedIdentity(runtime, requirements, profiles)
         }
 
@@ -111,6 +123,9 @@ class MinecraftCompatibilityResolver(
 
     fun registeredProfiles(): List<SupportedMinecraftRuntimeDescriptor> = registry.allProfiles()
 
+    /** Bedrock contract identities registered by this build; empty certification lists mean no Bedrock target. */
+    fun registeredBedrockProfiles(): List<BedrockRuntimeProfile> = registry.allBedrockProfiles()
+
     private fun unresolvedForUnsupportedIdentity(
         runtime: MinecraftRuntimeDescriptor,
         requirements: BuildPlanRequirements,
@@ -126,7 +141,10 @@ class MinecraftCompatibilityResolver(
             reasonCodes = setOf(code),
         )
 
-        if (runtime.edition in setOf(MinecraftEdition.BEDROCK, MinecraftEdition.LEGACY)) {
+        if (runtime.edition == MinecraftEdition.BEDROCK) {
+            return unresolvedBedrockIdentity(runtime, requirements)
+        }
+        if (runtime.edition == MinecraftEdition.LEGACY) {
             val edition = runtime.edition.displayName
             return unsupported(
                 MinecraftCompatibilityReasonCode.UNSUPPORTED_LOADER,
@@ -176,6 +194,63 @@ class MinecraftCompatibilityResolver(
         )
     }
 
+    /**
+     * Explains why a reported Bedrock runtime did not match a registered Bedrock contract. Bedrock is never
+     * matched by version proximity, never routed through the Java/Fabric adapter, and never inferred from the
+     * app-side selection.
+     */
+    private fun unresolvedBedrockIdentity(
+        runtime: MinecraftRuntimeDescriptor,
+        requirements: BuildPlanRequirements,
+    ): MinecraftCompatibilityResult {
+        fun unsupported(
+            code: MinecraftCompatibilityReasonCode,
+            message: String,
+        ) = unresolved(
+            status = MinecraftCompatibilityStatus.UNSUPPORTED,
+            requirements = requirements,
+            reasons = listOf(message),
+            reasonCodes = setOf(code),
+        )
+
+        val contracts = registry.allBedrockProfiles()
+        if (contracts.isEmpty()) {
+            return unsupported(
+                MinecraftCompatibilityReasonCode.UNSUPPORTED_LOADER,
+                "No ${MinecraftEdition.BEDROCK.displayName} runtime adapter is registered. It is not routed through a Java/Fabric adapter.",
+            )
+        }
+        val sameProtocol = contracts.filter { it.bridgeProtocolVersion == runtime.bridgeProtocolVersion }
+        if (sameProtocol.isEmpty()) {
+            val supported = contracts.map { it.bridgeProtocolVersion }.distinct().sorted().joinToString()
+            return unsupported(
+                MinecraftCompatibilityReasonCode.BRIDGE_PROTOCOL_MISMATCH,
+                "Bridge protocol ${runtime.bridgeProtocolVersion} is not supported by this app for a Bedrock runtime; " +
+                    "registered Bedrock contract protocol version(s): $supported. Update the bridge and app together.",
+            )
+        }
+        val sameBridge = sameProtocol.filter { it.bridgeVersion == runtime.bridgeVersion }
+        if (sameBridge.isEmpty()) {
+            val supported = sameProtocol.map { it.bridgeVersion }.distinct().sorted().joinToString()
+            return unsupported(
+                MinecraftCompatibilityReasonCode.BRIDGE_VERSION_MISMATCH,
+                "The reported Bedrock bridge version ${runtime.bridgeVersion} is not registered for protocol " +
+                    "${runtime.bridgeProtocolVersion}; expected $supported.",
+            )
+        }
+        if (sameBridge.none { runtime.platform in it.supportedPlatforms }) {
+            return unsupported(
+                MinecraftCompatibilityReasonCode.UNSUPPORTED_BEDROCK_PLATFORM,
+                "The reported Bedrock runtime platform (${runtime.platform.displayName}) is not part of a registered " +
+                    "CraftMind Bedrock contract. Platforms are never inferred or widened.",
+            )
+        }
+        return unsupported(
+            MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR,
+            "The reported Bedrock runtime did not match a complete registered Bedrock contract.",
+        )
+    }
+
     private fun malformedRuntimeReasons(runtime: MinecraftRuntimeDescriptor): List<Pair<MinecraftCompatibilityReasonCode, String>> = buildList {
         if (runtime.edition != MinecraftEdition.UNKNOWN && runtime.loader != MinecraftLoader.UNKNOWN &&
             runtime.loader.edition != runtime.edition) {
@@ -187,8 +262,17 @@ class MinecraftCompatibilityResolver(
         if (runtime.bridgeProtocolVersion != null && runtime.bridgeProtocolVersion !in 1..64) {
             add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Reported bridge protocol version is outside the valid range.")
         }
+        // Loader version is edition-dependent: a Java-style edition must report a bounded loader version exactly
+        // as before, while Bedrock has no loader concept and must not report one at all (checked below). Only a
+        // Bedrock runtime's *absent* loader version is therefore not malformed here.
+        val loaderVersionIsMalformed = if (runtime.edition == MinecraftEdition.BEDROCK) {
+            runtime.loaderVersion != null && !isSafeVersionToken(runtime.loaderVersion)
+        } else {
+            !isSafeVersionToken(runtime.loaderVersion)
+        }
         if ((runtime.appVersion != null && !isSafeVersionToken(runtime.appVersion)) ||
-            !isSafeVersionToken(runtime.loaderVersion) || !isSafeVersionToken(runtime.bridgeVersion) ||
+            loaderVersionIsMalformed ||
+            !isSafeVersionToken(runtime.bridgeVersion) ||
             (runtime.fabricApiVersion != null && !isSafeVersionToken(runtime.fabricApiVersion))) {
             add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "A runtime version field contains an invalid token.")
         }
@@ -213,6 +297,25 @@ class MinecraftCompatibilityResolver(
             runtime.supportedBuildPlanSchemaVersions.toSet().size != runtime.supportedBuildPlanSchemaVersions.size) {
             add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Reported BuildPlan schema versions are invalid.")
         }
+        if (runtime.edition == MinecraftEdition.BEDROCK) {
+            if (runtime.javaRuntimeMajor != null) {
+                add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "A Bedrock runtime must not report a server Java runtime version.")
+            }
+            if (runtime.fabricApiVersion != null) {
+                add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "A Bedrock runtime must not report a Fabric API version.")
+            }
+            if (runtime.loaderVersion != null) {
+                add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "A Bedrock runtime must not report a loader version; Bedrock has no loader.")
+            }
+            if (runtime.platformVersion != null && !isSafeVersionToken(runtime.platformVersion)) {
+                add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "The reported Bedrock platform version contains an invalid token.")
+            }
+        } else if (runtime.platform != MinecraftRuntimePlatform.UNKNOWN) {
+            add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Only a Bedrock runtime may report a Bedrock runtime platform.")
+        }
+        if (runtime.edition != MinecraftEdition.BEDROCK && runtime.limitations.isNotEmpty()) {
+            add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Only a Bedrock runtime may report Bedrock integration limitations.")
+        }
     }
 
     private fun incompleteRuntimeReasons(runtime: MinecraftRuntimeDescriptor): List<Pair<MinecraftCompatibilityReasonCode, String>> = buildList {
@@ -231,7 +334,8 @@ class MinecraftCompatibilityResolver(
         if (!isSafeVersionToken(runtime.bridgeVersion) || runtime.bridgeVersion.equals("unknown", ignoreCase = true)) {
             add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "Bridge version is missing or unrecognized.")
         }
-        if (!isSafeVersionToken(runtime.loaderVersion) || runtime.loaderVersion.equals("unknown", ignoreCase = true)) {
+        if (runtime.edition == MinecraftEdition.JAVA &&
+            (!isSafeVersionToken(runtime.loaderVersion) || runtime.loaderVersion.equals("unknown", ignoreCase = true))) {
             add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "Loader version is missing or unrecognized.")
         }
         if (runtime.edition == MinecraftEdition.JAVA && runtime.javaRuntimeMajor == null) {
@@ -240,6 +344,14 @@ class MinecraftCompatibilityResolver(
         if (runtime.loader == MinecraftLoader.FABRIC &&
             (runtime.fabricApiVersion == null || runtime.fabricApiVersion.equals("unknown", ignoreCase = true))) {
             add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "The bridge did not report the loaded Fabric API version; compatibility cannot be inferred from declared dependencies.")
+        }
+        if (runtime.edition == MinecraftEdition.BEDROCK) {
+            if (runtime.platform == MinecraftRuntimePlatform.UNKNOWN) {
+                add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "The Bedrock bridge did not report its runtime platform; Bedrock compatibility cannot be inferred.")
+            }
+            if (runtime.loader != MinecraftLoader.BEDROCK_NATIVE) {
+                add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "The Bedrock runtime must report the Bedrock Native runtime; Java loader concepts do not apply to Bedrock.")
+            }
         }
     }
 
@@ -282,9 +394,14 @@ fun MinecraftCompatibilityResult.failureReasonCode(): String = when {
     MinecraftCompatibilityReasonCode.FABRIC_API_MISMATCH in reasonCodes -> "BRIDGE_FABRIC_API_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.BRIDGE_PROTOCOL_MISMATCH in reasonCodes -> "BRIDGE_PROTOCOL_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.BRIDGE_VERSION_MISMATCH in reasonCodes -> "BRIDGE_VERSION_UNSUPPORTED"
+    MinecraftCompatibilityReasonCode.UNSUPPORTED_BEDROCK_PLATFORM in reasonCodes -> "BEDROCK_PLATFORM_UNSUPPORTED"
     status == MinecraftCompatibilityStatus.UNSUPPORTED -> "BRIDGE_RUNTIME_UNSUPPORTED"
+    MinecraftCompatibilityReasonCode.BEDROCK_RUNTIME_NOT_CERTIFIED in reasonCodes -> "BEDROCK_RUNTIME_NOT_CERTIFIED"
     status == MinecraftCompatibilityStatus.EXPERIMENTAL -> "BRIDGE_RUNTIME_EXPERIMENTAL"
     MinecraftCompatibilityReasonCode.UNSUPPORTED_BUILDPLAN_SCHEMA in reasonCodes -> "BUILD_PLAN_SCHEMA_UNSUPPORTED"
+    MinecraftCompatibilityReasonCode.UNSUPPORTED_BLOCK_STATE in reasonCodes -> "UNSUPPORTED_BLOCK_STATE"
+    MinecraftCompatibilityReasonCode.UNSUPPORTED_BLOCK in reasonCodes -> "UNSUPPORTED_BLOCK"
+    !planContentSupported -> "UNSUPPORTED_BLOCK_STATE"
     MinecraftCompatibilityReasonCode.PLAN_LIMIT_EXCEEDED in reasonCodes || !planWithinLimits -> "LIMIT_EXCEEDED"
     MinecraftCompatibilityReasonCode.MISSING_CAPABILITY in reasonCodes || missingCapabilities.isNotEmpty() ->
         if (missingCapabilities.any { it in CONSTRUCTION_CAPABILITIES }) "CONSTRUCTION_DISABLED"

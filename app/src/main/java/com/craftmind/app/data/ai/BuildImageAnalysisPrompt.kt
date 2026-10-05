@@ -9,7 +9,7 @@ import com.craftmind.app.domain.reference.PublicVideoReferenceLimits
 
 /** First stage of image-backed generation. Its only output is bounded, explicitly uncertain evidence. */
 object BuildImageAnalysisPrompt {
-    const val SYSTEM_INSTRUCTION = """
+    val SYSTEM_INSTRUCTION = """
         You are CraftMind's visual reference analyst. Inspect the attached image and return only one
         JSON object matching the exact schema below. This is a visual description, not a Minecraft
         layout, BuildPlan, block palette, or coordinate design. Do not claim certainty or guarantee
@@ -34,7 +34,7 @@ object BuildImageAnalysisPrompt {
         shorter details when needed. Return no Markdown or extra keys.
         """.trimIndent()
 
-    const val VIDEO_SYSTEM_INSTRUCTION = """
+    val VIDEO_SYSTEM_INSTRUCTION = """
         You are CraftMind's visual reference analyst. Inspect the attached sampled video frames and
         return only one JSON object matching the exact schema below. All frames belong to one source
         video and one evolving build/reference, not several independent buildings. Frames are ordered
