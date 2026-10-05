@@ -7,6 +7,7 @@ import com.craftmind.app.domain.buildplan.BuildDiff
 import com.craftmind.app.domain.buildplan.BuildHistoryPolicy
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildRepositoryError
 import com.craftmind.app.domain.buildplan.BuildRepositoryException
 import com.craftmind.app.domain.buildplan.BuildRequest
@@ -54,13 +55,11 @@ class AtomicLocalBuildRepository(
         }
     }
 
-    override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord =
-        save(plan, request, imageAnalysisSource = null)
-
     override suspend fun save(
         plan: ValidatedBuildPlan,
         request: BuildRequest,
         imageAnalysisSource: BuildImageAnalysisSource?,
+        referenceAnalysisSource: BuildReferenceAnalysisSource?,
     ): LocalBuildRecord = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureLoaded()
@@ -70,6 +69,7 @@ class AtomicLocalBuildRepository(
                 request = request,
                 savedAtEpochMillis = nowEpochMillis(),
                 imageAnalysisSource = imageAnalysisSource,
+                referenceAnalysisSource = referenceAnalysisSource,
             )
             persist(change.records)
             mutableRecords.value = change.records

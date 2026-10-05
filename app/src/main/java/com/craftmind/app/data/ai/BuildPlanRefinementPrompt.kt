@@ -59,7 +59,10 @@ object BuildPlanRefinementPrompt {
                 appendLine("An image reference exists in local history, but no visual analysis is available and no image bytes are sent for refinement.")
             }
             if (request.originalRequest.urlReference != null) {
-                appendLine("The original request included a URL reference, but it was not fetched or analyzed.")
+                request.originalRequest.referenceAnalysisSource?.let { source ->
+                    appendLine("The initial public video source was ${source.sourceDomain} (${source.mediaType}); ${source.frameCount} distinct sampled frames over about ${source.durationMillis} ms were analyzed by ${source.providerId}/${source.modelId} during initial generation.")
+                    appendLine("This refinement contains only the saved bounded text notes and accepted plan. It does not include the source URL, video bytes, or frame images and does not redownload the video. Provider data handling is governed by that provider's terms; CraftMind makes no retention guarantee.")
+                } ?: appendLine("The original request included a URL reference, but no video analysis was saved. The reference is not fetched during refinement.")
             }
         }
         val legacyMigrationInstruction = if (request.basePlan.metadata.schemaVersion == 1) {

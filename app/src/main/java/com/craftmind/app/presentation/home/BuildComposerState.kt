@@ -3,6 +3,7 @@ package com.craftmind.app.presentation.home
 import com.craftmind.app.domain.ai.AiErrorCode
 import com.craftmind.app.domain.ai.AiGenerationStage
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestDraft
@@ -47,6 +48,7 @@ sealed interface BuildGenerationState {
         val localRecord: LocalBuildRecord?,
         val localSaveFailed: Boolean,
         val imageAnalysisSource: BuildImageAnalysisSource? = null,
+        val referenceAnalysisSource: BuildReferenceAnalysisSource? = null,
     ) : BuildGenerationState
 }
 
@@ -72,7 +74,12 @@ class BuildComposerReducer(
     fun reduce(state: BuildComposerState, event: BuildComposerEvent): BuildComposerState = when (event) {
         is BuildComposerEvent.PromptChanged -> state.copy(prompt = event.value, generation = BuildGenerationState.Idle)
 
-        is BuildComposerEvent.ImageSelected -> {
+        is BuildComposerEvent.ImageSelected -> if (state.urlReference != null) {
+            state.copy(
+                imageError = BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED,
+                generation = BuildGenerationState.Idle,
+            )
+        } else {
             val error = validator.validateImage(event.reference)
             if (error == null) {
                 state.copy(
@@ -90,6 +97,11 @@ class BuildComposerReducer(
         BuildComposerEvent.RemoveImage -> state.copy(
             imageReference = null,
             imageError = null,
+            urlEditor = (state.urlEditor as? UrlEditorState.Editing)?.let { editing ->
+                if (editing.error == BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED) {
+                    editing.copy(error = null)
+                } else editing
+            } ?: state.urlEditor,
             generation = BuildGenerationState.Idle,
         )
 
@@ -109,11 +121,18 @@ class BuildComposerReducer(
         BuildComposerEvent.SaveUrl -> {
             val editing = state.urlEditor as? UrlEditorState.Editing
             if (editing == null) state else when (val result = validator.validateUrl(editing.draft)) {
-                is UrlValidationResult.Valid -> state.copy(
-                    urlReference = BuildInput.UrlReference(result.normalizedUrl),
-                    urlEditor = UrlEditorState.Closed,
-                    generation = BuildGenerationState.Idle,
-                )
+                is UrlValidationResult.Valid -> if (state.imageReference != null) {
+                    state.copy(
+                        urlEditor = editing.copy(error = BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED),
+                        generation = BuildGenerationState.Idle,
+                    )
+                } else {
+                    state.copy(
+                        urlReference = BuildInput.UrlReference(result.normalizedUrl),
+                        urlEditor = UrlEditorState.Closed,
+                        generation = BuildGenerationState.Idle,
+                    )
+                }
                 is UrlValidationResult.Invalid -> state.copy(urlEditor = editing.copy(error = result.error))
             }
         }
@@ -122,6 +141,9 @@ class BuildComposerReducer(
         BuildComposerEvent.RemoveUrl -> state.copy(
             urlReference = null,
             urlEditor = UrlEditorState.Closed,
+            imageError = state.imageError?.takeUnless {
+                it == BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED
+            },
             generation = BuildGenerationState.Idle,
         )
         BuildComposerEvent.Generate -> prepare(state)

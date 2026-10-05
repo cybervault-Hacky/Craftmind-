@@ -46,6 +46,7 @@ import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
 import com.craftmind.app.presentation.settings.BridgePairingState
 import kotlinx.coroutines.delay
+import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -153,6 +154,8 @@ fun PlanReviewScreen(
                             Text(request.prompt, style = MaterialTheme.typography.bodyMedium)
                         } else if (request.imageContentUri != null) {
                             Text("Image-only request; no written prompt was supplied.", style = MaterialTheme.typography.bodyMedium)
+                        } else if (request.referenceAnalysisSource != null) {
+                            Text("Video-only request; no written prompt was supplied.", style = MaterialTheme.typography.bodyMedium)
                         }
                         if (request.imageContentUri != null) {
                             val source = request.imageAnalysisSource
@@ -173,7 +176,22 @@ fun PlanReviewScreen(
                             }
                         }
                         request.urlReference?.let { url ->
-                            Text("URL reference retained locally but not fetched or analyzed: $url", style = MaterialTheme.typography.bodySmall)
+                            val source = request.referenceAnalysisSource
+                            if (source == null) {
+                                Text(
+                                    "URL reference retained locally (${safeReferenceHostPath(url)}), but no public video was retrieved or analyzed. Refinement will not fetch it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                Text(
+                                    "Public video analyzed once: ${source.sourceDomain} · ${source.mediaType} · ${formatDuration(source.durationMillis)} · ${source.frameCount} distinct frames. Source path: ${safeReferenceHostPath(url)}.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    "The raw video is not saved by CraftMind. Sampled frame images were sent directly to ${source.providerId} / ${source.modelId}; that provider's terms govern its processing and retention. Refinement uses only saved text notes and never re-downloads the video.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                         ready?.request?.instruction?.let { instruction ->
                             Text("Refinement: $instruction", style = MaterialTheme.typography.bodySmall)
@@ -198,6 +216,37 @@ fun PlanReviewScreen(
                             }
                             if (source.analysis.uncertainties.isNotEmpty()) {
                                 Text("Uncertainties", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.uncertainties.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                    request.referenceAnalysisSource?.let { source ->
+                        ReviewCard("Initial video-frame analysis · AI-generated, not verified") {
+                            Text(
+                                "Source: ${source.sourceDomain} · ${source.mediaType} · ${formatDuration(source.durationMillis)} · ${source.frameCount} frames · ${source.providerId} / ${source.modelId}",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(
+                                "Approximate sample points: ${source.sampledTimestampsMillis.joinToString { formatDuration(it) }}. Frames are stages/views of one video; the latest clear frame is prioritized but is not assumed complete.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(source.analysis.summary, style = MaterialTheme.typography.bodyMedium)
+                            if (source.analysis.observedDetails.isNotEmpty()) {
+                                Text("Observed details · may be inaccurate", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.observedDetails.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            if (source.analysis.inferredDetails.isNotEmpty()) {
+                                Text("Inferred details · uncertain suggestions", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.inferredDetails.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            if (source.analysis.uncertainties.isNotEmpty()) {
+                                Text("Unknown, occluded, or conflicting details", style = MaterialTheme.typography.titleSmall)
                                 source.analysis.uncertainties.forEach { detail ->
                                     Text("• $detail", style = MaterialTheme.typography.bodySmall)
                                 }
@@ -782,6 +831,15 @@ private fun refinementMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.INVALID_BUILD_REQUEST -> "The original request metadata is invalid. The saved plan remains unchanged."
     AiErrorCode.IMAGE_UNREADABLE, AiErrorCode.IMAGE_CONTENT_INVALID, AiErrorCode.IMAGE_TOO_LARGE,
     AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED, AiErrorCode.IMAGE_MIME_MISMATCH -> "Image data is never resent during refinement; the saved plan remains unchanged."
+    AiErrorCode.MULTI_IMAGE_UNSUPPORTED, AiErrorCode.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED,
+    AiErrorCode.REFERENCE_UNSAFE_URL, AiErrorCode.REFERENCE_UNSAFE_DESTINATION,
+    AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE, AiErrorCode.REFERENCE_UNAVAILABLE,
+    AiErrorCode.REFERENCE_ACCESS_RESTRICTED, AiErrorCode.REFERENCE_REDIRECT_BLOCKED,
+    AiErrorCode.REFERENCE_RANGE_UNSUPPORTED, AiErrorCode.REFERENCE_MEDIA_UNSUPPORTED,
+    AiErrorCode.REFERENCE_TOO_LARGE, AiErrorCode.REFERENCE_DURATION_UNSUPPORTED,
+    AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED, AiErrorCode.REFERENCE_NO_DISTINCT_FRAMES,
+    AiErrorCode.REFERENCE_TRANSFER_LIMIT, AiErrorCode.REFERENCE_TIMEOUT ->
+        "Video analysis runs only during initial generation. Refinement uses saved text notes and never fetches the video again."
     AiErrorCode.MISSING_CREDENTIAL -> "Save the selected provider's API key in Settings."
     AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted provider key could not be accessed."
     AiErrorCode.NO_PROVIDER_SELECTED -> "Choose a supported provider in Settings."
@@ -805,6 +863,19 @@ private fun formatTime(epochMillis: Long): String = runCatching {
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(epochMillis))
 }.getOrDefault("Time unavailable")
+
+private fun safeReferenceHostPath(value: String): String = runCatching {
+    val uri = URI(value)
+    val host = uri.host ?: return@runCatching "Public video URL"
+    "$host${uri.rawPath.orEmpty()}"
+}.getOrDefault("Public video URL")
+
+private fun formatDuration(durationMillis: Long): String {
+    val totalSeconds = durationMillis.coerceAtLeast(0L) / 1_000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%02d:%02d".format(Locale.ROOT, minutes, seconds)
+}
 
 private const val MAX_VISIBLE_OPERATIONS = 100
 private const val MAX_VISIBLE_DIFF_ITEMS = 40

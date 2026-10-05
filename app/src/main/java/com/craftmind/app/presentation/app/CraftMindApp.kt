@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
@@ -153,7 +154,7 @@ fun CraftMindApp(
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
                             reviewContent = PlanReviewContent(
                                 ready.plan.plan,
-                                ready.request.toSnapshot(ready.imageAnalysisSource),
+                                ready.request.toSnapshot(ready.imageAnalysisSource, ready.referenceAnalysisSource),
                                 ready.localRecord,
                             )
                         },
@@ -202,7 +203,7 @@ fun CraftMindApp(
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
                             reviewContent = PlanReviewContent(
                                 ready.plan.plan,
-                                ready.request.toSnapshot(ready.imageAnalysisSource),
+                                ready.request.toSnapshot(ready.imageAnalysisSource, ready.referenceAnalysisSource),
                                 ready.localRecord,
                             )
                         },
@@ -287,7 +288,10 @@ private fun DestinationContent(
     }
 }
 
-private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSource? = null) = BuildRequestSnapshot(
+private fun BuildRequest.toSnapshot(
+    imageAnalysisSource: BuildImageAnalysisSource? = null,
+    referenceAnalysisSource: BuildReferenceAnalysisSource? = null,
+) = BuildRequestSnapshot(
     prompt = prompt,
     imageContentUri = imageReference?.contentUri,
     imageMediaType = imageReference?.mediaType,
@@ -295,4 +299,5 @@ private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSourc
     imageSizeBytes = imageReference?.sizeBytes,
     urlReference = urlReference?.url,
     imageAnalysisSource = imageAnalysisSource,
+    referenceAnalysisSource = referenceAnalysisSource,
 )

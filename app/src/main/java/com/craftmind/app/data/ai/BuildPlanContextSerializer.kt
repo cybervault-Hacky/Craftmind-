@@ -6,6 +6,7 @@ import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildPlanOperation
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -41,6 +42,7 @@ data class BuildPlanRefinementContextDocument(
     val originalWrittenRequest: String,
     val imageReferencePresentButUnavailable: Boolean,
     val imageAnalysisSource: BuildImageAnalysisSource?,
+    val referenceAnalysisSource: BuildReferenceAnalysisSource? = null,
     val urlReferencePresentButUnavailable: Boolean,
     val contextNotice: String,
 )
@@ -116,6 +118,7 @@ class BuildPlanContextSerializer(
             originalWrittenRequest = request.originalRequest.prompt,
             imageReferencePresentButUnavailable = request.originalRequest.imageContentUri != null,
             imageAnalysisSource = request.originalRequest.imageAnalysisSource,
+            referenceAnalysisSource = request.originalRequest.referenceAnalysisSource,
             urlReferencePresentButUnavailable = request.originalRequest.urlReference != null,
             contextNotice = buildList {
                 add(if (allOperationsFit) {
@@ -131,7 +134,11 @@ class BuildPlanContextSerializer(
                     })
                 }
                 if (request.originalRequest.urlReference != null) {
-                    add("The original URL was not fetched; do not claim to know its contents.")
+                    add(if (request.originalRequest.referenceAnalysisSource != null) {
+                        "The original public video was fetched once as bounded byte ranges and its sampled frames were analyzed during initial generation. This refinement receives the saved text-only observed, inferred, and uncertain notes; no URL, video bytes, or frame images are attached and the source is not downloaded again. The notes are not a visual-accuracy guarantee."
+                    } else {
+                        "The original URL has no saved visual analysis. It is not fetched or downloaded during refinement; do not claim to know its contents."
+                    })
                 }
                 if (plan.metadata.schemaVersion == BuildPlanLimits.LEGACY_SCHEMA_VERSION) {
                     add("This legacy schema has no semantic intent or component categories. Its component bounds are derived locally from saved placements. Upgrade it to the current schema by returning semantic metadata for every retained component, but preserve untargeted names, purposes, and placements.")

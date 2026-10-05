@@ -13,15 +13,23 @@ class BuildHistoryPolicy(
         request: BuildRequest,
         savedAtEpochMillis: Long,
         imageAnalysisSource: BuildImageAnalysisSource? = null,
+        referenceAnalysisSource: BuildReferenceAnalysisSource? = null,
     ): Change {
         ensureValidPlan(plan.plan)
-        if ((request.prompt.isBlank() && request.imageReference == null) || savedAtEpochMillis <= 0L ||
+        if ((request.prompt.isBlank() && request.imageReference == null && request.urlReference == null) ||
+            (request.imageReference != null && request.urlReference != null) || savedAtEpochMillis <= 0L ||
             plan.plan.metadata.sourceRequestId != request.requestId ||
             (request.imageReference == null) != (imageAnalysisSource == null) ||
             (imageAnalysisSource != null && (
                 !imageAnalysisSource.isWellFormed() ||
                     imageAnalysisSource.providerId != plan.plan.metadata.providerId ||
                     imageAnalysisSource.modelId != plan.plan.metadata.modelId
+                )) ||
+            (request.urlReference == null) != (referenceAnalysisSource == null) ||
+            (referenceAnalysisSource != null && (
+                !referenceAnalysisSource.isWellFormed(request.urlReference?.url) ||
+                    referenceAnalysisSource.providerId != plan.plan.metadata.providerId ||
+                    referenceAnalysisSource.modelId != plan.plan.metadata.modelId
                 ))
         ) {
             throw BuildRepositoryException(BuildRepositoryError.INVALID_RECORD)
@@ -34,7 +42,7 @@ class BuildHistoryPolicy(
             buildId = buildId,
             version = 1,
             plan = plan.plan,
-            request = request.toSnapshot(imageAnalysisSource),
+            request = request.toSnapshot(imageAnalysisSource, referenceAnalysisSource),
             savedAtEpochMillis = savedAtEpochMillis,
         )
         return Change((listOf(record) + records).toList(), record)
@@ -140,21 +148,31 @@ class BuildHistoryPolicy(
                 val parent = record.parentRecordId?.let(byId::get)
                 parent != null && parent.buildId == record.buildId && parent.version == record.version - 1
             }
-            // Phase 5 history may retain an image URI without having analyzed it; preserve that legacy record.
+            // Older history may retain local image/URL references without having analyzed them.
             val imageSourceWellFormed = record.request.imageAnalysisSource?.let { source ->
                 record.request.imageContentUri != null && source.isWellFormed()
+            } != false
+            val referenceSourceWellFormed = record.request.referenceAnalysisSource?.let { source ->
+                record.request.urlReference != null && source.isWellFormed(record.request.urlReference)
             } != false
             val sourceMatches = versionOne != null && record.plan.metadata.sourceRequestId.isNotBlank() &&
                 record.plan.metadata.sourceRequestId == versionOne.plan.metadata.sourceRequestId &&
                 record.request == versionOne.request &&
-                (record.request.prompt.isNotBlank() || record.request.imageContentUri != null) &&
-                imageSourceWellFormed
+                (record.request.prompt.isNotBlank() || record.request.imageContentUri != null || record.request.urlReference != null) &&
+                imageSourceWellFormed && referenceSourceWellFormed
             val initialImageSource = versionOne?.request?.imageAnalysisSource
             val imageSourceMatchesInitialPlan = when {
                 initialImageSource == null -> true
                 versionOne == null -> false
                 else -> initialImageSource.providerId == versionOne.plan.metadata.providerId &&
                     initialImageSource.modelId == versionOne.plan.metadata.modelId
+            }
+            val initialReferenceSource = versionOne?.request?.referenceAnalysisSource
+            val referenceSourceMatchesInitialPlan = when {
+                initialReferenceSource == null -> true
+                versionOne == null -> false
+                else -> initialReferenceSource.providerId == versionOne.plan.metadata.providerId &&
+                    initialReferenceSource.modelId == versionOne.plan.metadata.modelId
             }
             val planValid = validator.validate(record.plan) is BuildPlanValidationResult.Valid &&
                 record.plan.status == BuildStatus.READY
@@ -163,7 +181,8 @@ class BuildHistoryPolicy(
                 targetVersion in 1 until record.version && group.any { it.version == targetVersion }
             } ?: true
             val lineageValid = record.version == 1 || versionOne != null
-            parentValid && sourceMatches && imageSourceMatchesInitialPlan && planValid && diffValid && restoredVersionValid && lineageValid &&
+            parentValid && sourceMatches && imageSourceMatchesInitialPlan && referenceSourceMatchesInitialPlan &&
+                planValid && diffValid && restoredVersionValid && lineageValid &&
                 (record.version == 1 || record.recordId == "${record.buildId}-v${record.version}")
         }
     }
@@ -197,7 +216,10 @@ class BuildHistoryPolicy(
     }
 }
 
-private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSource?) = BuildRequestSnapshot(
+private fun BuildRequest.toSnapshot(
+    imageAnalysisSource: BuildImageAnalysisSource?,
+    referenceAnalysisSource: BuildReferenceAnalysisSource?,
+) = BuildRequestSnapshot(
     prompt = prompt,
     imageContentUri = imageReference?.contentUri,
     imageMediaType = imageReference?.mediaType,
@@ -205,4 +227,5 @@ private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSourc
     imageSizeBytes = imageReference?.sizeBytes,
     urlReference = urlReference?.url,
     imageAnalysisSource = imageAnalysisSource,
+    referenceAnalysisSource = referenceAnalysisSource,
 )

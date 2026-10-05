@@ -67,7 +67,12 @@ class HomeViewModel(
                 var localRecord: com.craftmind.app.domain.buildplan.LocalBuildRecord? = null
                 var localSaveFailed = false
                 try {
-                    localRecord = localBuilds.save(response.plan, request, response.imageAnalysisSource)
+                    localRecord = localBuilds.save(
+                        response.plan,
+                        request,
+                        response.imageAnalysisSource,
+                        response.referenceAnalysisSource,
+                    )
                 } catch (error: CancellationException) {
                     throw error
                 } catch (_: BuildRepositoryException) {
@@ -84,6 +89,7 @@ class HomeViewModel(
                             localRecord = localRecord,
                             localSaveFailed = localSaveFailed,
                             imageAnalysisSource = response.imageAnalysisSource,
+                            referenceAnalysisSource = response.referenceAnalysisSource,
                         ),
                     )
                 }

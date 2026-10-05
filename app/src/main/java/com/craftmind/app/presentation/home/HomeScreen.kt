@@ -181,7 +181,7 @@ private fun HomeIntroduction(showFoundationDetails: Boolean) {
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = "A prompt and optional references are the beginning of an AI-generated Minecraft build plan—not a manual block layout.",
+                text = "A prompt and at most one supported visual reference begin an AI-generated Minecraft build plan—not a manual block layout.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -313,9 +313,9 @@ private fun PhaseTwoNotice() {
                 tint = MaterialTheme.colorScheme.primary,
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("AI planning stays separate from Minecraft construction", style = MaterialTheme.typography.titleMedium)
+                Text("Reference analysis still ends at the reviewed BuildPlan", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "A selected compatible Gemini model may analyze one image for planning; the normal BuildPlan v2 validation, review, acceptance, and Phase 5 bridge safeguards still apply. Images never create a separate construction route, and URLs are not fetched.",
+                    text = "A compatible selected Gemini model may analyze one image or bounded frames from a narrowly supported public video URL. CraftMind does not infer visuals from a page or URL, and every plan still uses BuildPlan v2 validation, review, acceptance, and the unchanged Phase 5 bridge safeguards.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -414,7 +414,7 @@ private fun BuildComposerCard(
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
-                    Text("URL")
+                    Text("Video URL")
                 }
             }
 
@@ -444,6 +444,21 @@ private fun BuildComposerCard(
                 UrlReferenceCard(
                     reference = reference,
                     onRemove = { onEvent(BuildComposerEvent.RemoveUrl) },
+                )
+                if (selectedModel?.capabilities?.vision != true || selectedModel?.capabilities?.multipleImages != true) {
+                    VisionModelRequiredNotice(
+                        selectedModelId = selectedModelId,
+                        selectedModel = selectedModel,
+                        onOpenSettings = onOpenSettings,
+                        requiresMultipleImages = true,
+                    )
+                }
+            }
+            if (state.imageReference != null && state.urlReference != null) {
+                Text(
+                    "Use only one visual reference at a time. Remove either the image or the video URL; the two inputs are not silently combined.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
 
@@ -493,12 +508,17 @@ private fun BuildComposerCard(
 
             val generationInProgress = state.generation is BuildGenerationState.Generating
             val retryableFailure = (state.generation as? BuildGenerationState.Failed)?.retryable == true
-            val visionModelReady = state.imageReference == null || selectedModel?.capabilities?.vision == true
+            val visualModelReady = when {
+                state.imageReference != null && state.urlReference != null -> false
+                state.urlReference != null -> selectedModel?.capabilities?.let { it.vision && it.multipleImages } == true
+                state.imageReference != null -> selectedModel?.capabilities?.vision == true
+                else -> true
+            }
             Button(
                 onClick = {
                     onEvent(if (retryableFailure) BuildComposerEvent.Retry else BuildComposerEvent.Generate)
                 },
-                enabled = !generationInProgress && visionModelReady,
+                enabled = !generationInProgress && visualModelReady,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp),
@@ -514,9 +534,12 @@ private fun BuildComposerCard(
             }
             Text(
                 text = when {
-                    state.imageReference != null && visionModelReady -> "On generation, one locally validated image is sent directly from this device to the selected vision model. Raw image bytes are not kept in CraftMind history and are not resent during refinement. URLs are never fetched."
+                    state.imageReference != null && state.urlReference != null -> "Use either the image or video URL, not both. CraftMind will not silently ignore either visual input."
+                    state.imageReference != null && visualModelReady -> "On generation, one locally validated image is sent directly from this device to the selected Vision model. Raw image bytes are not stored in CraftMind history or resent during refinement."
                     state.imageReference != null -> "The image stays local until a verified vision-capable model is selected. CraftMind will not switch models or send an image to a text-only model."
-                    else -> "Your prompt is sent directly to the selected AI provider. URL references stay local and are never fetched."
+                    state.urlReference != null && visualModelReady -> "On generation, CraftMind verifies the direct public-video response, retrieves only bounded byte ranges, extracts up to five frames, and sends those frames to the exact selected multi-image Vision model. The provider's data terms apply; refinement uses saved text notes and does not fetch the video again."
+                    state.urlReference != null -> "Video analysis stays disabled until a verified multi-image Vision model is selected."
+                    else -> "Your prompt is sent directly to the selected AI provider. No visual reference content is fetched."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -530,10 +553,20 @@ private fun VisionModelRequiredNotice(
     selectedModelId: String?,
     selectedModel: AiModel?,
     onOpenSettings: () -> Unit,
+    requiresMultipleImages: Boolean = false,
 ) {
+    val selectedCanProcess = selectedModel?.capabilities?.let { capabilities ->
+        capabilities.vision && (!requiresMultipleImages || capabilities.multipleImages)
+    } == true
     val message = when {
-        selectedModelId == null -> "Select a model labeled Vision in Settings. Image analysis stays disabled until a compatible model is verified."
+        selectedModelId == null -> if (requiresMultipleImages) {
+            "Select a verified multi-image Vision model in Settings to analyze sampled video frames."
+        } else {
+            "Select a model labeled Vision in Settings. Image analysis stays disabled until a compatible model is verified."
+        }
         selectedModel == null -> "The saved model has not been verified in this session. Test the provider connection in Settings to refresh its capabilities."
+        selectedCanProcess -> "${selectedModel.displayName} is verified for this visual workflow."
+        requiresMultipleImages && selectedModel.capabilities.vision -> "${selectedModel.displayName} supports one-image vision but not the bounded multi-frame video request. Choose a model labeled Multi-image Vision; CraftMind will not switch models."
         else -> "${selectedModel.displayName} is text-only for this workflow. Choose a model labeled Vision; CraftMind will not fall back or switch models."
     }
     Surface(
@@ -542,7 +575,10 @@ private fun VisionModelRequiredNotice(
         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.62f),
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("A verified vision model is required", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (requiresMultipleImages) "A verified multi-image Vision model is required" else "A verified vision model is required",
+                style = MaterialTheme.typography.titleSmall,
+            )
             Text(message, style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp)) {
                 Text("Open AI settings")
@@ -592,8 +628,12 @@ private fun GeneratedPlanCard(
 
 private fun generationStageMessage(stage: AiGenerationStage): String = when (stage) {
     AiGenerationStage.VALIDATING_REQUEST -> "Checking the request and selected provider/model…"
+    AiGenerationStage.VALIDATING_REFERENCE_URL -> "Checking that the HTTPS video URL matches CraftMind's direct-source rules…"
+    AiGenerationStage.RESOLVING_PUBLIC_VIDEO_REFERENCE -> "Checking public access, media type, size, and byte-range support…"
+    AiGenerationStage.EXTRACTING_VIDEO_FRAMES -> "Extracting up to five bounded frames locally; no full video file is saved…"
     AiGenerationStage.PREPARING_IMAGE_LOCALLY -> "Validating and preparing the image locally…"
-    AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL -> "Sending one image directly to the selected vision model for analysis…"
+    AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL -> "Sending one image directly to the selected Vision model for analysis…"
+    AiGenerationStage.ANALYZING_VIDEO_FRAMES_WITH_SELECTED_MODEL -> "Sending sampled frames directly to the exact selected multi-image Vision model…"
     AiGenerationStage.GENERATING_BUILD_PLAN -> "Generating the BuildPlan v2 with the same selected provider/model…"
     AiGenerationStage.VALIDATING_BUILD_PLAN -> "Parsing and validating the BuildPlan locally…"
 }
@@ -616,13 +656,29 @@ private fun generationMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.UNSUPPORTED_SCHEMA_VERSION -> "The AI returned an unsupported BuildPlan schema version."
     AiErrorCode.BUILD_TOO_LARGE -> "The AI plan exceeded CraftMind's size or dimension limits."
     AiErrorCode.RESPONSE_TOO_LARGE -> "The AI response exceeded CraftMind's response-size limit."
-    AiErrorCode.INVALID_BUILD_REQUEST -> "Add a written description or attach one readable JPEG, PNG, or WebP image."
-    AiErrorCode.VISION_UNSUPPORTED -> "The exact selected provider/model does not support image analysis. Choose a verified vision model; no fallback was used and the image was not sent."
+    AiErrorCode.INVALID_BUILD_REQUEST -> "Add a written description, one readable image, or one supported public video URL."
+    AiErrorCode.VISION_UNSUPPORTED -> "The exact selected provider/model does not support image/video visual analysis. Choose a verified Vision model; no fallback was used and no visual data was sent."
     AiErrorCode.IMAGE_UNREADABLE -> "The image could not be opened from its local reference. Choose it again; no image was uploaded."
     AiErrorCode.IMAGE_CONTENT_INVALID -> "The file is not a valid supported image. Choose a readable JPEG, PNG, or WebP file."
     AiErrorCode.IMAGE_TOO_LARGE -> "The image exceeds CraftMind's local or provider payload size limit. Choose a smaller image."
     AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED -> "The image dimensions exceed CraftMind's safe decoding limit. Choose a smaller-resolution image."
     AiErrorCode.IMAGE_MIME_MISMATCH -> "The file contents do not match the selected image type. Choose the image again."
+    AiErrorCode.MULTI_IMAGE_UNSUPPORTED -> "Video analysis requires the exact selected model to support multiple image inputs. No fallback was used and the source was not sent to another model."
+    AiErrorCode.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED -> "Use one visual reference at a time. Remove either the uploaded image or the video URL; neither input will be ignored."
+    AiErrorCode.REFERENCE_UNSAFE_URL -> "Use a direct HTTPS video URL without credentials, query parameters, fragments, an IP/localhost host, or a custom port."
+    AiErrorCode.REFERENCE_UNSAFE_DESTINATION -> "The supported video host did not resolve only to public addresses. CraftMind stopped without connecting to a private destination."
+    AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE -> "Only direct public MP4/WebM files on raw.githubusercontent.com are supported. Pages, social/video platforms, playlists, and streaming manifests are not analyzed."
+    AiErrorCode.REFERENCE_UNAVAILABLE -> "The public video could not be reached. Private, deleted, or inaccessible sources are not opened or bypassed."
+    AiErrorCode.REFERENCE_ACCESS_RESTRICTED -> "The source rejected public access. CraftMind will not sign in, bypass a paywall, or work around access controls."
+    AiErrorCode.REFERENCE_REDIRECT_BLOCKED -> "The video URL redirected. Redirects are not followed; use a direct raw-file URL."
+    AiErrorCode.REFERENCE_RANGE_UNSUPPORTED -> "The source did not support bounded byte-range requests. CraftMind did not fall back to a full download."
+    AiErrorCode.REFERENCE_MEDIA_UNSUPPORTED -> "The response was not a matching MP4 or WebM video file. No plan was generated from URL text."
+    AiErrorCode.REFERENCE_TOO_LARGE -> "The video exceeds the 128 MiB source-file cap. Choose a smaller direct video."
+    AiErrorCode.REFERENCE_DURATION_UNSUPPORTED -> "The video must be between 2 seconds and 3 minutes long."
+    AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED -> "CraftMind could not safely decode bounded frames from this video. No visual analysis or plan was produced."
+    AiErrorCode.REFERENCE_NO_DISTINCT_FRAMES -> "The video did not yield at least two distinct usable frames. No plan was generated from the URL alone."
+    AiErrorCode.REFERENCE_TRANSFER_LIMIT -> "Frame extraction reached its transfer or request cap. The video was not downloaded in full."
+    AiErrorCode.REFERENCE_TIMEOUT -> "The public-reference request timed out. Check the connection and retry if the source is still publicly accessible."
     AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected provider or model cannot return the required structured plan."
     AiErrorCode.MISSING_CREDENTIAL -> "Save an API key for the selected provider in Settings before generating."
     AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted provider key could not be accessed. Check Settings and device security."
@@ -684,9 +740,9 @@ private fun UrlReferenceCard(
         ) {
             Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Public URL reference", style = MaterialTheme.typography.titleMedium)
+                Text("Public video URL", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = reference.url,
+                    text = hostAndPath(reference.url),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -730,10 +786,10 @@ private fun RequestPreview(state: BuildComposerState) {
             )
         } else {
             Text(
-                text = if (state.imageReference != null) {
-                    "No written prompt. The selected image is the only visual input; generation requires a verified vision-capable model."
-                } else {
-                    "Add a written description or attach a supported image."
+                text = when {
+                    state.imageReference != null -> "No written prompt. The selected image is the only visual input; generation requires a verified vision-capable model."
+                    state.urlReference != null -> "No written prompt. The selected supported video is the only visual input; generation requires a verified multi-image Vision model."
+                    else -> "Add a written description or attach one supported visual reference."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -742,10 +798,10 @@ private fun RequestPreview(state: BuildComposerState) {
         if (state.imageReference != null) PreviewReferenceRow("Reference image", "Attached")
         state.urlReference?.let { PreviewReferenceRow("Public URL", hostAndPath(it.url)) }
         Text(
-            text = if (state.imageReference != null) {
-                "If you generate, one image is sent directly for analysis by the selected compatible vision model. URL references are not fetched."
-            } else {
-                "Prompt is sent directly to the selected provider. URL references stay local and are not fetched."
+            text = when {
+                state.imageReference != null -> "If you generate, the selected image is sent directly for analysis by the selected compatible Vision model. It is not resent during refinement."
+                state.urlReference != null -> "Only the supported public video is fetched as bounded byte ranges. Up to five sampled frames are sent directly to the selected multi-image Vision model; refinement uses saved text notes and never re-downloads the video."
+                else -> "Your prompt is sent directly to the selected provider. No reference content is fetched."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -809,7 +865,7 @@ private fun UrlEntryDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add a public URL") },
+        title = { Text("Add a supported public video") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
@@ -817,7 +873,7 @@ private fun UrlEntryDialog(
                     onValueChange = onDraftChanged,
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Reference URL") },
-                    placeholder = { Text("https://example.com/reference") },
+                    placeholder = { Text("https://raw.githubusercontent.com/user/repo/main/video.mp4") },
                     singleLine = true,
                     isError = state.error != null,
                     shape = RoundedCornerShape(14.dp),
@@ -832,24 +888,29 @@ private fun UrlEntryDialog(
                     },
                 )
                 Text(
-                    text = "Only the URL syntax is checked. CraftMind does not fetch or analyze this page; the reference stays on this device.",
+                    text = "Supported input is a direct HTTPS .mp4 or .webm file on raw.githubusercontent.com. CraftMind rejects pages, social/video platforms, playlists, login/private sources, query strings, fragments, and redirects. The file must allow byte-range access. At generation, a small range probe is checked before any frame data is retrieved.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onSave) { Text("Add URL") } },
+        confirmButton = { TextButton(onClick = onSave) { Text("Add video URL") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
 private fun validationMessage(error: BuildRequestValidationError): String = when (error) {
-    BuildRequestValidationError.EMPTY_PROMPT -> "Describe what you want to build before continuing."
+    BuildRequestValidationError.EMPTY_PROMPT -> "Describe what you want to build or attach one supported visual reference."
     BuildRequestValidationError.PROMPT_TOO_LONG -> "Keep your description to ${BuildRequestValidator.MAX_PROMPT_LENGTH} characters or fewer."
-    BuildRequestValidationError.INVALID_URL -> "Enter a complete HTTP or HTTPS URL, such as https://example.com/reference."
-    BuildRequestValidationError.URL_SCHEME_NOT_ALLOWED -> "Only public HTTP and HTTPS URLs are supported."
+    BuildRequestValidationError.INVALID_URL -> "Enter a complete HTTPS video URL, such as https://raw.githubusercontent.com/user/repo/main/video.mp4."
+    BuildRequestValidationError.URL_SCHEME_NOT_ALLOWED -> "Video references require HTTPS; cleartext HTTP is not accepted."
     BuildRequestValidationError.URL_CREDENTIALS_NOT_ALLOWED -> "Remove any username or password from the URL."
     BuildRequestValidationError.URL_TOO_LONG -> "Keep the URL to ${BuildRequestValidator.MAX_URL_LENGTH} characters or fewer."
+    BuildRequestValidationError.URL_UNSAFE_HOST -> "IP addresses, localhost, and local/internal hostnames are not accepted."
+    BuildRequestValidationError.UNSUPPORTED_PUBLIC_VIDEO_SOURCE -> "Use a direct .mp4 or .webm file on raw.githubusercontent.com; pages, streaming links, and other hosts are not supported."
+    BuildRequestValidationError.URL_QUERY_OR_FRAGMENT_NOT_ALLOWED -> "Remove query parameters and fragments; signed or secret URL tokens are not accepted."
+    BuildRequestValidationError.URL_PORT_NOT_ALLOWED -> "Use the standard HTTPS port only; custom ports are not accepted."
+    BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED -> "Use one visual reference at a time. Remove either the image or video URL; neither input is ignored."
     BuildRequestValidationError.UNSUPPORTED_IMAGE_TYPE -> "Choose a JPEG, PNG, or WebP image."
     BuildRequestValidationError.IMAGE_TOO_LARGE -> "Choose an image no larger than 12 MiB."
     BuildRequestValidationError.INVALID_IMAGE_REFERENCE -> "CraftMind could not read that image reference. Choose the image again."
@@ -864,8 +925,9 @@ private fun formatSize(sizeBytes: Long?): String {
 
 private fun hostAndPath(value: String): String = runCatching {
     val uri = URI(value)
+    val host = uri.host ?: return@runCatching "Video URL (details hidden)"
     buildString {
-        append(uri.host ?: value)
+        append(host)
         uri.rawPath?.takeIf { it.isNotBlank() }?.let { append(it) }
     }
-}.getOrDefault(value)
+}.getOrDefault("Video URL (details hidden)")

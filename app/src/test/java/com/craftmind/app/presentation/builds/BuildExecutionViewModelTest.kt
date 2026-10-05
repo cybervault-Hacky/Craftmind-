@@ -320,6 +320,7 @@ class BuildExecutionViewModelTest {
             plan: ValidatedBuildPlan,
             request: BuildRequest,
             imageAnalysisSource: com.craftmind.app.domain.buildplan.BuildImageAnalysisSource?,
+            referenceAnalysisSource: com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource?,
         ): LocalBuildRecord = error("unused")
         override suspend fun appendRefinement(baseRecordId: String, plan: ValidatedBuildPlan, request: BuildEditRequest, diff: BuildDiff): LocalBuildRecord = error("unused")
         override suspend fun revertTo(buildId: String, targetVersion: Int, expectedCurrentRecordId: String): LocalBuildRecord = error("unused")

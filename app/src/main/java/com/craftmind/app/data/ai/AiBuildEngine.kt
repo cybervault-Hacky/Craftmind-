@@ -18,6 +18,8 @@ import com.craftmind.app.domain.ai.AiRefinementResponse
 import com.craftmind.app.domain.ai.StructuredOutputMode
 import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceSourceType
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildPlanValidationResult
 import com.craftmind.app.domain.buildplan.BuildRequest
@@ -27,6 +29,14 @@ import com.craftmind.app.domain.buildplan.UrlValidationResult
 import com.craftmind.app.domain.buildplan.BuildPlanValidator
 import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.buildplan.BuildStatus
+import com.craftmind.app.domain.reference.ExtractedPublicVideoFrames
+import com.craftmind.app.domain.reference.PublicVideoFrameExtractor
+import com.craftmind.app.domain.reference.PublicVideoReferenceException
+import com.craftmind.app.domain.reference.PublicVideoReferenceFailure
+import com.craftmind.app.domain.reference.PublicVideoReferenceLimits
+import com.craftmind.app.domain.reference.PublicVideoReferenceResolver
+import com.craftmind.app.domain.reference.PublicVideoReferenceUrlPolicy
+import com.craftmind.app.domain.reference.PublicVideoUrlValidation
 import com.craftmind.app.domain.security.CredentialStore
 import com.craftmind.app.domain.security.CredentialStoreException
 import com.craftmind.app.domain.security.ProviderCredential
@@ -45,6 +55,8 @@ class AiBuildEngine(
     private val imageInputPreparer: AiImageInputPreparer? = null,
     private val imageAnalysisParser: BuildImageAnalysisParser = BuildImageAnalysisParser(),
     private val requestValidator: BuildRequestValidator = BuildRequestValidator(),
+    private val publicVideoReferenceResolver: PublicVideoReferenceResolver? = null,
+    private val publicVideoFrameExtractor: PublicVideoFrameExtractor? = null,
 ) : AiBuildGenerator, AiBuildRefiner {
     fun providers() = registry.providers()
 
@@ -136,49 +148,178 @@ class AiBuildEngine(
                 throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
             }
 
-            val reference = request.imageReference
-            if (reference == null) {
-                onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
-                val response = adapter.generateContent(BuildPlanGenerationPrompt.forRequest(request, model), credential)
-                onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
-                val plan = parsePlan(response.content, request, selection.providerId.value, model.id)
-                AiGenerationResponse(plan = plan, usage = response.usage)
-            } else {
-                if (!adapter.definition.capabilities.vision || !model.capabilities.vision) {
-                    throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
-                }
-                val preparer = imageInputPreparer ?: throw providerFailure(AiErrorCode.IMAGE_UNREADABLE)
-                onStage(AiGenerationStage.PREPARING_IMAGE_LOCALLY)
-                val image = preparer.prepare(reference)
-                try {
-                    onStage(AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL)
-                    val analysisResponse = adapter.generateContent(
-                        BuildImageAnalysisPrompt.forRequest(request, model, image),
-                        credential,
-                    )
-                    image.close()
-                    val analysis = imageAnalysisParser.parse(analysisResponse.content)
+            when {
+                request.urlReference != null -> generateFromPublicVideo(
+                    request = request,
+                    model = model,
+                    adapter = adapter,
+                    credential = credential,
+                    providerId = selection.providerId.value,
+                    onStage = onStage,
+                )
+                request.imageReference == null -> {
                     onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
-                    val planResponse = adapter.generateContent(
-                        BuildPlanGenerationPrompt.forRequest(request, model, analysis),
-                        credential,
-                    )
+                    val response = adapter.generateContent(BuildPlanGenerationPrompt.forRequest(request, model), credential)
                     onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
-                    val plan = parsePlan(planResponse.content, request, selection.providerId.value, model.id)
-                    AiGenerationResponse(
-                        plan = plan,
-                        usage = combineUsage(analysisResponse.usage, planResponse.usage),
-                        imageAnalysisSource = BuildImageAnalysisSource(
-                            providerId = selection.providerId.value,
-                            modelId = model.id,
-                            analysis = analysis,
-                        ),
-                    )
-                } finally {
-                    image.close()
+                    val plan = parsePlan(response.content, request, selection.providerId.value, model.id)
+                    AiGenerationResponse(plan = plan, usage = response.usage)
+                }
+                else -> {
+                    if (!adapter.definition.capabilities.vision || !model.capabilities.vision) {
+                        throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
+                    }
+                    val preparer = imageInputPreparer ?: throw providerFailure(AiErrorCode.IMAGE_UNREADABLE)
+                    onStage(AiGenerationStage.PREPARING_IMAGE_LOCALLY)
+                    val imageReference = request.imageReference
+                        ?: throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+                    val image = preparer.prepare(imageReference)
+                    try {
+                        onStage(AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL)
+                        val analysisResponse = adapter.generateContent(
+                            BuildImageAnalysisPrompt.forRequest(request, model, image),
+                            credential,
+                        )
+                        image.close()
+                        val analysis = imageAnalysisParser.parse(analysisResponse.content)
+                        onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
+                        val planResponse = adapter.generateContent(
+                            BuildPlanGenerationPrompt.forRequest(request, model, analysis),
+                            credential,
+                        )
+                        onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
+                        val plan = parsePlan(planResponse.content, request, selection.providerId.value, model.id)
+                        AiGenerationResponse(
+                            plan = plan,
+                            usage = combineUsage(analysisResponse.usage, planResponse.usage),
+                            imageAnalysisSource = BuildImageAnalysisSource(
+                                providerId = selection.providerId.value,
+                                modelId = model.id,
+                                analysis = analysis,
+                            ),
+                        )
+                    } finally {
+                        image.close()
+                    }
                 }
             }
         }
+    }
+
+    private suspend fun generateFromPublicVideo(
+        request: BuildRequest,
+        model: AiModel,
+        adapter: AiProviderAdapter,
+        credential: ProviderCredential,
+        providerId: String,
+        onStage: (AiGenerationStage) -> Unit,
+    ): AiGenerationResponse {
+        if (!adapter.definition.capabilities.vision || !model.capabilities.vision) {
+            throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
+        }
+        if (!adapter.definition.capabilities.multipleImages || !model.capabilities.multipleImages) {
+            throw providerFailure(AiErrorCode.MULTI_IMAGE_UNSUPPORTED)
+        }
+        val resolver = publicVideoReferenceResolver
+            ?: throw providerFailure(AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE)
+        val extractor = publicVideoFrameExtractor
+            ?: throw providerFailure(AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE)
+        val url = request.urlReference?.url ?: throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+
+        onStage(AiGenerationStage.VALIDATING_REFERENCE_URL)
+        val expectedSource = when (val validation = PublicVideoReferenceUrlPolicy.validate(url)) {
+            is PublicVideoUrlValidation.Valid -> validation.value
+            is PublicVideoUrlValidation.Invalid -> throw referenceFailure(validation.failure)
+        }
+        onStage(AiGenerationStage.RESOLVING_PUBLIC_VIDEO_REFERENCE)
+        val resolved = try {
+            resolver.resolve(url)
+        } catch (error: PublicVideoReferenceException) {
+            throw referenceFailure(error.failure)
+        }
+        if (resolved.canonicalUrl != expectedSource.canonicalUrl ||
+            resolved.sourceDomain != expectedSource.sourceDomain || resolved.mediaType != expectedSource.mediaType ||
+            resolved.contentLengthBytes !in 1..PublicVideoReferenceLimits.MAX_VIDEO_FILE_BYTES
+        ) {
+            throw providerFailure(AiErrorCode.REFERENCE_UNSAFE_URL)
+        }
+
+        onStage(AiGenerationStage.EXTRACTING_VIDEO_FRAMES)
+        val frames = try {
+            extractor.extract(resolved)
+        } catch (error: PublicVideoReferenceException) {
+            throw referenceFailure(error.failure)
+        }
+        try {
+            val timestamps = frames.frames.map { it.timestampMillis }
+            val totalImageBytes = frames.frames.sumOf { it.image.byteCount.toLong() }
+            if (frames.frames.size !in PublicVideoReferenceLimits.MIN_FRAME_COUNT..PublicVideoReferenceLimits.MAX_FRAME_COUNT ||
+                timestamps.zipWithNext().any { (first, second) -> first >= second } ||
+                totalImageBytes > PublicVideoReferenceLimits.MAX_TOTAL_FRAME_IMAGE_BYTES ||
+                frames.durationMillis !in PublicVideoReferenceLimits.MIN_VIDEO_DURATION_MS..PublicVideoReferenceLimits.MAX_VIDEO_DURATION_MS
+            ) {
+                throw providerFailure(AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED)
+            }
+            val analysisResponse = try {
+                onStage(AiGenerationStage.ANALYZING_VIDEO_FRAMES_WITH_SELECTED_MODEL)
+                adapter.generateContent(BuildImageAnalysisPrompt.forVideoFrames(request, model, frames), credential)
+            } finally {
+                // Provider image payloads are wiped immediately after the visual-analysis call.
+                frames.close()
+            }
+            val analysis = imageAnalysisParser.parse(analysisResponse.content)
+            val referenceSource = BuildReferenceAnalysisSource(
+                sourceType = BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+                sourceDomain = resolved.sourceDomain,
+                mediaType = resolved.mediaType,
+                durationMillis = frames.durationMillis,
+                sampledTimestampsMillis = timestamps,
+                providerId = providerId,
+                modelId = model.id,
+                analysis = analysis,
+            )
+            if (!referenceSource.isWellFormed(url)) {
+                throw providerFailure(AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED)
+            }
+            onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
+            val planResponse = adapter.generateContent(
+                BuildPlanGenerationPrompt.forRequest(request, model, referenceAnalysisSource = referenceSource),
+                credential,
+            )
+            onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
+            val plan = parsePlan(planResponse.content, request, providerId, model.id)
+            return AiGenerationResponse(
+                plan = plan,
+                usage = combineUsage(analysisResponse.usage, planResponse.usage),
+                referenceAnalysisSource = referenceSource,
+            )
+        } finally {
+            frames.close()
+        }
+    }
+
+    private fun referenceFailure(failure: PublicVideoReferenceFailure): AiProviderException {
+        val code = when (failure) {
+            PublicVideoReferenceFailure.UNSAFE_URL -> AiErrorCode.REFERENCE_UNSAFE_URL
+            PublicVideoReferenceFailure.UNSAFE_DESTINATION -> AiErrorCode.REFERENCE_UNSAFE_DESTINATION
+            PublicVideoReferenceFailure.UNSUPPORTED_SOURCE -> AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE
+            PublicVideoReferenceFailure.SOURCE_UNAVAILABLE -> AiErrorCode.REFERENCE_UNAVAILABLE
+            PublicVideoReferenceFailure.ACCESS_RESTRICTED -> AiErrorCode.REFERENCE_ACCESS_RESTRICTED
+            PublicVideoReferenceFailure.REDIRECT_NOT_ALLOWED -> AiErrorCode.REFERENCE_REDIRECT_BLOCKED
+            PublicVideoReferenceFailure.BYTE_RANGES_REQUIRED -> AiErrorCode.REFERENCE_RANGE_UNSUPPORTED
+            PublicVideoReferenceFailure.UNSUPPORTED_MEDIA -> AiErrorCode.REFERENCE_MEDIA_UNSUPPORTED
+            PublicVideoReferenceFailure.CONTENT_TOO_LARGE -> AiErrorCode.REFERENCE_TOO_LARGE
+            PublicVideoReferenceFailure.VIDEO_TOO_LONG -> AiErrorCode.REFERENCE_DURATION_UNSUPPORTED
+            PublicVideoReferenceFailure.FRAME_EXTRACTION_FAILED -> AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED
+            PublicVideoReferenceFailure.NO_DISTINCT_FRAMES -> AiErrorCode.REFERENCE_NO_DISTINCT_FRAMES
+            PublicVideoReferenceFailure.TRANSFER_LIMIT_EXCEEDED -> AiErrorCode.REFERENCE_TRANSFER_LIMIT
+            PublicVideoReferenceFailure.TIMEOUT -> AiErrorCode.REFERENCE_TIMEOUT
+        }
+        return AiProviderException(
+            AiFailure(
+                code = code,
+                retryable = code == AiErrorCode.REFERENCE_TIMEOUT,
+            ),
+        )
     }
 
     private fun parsePlan(content: String, request: BuildRequest, providerId: String, modelId: String): com.craftmind.app.domain.buildplan.ValidatedBuildPlan =
@@ -201,7 +342,10 @@ class AiBuildEngine(
     }
 
     private fun validateGenerationRequest(request: BuildRequest) {
-        if ((request.prompt.isBlank() && request.imageReference == null) ||
+        if (request.imageReference != null && request.urlReference != null) {
+            throw providerFailure(AiErrorCode.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED)
+        }
+        if ((request.prompt.isBlank() && request.imageReference == null && request.urlReference == null) ||
             request.prompt.length > BuildRequestValidator.MAX_PROMPT_LENGTH
         ) {
             throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
@@ -216,8 +360,15 @@ class AiBuildEngine(
             }
         }
         request.urlReference?.let { reference ->
-            if (requestValidator.validateUrl(reference.url) !is UrlValidationResult.Valid) {
-                throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+            when (val result = requestValidator.validateUrl(reference.url)) {
+                is UrlValidationResult.Valid -> Unit
+                is UrlValidationResult.Invalid -> throw providerFailure(
+                    if (result.error == BuildRequestValidationError.UNSUPPORTED_PUBLIC_VIDEO_SOURCE) {
+                        AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE
+                    } else {
+                        AiErrorCode.REFERENCE_UNSAFE_URL
+                    },
+                )
             }
         }
     }
@@ -228,6 +379,9 @@ class AiBuildEngine(
             request.basePlan.status != BuildStatus.READY ||
             request.originalRequest.imageAnalysisSource?.let { source ->
                 request.originalRequest.imageContentUri == null || !source.isWellFormed()
+            } == true ||
+            request.originalRequest.referenceAnalysisSource?.let { source ->
+                request.originalRequest.urlReference == null || !source.isWellFormed(request.originalRequest.urlReference)
             } == true ||
             planValidator.validate(request.basePlan) !is BuildPlanValidationResult.Valid
         ) {

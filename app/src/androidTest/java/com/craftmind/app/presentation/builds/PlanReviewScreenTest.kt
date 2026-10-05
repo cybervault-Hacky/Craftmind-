@@ -18,6 +18,8 @@ import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildImageAnalysis
 import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceSourceType
 import com.craftmind.app.domain.buildplan.BuildIntent
 import com.craftmind.app.domain.buildplan.BuildOriginStrategy
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -159,6 +161,58 @@ class PlanReviewScreenTest {
         compose.onNodeWithText("The supports may be timber.").assertExists()
         compose.onNodeWithText("The rear side is hidden.").assertExists()
         compose.onNodeWithText("Refinement uses the validated plan and these saved text notes only; it does not resend or reanalyze the image. The notes are not a visual-accuracy guarantee.").assertExists()
+    }
+
+    @Test
+    fun publicVideoReviewShowsFrameProvenanceAndObservedInferredUnknownEvidenceWithoutFullUrl() {
+        val base = plan()
+        val url = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val source = BuildReferenceAnalysisSource(
+            sourceType = BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+            sourceDomain = "raw.githubusercontent.com",
+            mediaType = "video/mp4",
+            durationMillis = 10_000L,
+            sampledTimestampsMillis = listOf(1_000L, 9_500L),
+            providerId = base.metadata.providerId,
+            modelId = base.metadata.modelId,
+            analysis = BuildImageAnalysis(
+                summary = "A small pavilion is visible across two stages.",
+                observedDetails = listOf("The later sample shows four supports and a shallow roof."),
+                inferredDetails = listOf("The supports may be stone."),
+                uncertainties = listOf("The rear wall is partly occluded."),
+            ),
+        )
+        val record = record(base, version = 1).copy(
+            request = BuildRequestSnapshot(
+                prompt = "",
+                urlReference = url,
+                referenceAnalysisSource = source,
+            ),
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Video-only request; no written prompt was supplied.").assertExists()
+        compose.onNodeWithText("Public video analyzed once: raw.githubusercontent.com · video/mp4 · 00:10 · 2 distinct frames. Source path: raw.githubusercontent.com/owner/repo/main/video.mp4.").assertExists()
+        compose.onNodeWithText("Initial video-frame analysis · AI-generated, not verified").assertExists()
+        compose.onNodeWithText("Approximate sample points: 00:01, 00:09. Frames are stages/views of one video; the latest clear frame is prioritized but is not assumed complete.").assertExists()
+        compose.onNodeWithText("Observed details · may be inaccurate").assertExists()
+        compose.onNodeWithText("Inferred details · uncertain suggestions").assertExists()
+        compose.onNodeWithText("Unknown, occluded, or conflicting details").assertExists()
+        compose.onNodeWithText("The rear wall is partly occluded.").assertExists()
+        compose.onNodeWithText(url).assertDoesNotExist()
+        compose.onNodeWithText("The raw video is not saved by CraftMind. Sampled frame images were sent directly to ${source.providerId} / ${source.modelId}; that provider's terms govern its processing and retention. Refinement uses only saved text notes and never re-downloads the video.").assertExists()
     }
 
     @Test

@@ -109,6 +109,42 @@ class HomeViewModelTest {
     }
 
     @Test
+    fun publicVideoGenerationPersistsBoundedTextOnlyProvenanceInReadyAndHistory() = runTest(mainDispatcher) {
+        val source = com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource(
+            sourceType = com.craftmind.app.domain.buildplan.BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+            sourceDomain = "raw.githubusercontent.com",
+            mediaType = "video/mp4",
+            durationMillis = 5_000L,
+            sampledTimestampsMillis = listOf(500L, 4_750L),
+            providerId = "google_gemini",
+            modelId = "gemini-test",
+            analysis = BuildImageAnalysis(
+                summary = "A small pavilion appears across two stages.",
+                observedDetails = listOf("The later sample shows four supports and a roof."),
+                inferredDetails = listOf("The roof may be stone."),
+                uncertainties = listOf("The rear is not visible."),
+            ),
+        )
+        val generator = SequencedGenerator { request ->
+            AiGenerationResponse(validatedPlan(request), usage = null, referenceAnalysisSource = source)
+        }
+        val records = MemoryBuildRepository()
+        val viewModel = HomeViewModel(generator, records, reducer())
+        viewModel.dispatch(BuildComposerEvent.PromptChanged("Build the finished pavilion"))
+        viewModel.dispatch(BuildComposerEvent.OpenUrlEditor)
+        viewModel.dispatch(BuildComposerEvent.UrlDraftChanged("https://raw.githubusercontent.com/owner/repo/main/video.mp4"))
+        viewModel.dispatch(BuildComposerEvent.SaveUrl)
+        viewModel.dispatch(BuildComposerEvent.Generate)
+        advanceUntilIdle()
+
+        val ready = viewModel.state.value.generation as BuildGenerationState.Ready
+        assertEquals(source, ready.referenceAnalysisSource)
+        assertEquals(source, records.records.value.single().request.referenceAnalysisSource)
+        assertEquals("https://raw.githubusercontent.com/owner/repo/main/video.mp4", records.records.value.single().request.urlReference)
+        assertEquals("A small pavilion appears across two stages.", records.records.value.single().request.referenceAnalysisSource?.analysis?.summary)
+    }
+
+    @Test
     fun retryOccursOnlyAfterRetryableFailureAndThenCanReachReady() = runTest(mainDispatcher) {
         var calls = 0
         val generator = SequencedGenerator { request ->
@@ -222,6 +258,7 @@ class HomeViewModelTest {
             plan: ValidatedBuildPlan,
             request: BuildRequest,
             imageAnalysisSource: com.craftmind.app.domain.buildplan.BuildImageAnalysisSource?,
+            referenceAnalysisSource: com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource?,
         ): LocalBuildRecord {
             saveCount++
             val record = LocalBuildRecord(
@@ -235,6 +272,7 @@ class HomeViewModelTest {
                     imageSizeBytes = request.imageReference?.sizeBytes,
                     urlReference = request.urlReference?.url,
                     imageAnalysisSource = imageAnalysisSource,
+                    referenceAnalysisSource = referenceAnalysisSource,
                 ),
                 savedAtEpochMillis = 456L,
             )

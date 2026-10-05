@@ -113,7 +113,7 @@ fun SettingsScreen(
         ) {
             Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 6 · one-image AI planning · Phase 5 construction safety",
+                text = "Phase 7 · bounded public-video analysis · Phase 5 construction safety",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -253,8 +253,11 @@ private fun ProviderSettingsCard(
                                         Text(model.displayName)
                                         Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         Text(
-                                            if (model.capabilities.vision) "Text + one-image vision analysis"
-                                            else "Text only · image analysis unavailable",
+                                            when {
+                                                model.capabilities.vision && model.capabilities.multipleImages -> "Text + one-image and multi-frame video vision"
+                                                model.capabilities.vision -> "Text + one-image vision · multi-frame video unavailable"
+                                                else -> "Text only · image/video analysis unavailable"
+                                            },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -270,9 +273,9 @@ private fun ProviderSettingsCard(
                 }
                 Text(
                     text = if (provider.capabilities.vision) {
-                        "One-image analysis is enabled only for models individually labeled Vision. JPEG, PNG, and WebP are validated and processed locally, then sent directly to that selected model. URLs are not fetched."
+                        "Image requests use one locally prepared JPEG, PNG, or WebP. Video requests are separately limited to direct HTTPS MP4/WebM files on raw.githubusercontent.com: byte ranges only, no redirects, and at most five sampled frames. A model must be individually labeled Multi-image Vision; frames go directly to that selected provider."
                     } else {
-                        "This provider adapter does not support image analysis."
+                        "This provider adapter does not support image or video-frame analysis."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -293,10 +296,10 @@ private fun ProviderSettingsCard(
                 )
                 selectedModel?.let { model ->
                     Text(
-                        if (model.capabilities.vision) {
-                            "Selected model is verified for image input. Image analysis uses a separate initial request; refinements receive only the saved plan and text-only analysis notes."
-                        } else {
-                            "Selected model is text-only for image analysis. An image request is blocked until you select a model labeled Vision."
+                        when {
+                            model.capabilities.vision && model.capabilities.multipleImages -> "Selected model is verified for one-image input and bounded multi-image video-frame analysis. Video bytes stay on-device except for bounded HTTPS range reads; sampled images are sent directly to this provider. Refinement uses saved text notes only and never re-downloads the video. Provider retention is governed by its terms."
+                            model.capabilities.vision -> "Selected model is verified for one-image input only. Video analysis is blocked unless you select a model labeled Multi-image Vision."
+                            else -> "Selected model is text-only for visual references. Image/video analysis is blocked until you choose a model labeled Vision."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (model.capabilities.vision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,

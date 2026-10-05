@@ -32,11 +32,22 @@ class BuildRequestValidatorTest {
     }
 
     @Test
-    fun acceptsOnlyAbsoluteHttpAndHttpsUrlsWithoutEmbeddedCredentials() {
-        val https = validator.validateUrl("  https://example.com/gallery?view=wide  ")
-        assertEquals(UrlValidationResult.Valid("https://example.com/gallery?view=wide"), https)
+    fun acceptsOnlyAbsoluteHttpsUrlsWithoutCredentialsOrLocalDestinations() {
+        val video = validator.validateUrl("  https://raw.githubusercontent.com/owner/repo/main/video.mp4  ")
         assertEquals(
-            UrlValidationResult.Valid("http://example.org/build"),
+            UrlValidationResult.Valid("https://raw.githubusercontent.com/owner/repo/main/video.mp4"),
+            video,
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.UNSUPPORTED_PUBLIC_VIDEO_SOURCE),
+            validator.validateUrl("https://example.com/gallery"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.UNSUPPORTED_PUBLIC_VIDEO_SOURCE),
+            validator.validateUrl("https://raw.githubusercontent.com/owner/repo/main/index.html"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_SCHEME_NOT_ALLOWED),
             validator.validateUrl("http://example.org/build"),
         )
         assertEquals(
@@ -47,6 +58,26 @@ class BuildRequestValidatorTest {
             UrlValidationResult.Invalid(BuildRequestValidationError.URL_CREDENTIALS_NOT_ALLOWED),
             validator.validateUrl("https://user:secret@example.com/page"),
         )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_UNSAFE_HOST),
+            validator.validateUrl("https://127.0.0.1/video.mp4"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_UNSAFE_HOST),
+            validator.validateUrl("https://localhost/video.mp4"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_QUERY_OR_FRAGMENT_NOT_ALLOWED),
+            validator.validateUrl("https://example.com/video.mp4?token=secret"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_QUERY_OR_FRAGMENT_NOT_ALLOWED),
+            validator.validateUrl("https://example.com/video.mp4#frame"),
+        )
+        assertEquals(
+            UrlValidationResult.Invalid(BuildRequestValidationError.URL_PORT_NOT_ALLOWED),
+            validator.validateUrl("https://example.com:8443/video.mp4"),
+        )
         assertTrue(validator.validateUrl("https://").let { it is UrlValidationResult.Invalid })
         assertTrue(validator.validateUrl("not a url").let { it is UrlValidationResult.Invalid })
         assertEquals(
@@ -56,7 +87,7 @@ class BuildRequestValidatorTest {
     }
 
     @Test
-    fun createTrimsPromptAndBuildsTextImageAndUrlInputsWithoutLosingImageMetadata() {
+    fun rejectsCombiningImageAndVideoReferencesInsteadOfSilentlyDroppingEither() {
         val image = BuildInput.ImageReference(
             contentUri = "content://picker/items/17",
             mediaType = "IMAGE/PNG; charset=binary",
@@ -64,28 +95,41 @@ class BuildRequestValidatorTest {
             displayName = "garden-reference.png",
         )
 
-        val result = validator.create(
-            BuildRequestDraft(
-                prompt = "  A greenhouse beside a stream  ",
-                imageReference = image,
-                urlReference = BuildInput.UrlReference("https://example.com/garden"),
+        assertEquals(
+            BuildRequestValidationResult.Invalid(BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED),
+            validator.create(
+                BuildRequestDraft(
+                    prompt = "A greenhouse beside a stream",
+                    imageReference = image,
+                    urlReference = BuildInput.UrlReference("https://example.com/garden"),
+                ),
             ),
         )
+    }
+
+    @Test
+    fun acceptsVideoReferenceWithOptionalTextAndNormalizesHttpsUrl() {
+        val videoUrl = "  https://raw.githubusercontent.com/user/repo/main/video.mp4  "
+        val result = validator.create(BuildRequestDraft(prompt = "  Analyze this build  ", urlReference = BuildInput.UrlReference(videoUrl)))
 
         assertTrue(result is BuildRequestValidationResult.Valid)
         val request = (result as BuildRequestValidationResult.Valid).request
-        assertEquals("request-test-id", request.requestId)
-        assertEquals(1_700_000_000_000L, request.createdAtEpochMillis)
-        assertEquals("A greenhouse beside a stream", request.prompt)
-        assertEquals(image.copy(mediaType = "image/png"), request.imageReference)
-        assertEquals(BuildInput.UrlReference("https://example.com/garden"), request.urlReference)
+        assertEquals("Analyze this build", request.prompt)
+        assertEquals(BuildInput.UrlReference(videoUrl.trim()), request.urlReference)
+        assertEquals(listOf(BuildInput.Text("Analyze this build"), BuildInput.UrlReference(videoUrl.trim())), request.inputs())
+    }
+
+    @Test
+    fun acceptsVideoOnlyRequestButStillRejectsEmptyRequest() {
+        val url = BuildInput.UrlReference("https://raw.githubusercontent.com/user/repo/main/video.mp4")
+        val result = validator.create(BuildRequestDraft(prompt = "", urlReference = url))
+        assertTrue(result is BuildRequestValidationResult.Valid)
+        val request = (result as BuildRequestValidationResult.Valid).request
+        assertEquals("", request.prompt)
+        assertEquals(url, request.urlReference)
         assertEquals(
-            listOf(
-                BuildInput.Text("A greenhouse beside a stream"),
-                image.copy(mediaType = "image/png"),
-                BuildInput.UrlReference("https://example.com/garden"),
-            ),
-            request.inputs(),
+            BuildRequestValidationResult.Invalid(BuildRequestValidationError.EMPTY_PROMPT),
+            validator.create(BuildRequestDraft(prompt = "")),
         )
     }
 

@@ -117,8 +117,11 @@ class GoogleGeminiProviderAdapterTest {
             val models = adapter.listModels(credential).associateBy(AiModel::id)
             assertTrue(adapter.definition.capabilities.vision)
             assertEquals(true, models["gemini-3.5-flash"]?.capabilities?.vision)
+            assertEquals(true, models["gemini-3.5-flash"]?.capabilities?.multipleImages)
             assertEquals(true, models["gemini-3.5-flash-lite"]?.capabilities?.vision)
+            assertEquals(true, models["gemini-3.5-flash-lite"]?.capabilities?.multipleImages)
             assertEquals(false, models["gemini-2.5-flash"]?.capabilities?.vision)
+            assertEquals(false, models["gemini-2.5-flash"]?.capabilities?.multipleImages)
         } finally {
             credential.close()
         }
@@ -161,6 +164,105 @@ class GoogleGeminiProviderAdapterTest {
         } finally {
             image.close()
             imageBytes.fill(0)
+            credential.close()
+        }
+    }
+
+    @Test
+    fun postsMultipleFramesAsOrderedInlineImagePartsForTheVerifiedSelectedModel() = runBlocking {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/json").setBody(
+                """{"candidates":[{"content":{"role":"model","parts":[{"text":"{}"}]},"finishReason":"STOP"}]}""",
+            ),
+        )
+        val payloads = listOf(byteArrayOf(1, 3, 5), byteArrayOf(2, 4, 6), byteArrayOf(7, 8, 9))
+        val images = payloads.map { AiImageInput("image/jpeg", 2, 2, it) }
+        val multiImageModel = model.copy(
+            id = "gemini-3.5-flash",
+            capabilities = model.capabilities.copy(vision = true, multipleImages = true),
+        )
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            adapter.generateContent(
+                AiProviderRequest(multiImageModel, "video system", "analyze these chronological frames", images),
+                credential,
+            )
+            val sent = server.takeRequest()
+            val body = sent.body.readUtf8()
+            val root = kotlinx.serialization.json.Json.parseToJsonElement(body) as kotlinx.serialization.json.JsonObject
+            val contents = root["contents"] as kotlinx.serialization.json.JsonArray
+            val parts = (contents.single() as kotlinx.serialization.json.JsonObject)["parts"] as kotlinx.serialization.json.JsonArray
+            assertEquals(4, parts.size)
+            assertEquals("text", (parts[0] as kotlinx.serialization.json.JsonObject).keys.single())
+            val encodedImages = parts.drop(1).map { part ->
+                val inlineData = (part as kotlinx.serialization.json.JsonObject)["inline_data"] as kotlinx.serialization.json.JsonObject
+                assertEquals("image/jpeg", (inlineData["mime_type"] as kotlinx.serialization.json.JsonPrimitive).content)
+                (inlineData["data"] as kotlinx.serialization.json.JsonPrimitive).content
+            }
+            assertEquals(payloads.map { java.util.Base64.getEncoder().encodeToString(it) }, encodedImages)
+            assertTrue(body.contains("analyze these chronological frames"))
+            assertFalse(body.contains(testKey))
+            assertEquals("$testKey", sent.getHeader("x-goog-api-key"))
+            assertNull(sent.requestUrl?.queryParameter("key"))
+        } finally {
+            images.forEach(AiImageInput::close)
+            payloads.forEach { it.fill(0) }
+            credential.close()
+        }
+    }
+
+    @Test
+    fun refusesAggregateMultiImagePayloadOverThreeMiBBeforeNetworkRequest() = runBlocking {
+        val firstBytes = ByteArray(1_600 * 1024) { 1 }
+        val secondBytes = ByteArray(1_600 * 1024) { 2 }
+        val images = listOf(
+            AiImageInput("image/jpeg", 1, 1, firstBytes),
+            AiImageInput("image/jpeg", 1, 1, secondBytes),
+        )
+        val multiImageModel = model.copy(
+            id = "gemini-3.5-flash",
+            capabilities = model.capabilities.copy(vision = true, multipleImages = true),
+        )
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            val failure = try {
+                adapter.generateContent(AiProviderRequest(multiImageModel, "system", "prompt", images), credential)
+                throw AssertionError("Expected multi-image payload limit rejection")
+            } catch (expected: AiProviderException) {
+                expected
+            }
+            assertEquals(AiErrorCode.IMAGE_TOO_LARGE, failure.failure.code)
+            assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+        } finally {
+            images.forEach(AiImageInput::close)
+            firstBytes.fill(0)
+            secondBytes.fill(0)
+            credential.close()
+        }
+    }
+
+    @Test
+    fun rejectsMultipleFramesWhenExactModelDoesNotAdvertiseMultiImageSupport() = runBlocking {
+        val images = listOf(
+            AiImageInput("image/jpeg", 1, 1, byteArrayOf(1)),
+            AiImageInput("image/jpeg", 1, 1, byteArrayOf(2)),
+        )
+        val visionOnlyModel = model.copy(
+            id = "gemini-3.5-flash",
+            capabilities = model.capabilities.copy(vision = true, multipleImages = false),
+        )
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            val failure = try {
+                adapter.generateContent(AiProviderRequest(visionOnlyModel, "system", "prompt", images), credential)
+                throw AssertionError("Expected multi-image capability rejection")
+            } catch (expected: AiProviderException) {
+                expected
+            }
+            assertEquals(AiErrorCode.MULTI_IMAGE_UNSUPPORTED, failure.failure.code)
+            assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+        } finally {
+            images.forEach(AiImageInput::close)
             credential.close()
         }
     }

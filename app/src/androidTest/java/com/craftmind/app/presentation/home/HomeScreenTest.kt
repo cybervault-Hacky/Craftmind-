@@ -109,8 +109,37 @@ class HomeScreenTest {
         compose.onNodeWithText("A verified vision model is required").assertDoesNotExist()
     }
 
-    private fun model(vision: Boolean) = AiModel(
-        id = if (vision) "gemini-3.5-flash" else "gemini-text-only",
+    @Test
+    fun videoGenerationIsBlockedUnlessTheExactSelectedModelAdvertisesMultiImageVision() {
+        var selectedModel by mutableStateOf(model(vision = true, multipleImages = false))
+        val state = BuildComposerState(
+            prompt = "Build the completed pavilion",
+            urlReference = BuildInput.UrlReference("https://raw.githubusercontent.com/owner/repo/main/video.mp4"),
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                HomeScreen(
+                    state = state,
+                    onEvent = {},
+                    onPickImage = {},
+                    onReviewPlan = {},
+                    selectedModelId = selectedModel.id,
+                    selectedModel = selectedModel,
+                )
+            }
+        }
+
+        compose.onNodeWithText("Generate with AI").assertIsNotEnabled()
+        compose.onNodeWithText("A verified multi-image Vision model is required").assertExists()
+        compose.onNodeWithText("Gemini vision model supports one-image vision but not the bounded multi-frame video request. Choose a model labeled Multi-image Vision; CraftMind will not switch models.").assertExists()
+
+        compose.runOnIdle { selectedModel = model(vision = true, multipleImages = true) }
+        compose.onNodeWithText("Generate with AI").assertIsEnabled()
+        compose.onNodeWithText("A verified multi-image Vision model is required").assertDoesNotExist()
+    }
+
+    private fun model(vision: Boolean, multipleImages: Boolean = false) = AiModel(
+        id = if (multipleImages) "gemini-3.5-flash" else if (vision) "gemini-vision-only" else "gemini-text-only",
         providerId = AiProviderId("google_gemini"),
         displayName = if (vision) "Gemini vision model" else "Gemini text model",
         capabilities = AiModelCapabilities(
@@ -120,6 +149,7 @@ class HomeScreenTest {
             structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
             maximumContextTokens = 64_000,
             maximumOutputTokens = 8_000,
+            multipleImages = multipleImages,
         ),
     )
 

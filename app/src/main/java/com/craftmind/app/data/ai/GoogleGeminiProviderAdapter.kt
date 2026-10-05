@@ -73,6 +73,7 @@ class GoogleGeminiProviderAdapter internal constructor(
             structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
             cancellation = true,
             streaming = false,
+            multipleImages = true,
         ),
     )
 
@@ -111,6 +112,7 @@ class GoogleGeminiProviderAdapter internal constructor(
                     capabilities = AiModelCapabilities(
                         textGeneration = true,
                         vision = id in VERIFIED_VISION_MODELS,
+                        multipleImages = id in VERIFIED_MULTI_IMAGE_MODELS,
                         publicUrlReferences = false,
                         structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
                         maximumContextTokens = contextTokens,
@@ -152,28 +154,44 @@ class GoogleGeminiProviderAdapter internal constructor(
         ) {
             throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
         }
-        if (request.imageInputs.size > 1) throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
-        val image = request.imageInputs.singleOrNull()
-        if (image != null) {
+        val images = request.imageInputs
+        if (images.size > MAX_INLINE_IMAGE_COUNT) throw providerFailure(AiErrorCode.MULTI_IMAGE_UNSUPPORTED)
+        if (images.size > 1 && (
+                !definition.capabilities.multipleImages || !request.model.capabilities.multipleImages ||
+                    request.model.id !in VERIFIED_MULTI_IMAGE_MODELS
+                )
+        ) {
+            throw providerFailure(AiErrorCode.MULTI_IMAGE_UNSUPPORTED)
+        }
+        if (images.isNotEmpty()) {
             if (!definition.capabilities.vision || !request.model.capabilities.vision ||
                 request.model.id !in VERIFIED_VISION_MODELS
             ) {
                 throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
             }
-            if (image.mediaType !in AiImageInput.SUPPORTED_MEDIA_TYPES ||
-                image.width <= 0 || image.height <= 0 || image.byteCount !in 1..AiImageInput.MAX_PROVIDER_IMAGE_BYTES
-            ) {
-                throw providerFailure(AiErrorCode.IMAGE_CONTENT_INVALID)
+            images.forEach { image ->
+                if (image.mediaType !in AiImageInput.SUPPORTED_MEDIA_TYPES ||
+                    image.width <= 0 || image.height <= 0 || image.byteCount !in 1..AiImageInput.MAX_PROVIDER_IMAGE_BYTES
+                ) {
+                    throw providerFailure(AiErrorCode.IMAGE_CONTENT_INVALID)
+                }
+                if (image.width > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
+                    image.height > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
+                    image.width.toLong() * image.height.toLong() > AiImageInput.MAX_PROVIDER_IMAGE_PIXELS
+                ) {
+                    throw providerFailure(AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED)
+                }
             }
-            if (image.width > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
-                image.height > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
-                image.width.toLong() * image.height.toLong() > AiImageInput.MAX_PROVIDER_IMAGE_PIXELS
-            ) {
-                throw providerFailure(AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED)
+            val imageBytes = images.sumOf { it.byteCount.toLong() }
+            val maximumTotalBytes = if (images.size == 1) {
+                AiImageInput.MAX_PROVIDER_IMAGE_BYTES.toLong()
+            } else {
+                MAX_MULTI_IMAGE_BYTES
             }
+            if (imageBytes > maximumTotalBytes) throw providerFailure(AiErrorCode.IMAGE_TOO_LARGE)
         }
 
-        val body = if (image == null) {
+        val body = if (images.isEmpty()) {
             val requestJson = buildJsonObject {
                 put(
                     "systemInstruction",
@@ -196,7 +214,7 @@ class GoogleGeminiProviderAdapter internal constructor(
             }
             json.encodeToString(JsonObject.serializer(), requestJson).toRequestBody(JSON_MEDIA_TYPE)
         } else {
-            multimodalRequestBody(request, image)
+            multimodalRequestBody(request, images)
         }
         val httpRequest = withProviderKey(
             Request.Builder()
@@ -207,8 +225,8 @@ class GoogleGeminiProviderAdapter internal constructor(
         ).build()
         val responseJson = executeJson(
             httpRequest,
-            if (image != null) BuildImageAnalysisLimits.MAX_RESPONSE_BYTES else BuildPlanLimits.MAX_RESPONSE_BYTES,
-            requestTooLargeCode = if (image != null) AiErrorCode.IMAGE_TOO_LARGE else AiErrorCode.RESPONSE_TOO_LARGE,
+            if (images.isNotEmpty()) BuildImageAnalysisLimits.MAX_RESPONSE_BYTES else BuildPlanLimits.MAX_RESPONSE_BYTES,
+            requestTooLargeCode = if (images.isNotEmpty()) AiErrorCode.IMAGE_TOO_LARGE else AiErrorCode.RESPONSE_TOO_LARGE,
         )
         parseGenerationResponse(responseJson)
     }
@@ -221,8 +239,8 @@ class GoogleGeminiProviderAdapter internal constructor(
         put("maxOutputTokens", minOf(modelMaximum, DEFAULT_MAX_OUTPUT_TOKENS))
     }
 
-    /** Streams base64 into Gemini's inline_data part without creating an image-sized Base64 String. */
-    private fun multimodalRequestBody(request: AiProviderRequest, image: AiImageInput): RequestBody =
+    /** Streams Base64 for a bounded set of image Parts without creating Base64 Strings. */
+    private fun multimodalRequestBody(request: AiProviderRequest, images: List<AiImageInput>): RequestBody =
         object : RequestBody() {
             override fun contentType() = JSON_MEDIA_TYPE
             override fun contentLength() = -1L
@@ -233,14 +251,17 @@ class GoogleGeminiProviderAdapter internal constructor(
                 sink.writeUtf8(encodeJsonString(request.systemInstruction))
                 sink.writeUtf8("}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":")
                 sink.writeUtf8(encodeJsonString(request.prompt))
-                sink.writeUtf8("},{\"inline_data\":{\"mime_type\":")
-                sink.writeUtf8(encodeJsonString(image.mediaType))
-                sink.writeUtf8(",\"data\":\"")
-                val nonClosing = NonClosingOutputStream(sink.outputStream())
-                Base64.getEncoder().wrap(nonClosing).use { encoder ->
-                    image.useBytes { bytes -> encoder.write(bytes) }
+                images.forEach { image ->
+                    sink.writeUtf8("},{\"inline_data\":{\"mime_type\":")
+                    sink.writeUtf8(encodeJsonString(image.mediaType))
+                    sink.writeUtf8(",\"data\":\"")
+                    val nonClosing = NonClosingOutputStream(sink.outputStream())
+                    Base64.getEncoder().wrap(nonClosing).use { encoder ->
+                        image.useBytes { bytes -> encoder.write(bytes) }
+                    }
+                    sink.writeUtf8("\"}}")
                 }
-                sink.writeUtf8("\"}}]}],\"generationConfig\":")
+                sink.writeUtf8("]}],\"generationConfig\":")
                 sink.writeUtf8(json.encodeToString(JsonObject.serializer(), generationConfig(request)))
                 sink.writeUtf8("}")
             }
@@ -405,9 +426,14 @@ class GoogleGeminiProviderAdapter internal constructor(
          * These exact stable IDs are documented as accepting image input and structured text output
          * (https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash and
          * https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite); each must still appear
-         * in the authenticated live model list before use.
+         * in the authenticated live model list before use. Gemini's generateContent image guide also
+         * explicitly supports multiple image Part objects in one contents array:
+         * https://ai.google.dev/gemini-api/docs/generate-content/image-understanding#multiple-images.
          */
         val VERIFIED_VISION_MODELS = setOf("gemini-3.5-flash", "gemini-3.5-flash-lite")
+        val VERIFIED_MULTI_IMAGE_MODELS = VERIFIED_VISION_MODELS
+        const val MAX_INLINE_IMAGE_COUNT = 5
+        const val MAX_MULTI_IMAGE_BYTES = 3 * 1024 * 1024
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val MODEL_ID_PATTERN = Regex("[A-Za-z0-9._-]{1,160}")
         val RETRYABLE_ERRORS = setOf(

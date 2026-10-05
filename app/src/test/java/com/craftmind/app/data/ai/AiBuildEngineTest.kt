@@ -99,15 +99,220 @@ class AiBuildEngineTest {
     }
 
     @Test
-    fun urlReferenceIsNeverFetchedAndItsValueIsNotSentToTheProvider() = kotlinx.coroutines.runBlocking {
+    fun unsupportedPublicVideoHostFailsClosedBeforeProviderGeneration() = kotlinx.coroutines.runBlocking {
         val provider = FakeProvider(model, validDocument())
         val engine = engine(provider, credential = "test-key", selection = AiProviderSelection(providerId, model.id))
         val request = buildRequest().copy(urlReference = BuildInput.UrlReference("https://example.org/private-reference"))
 
-        engine.generate(request)
+        assertEquals(AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE, failureCode { engine.generate(request) })
+        assertEquals(0, provider.generateCalls)
+    }
 
-        assertTrue(provider.lastRequest!!.prompt.contains("not fetched, opened, or analyzed"))
-        assertTrue(!provider.lastRequest!!.prompt.contains("https://example.org/private-reference"))
+    @Test
+    fun publicVideoUsesBoundedFramesAndSameSelectedModelBeforeBuildPlanV2() = kotlinx.coroutines.runBlocking {
+        val videoModel = model.copy(capabilities = model.capabilities.copy(vision = true, multipleImages = true))
+        val videoUrl = "https://raw.githubusercontent.com/cseitz/sample-files/main/assets/video/mp4/bbb_short.mp4"
+        val validatedUrl = (com.craftmind.app.domain.reference.PublicVideoReferenceUrlPolicy.validate(videoUrl)
+            as com.craftmind.app.domain.reference.PublicVideoUrlValidation.Valid).value
+        val resolved = com.craftmind.app.domain.reference.ResolvedPublicVideoReference(
+            canonicalUrl = validatedUrl.canonicalUrl,
+            sourceDomain = validatedUrl.sourceDomain,
+            mediaType = validatedUrl.mediaType,
+            contentLengthBytes = 64_000L,
+        )
+        val videoFrames = com.craftmind.app.domain.reference.ExtractedPublicVideoFrames(
+            durationMillis = 10_000L,
+            videoWidth = 640,
+            videoHeight = 360,
+            frames = listOf(
+                com.craftmind.app.domain.reference.PublicVideoFrame(1_000L, AiImageInput("image/jpeg", 2, 2, byteArrayOf(1, 2, 3))),
+                com.craftmind.app.domain.reference.PublicVideoFrame(9_500L, AiImageInput("image/jpeg", 2, 2, byteArrayOf(4, 5, 6))),
+            ),
+        )
+        val resolverCalls = mutableListOf<String>()
+        val resolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+            override suspend fun resolve(url: String): com.craftmind.app.domain.reference.ResolvedPublicVideoReference {
+                resolverCalls += url
+                return resolved
+            }
+        }
+        val extractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+            override suspend fun extract(
+                reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference,
+            ) = videoFrames
+        }
+        val analysisJson = """{"schemaVersion":1,"summary":"A single pavilion is visible at several stages.","observedDetails":["A shallow roof and four posts are visible in the final sample."],"inferredDetails":["The posts may be wooden."],"uncertainties":["The rear wall is partly occluded."]}"""
+        val provider = FakeProvider(videoModel, validDocument(), precedingResponses = listOf(analysisJson))
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, videoModel.id),
+            videoResolver = resolver,
+            videoExtractor = extractor,
+        )
+        val request = buildRequest().copy(
+            prompt = "Make one compact pavilion based on this video",
+            urlReference = BuildInput.UrlReference(videoUrl),
+        )
+        val stages = mutableListOf<AiGenerationStage>()
+
+        val response = engine.generate(request, stages::add)
+
+        assertEquals(listOf(videoUrl), resolverCalls)
+        assertEquals(2, provider.generateCalls)
+        assertEquals(2, provider.requests[0].imageInputs.size)
+        assertTrue(provider.requests[0].prompt.contains("one public video"))
+        assertTrue(provider.requests[0].prompt.contains("00:09.500"))
+        assertFalse(provider.requests[0].prompt.contains(videoUrl))
+        assertEquals(videoModel.id, provider.requests[0].model.id)
+        assertTrue(provider.requests[1].imageInputs.isEmpty())
+        assertEquals(videoModel.id, provider.requests[1].model.id)
+        assertTrue(provider.requests[1].prompt.contains("one source and one build"))
+        assertTrue(provider.requests[1].prompt.contains("observedDetails"))
+        assertFalse(provider.requests[1].prompt.contains(videoUrl))
+        assertEquals(2, response.referenceAnalysisSource?.frameCount)
+        assertEquals("A single pavilion is visible at several stages.", response.referenceAnalysisSource?.analysis?.summary)
+        assertTrue(stages.contains(AiGenerationStage.RESOLVING_PUBLIC_VIDEO_REFERENCE))
+        assertTrue(stages.contains(AiGenerationStage.EXTRACTING_VIDEO_FRAMES))
+        assertTrue(stages.contains(AiGenerationStage.ANALYZING_VIDEO_FRAMES_WITH_SELECTED_MODEL))
+        assertTrue(runCatching { videoFrames.frames.first().image.useBytes { it.size } }.isFailure)
+    }
+
+    @Test
+    fun publicVideoRequiresExactSelectedMultiImageCapabilityBeforeResolvingSource() = kotlinx.coroutines.runBlocking {
+        val visionOnlyModel = model.copy(capabilities = model.capabilities.copy(vision = true, multipleImages = false))
+        val provider = FakeProvider(visionOnlyModel, validDocument())
+        var resolverCalls = 0
+        val resolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+            override suspend fun resolve(url: String): com.craftmind.app.domain.reference.ResolvedPublicVideoReference {
+                resolverCalls++
+                error("The source must not be accessed for an unsupported model")
+            }
+        }
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, visionOnlyModel.id),
+            videoResolver = resolver,
+            videoExtractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+                override suspend fun extract(reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference) =
+                    error("Frame extraction must not run")
+            },
+        )
+        val request = buildRequest().copy(
+            urlReference = BuildInput.UrlReference("https://raw.githubusercontent.com/owner/repo/main/video.mp4"),
+        )
+
+        assertEquals(AiErrorCode.MULTI_IMAGE_UNSUPPORTED, failureCode { engine.generate(request) })
+        assertEquals(0, resolverCalls)
+        assertEquals(0, provider.generateCalls)
+    }
+
+    @Test
+    fun mapsPrivateDestinationFailureToSanitizedTypedErrorBeforeProviderAnalysis() = kotlinx.coroutines.runBlocking {
+        val videoModel = model.copy(capabilities = model.capabilities.copy(vision = true, multipleImages = true))
+        val provider = FakeProvider(videoModel, validDocument())
+        val resolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+            override suspend fun resolve(url: String): com.craftmind.app.domain.reference.ResolvedPublicVideoReference {
+                throw com.craftmind.app.domain.reference.PublicVideoReferenceException(
+                    com.craftmind.app.domain.reference.PublicVideoReferenceFailure.UNSAFE_DESTINATION,
+                )
+            }
+        }
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, videoModel.id),
+            videoResolver = resolver,
+            videoExtractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+                override suspend fun extract(reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference) =
+                    error("Frame extraction must not run")
+            },
+        )
+        val url = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val failure = try {
+            engine.generate(buildRequest().copy(urlReference = BuildInput.UrlReference(url)))
+            throw AssertionError("Expected unsafe destination failure")
+        } catch (expected: AiProviderException) {
+            expected
+        }
+
+        assertEquals(AiErrorCode.REFERENCE_UNSAFE_DESTINATION, failure.failure.code)
+        assertFalse(failure.message.orEmpty().contains(url))
+        assertEquals(0, provider.generateCalls)
+    }
+
+    @Test
+    fun cancellationDuringVideoResolutionDoesNotExtractFramesOrCallProvider() = kotlinx.coroutines.runBlocking {
+        val videoModel = model.copy(capabilities = model.capabilities.copy(vision = true, multipleImages = true))
+        val provider = FakeProvider(videoModel, validDocument())
+        val resolverEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val resolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+            override suspend fun resolve(url: String): com.craftmind.app.domain.reference.ResolvedPublicVideoReference {
+                resolverEntered.complete(Unit)
+                kotlinx.coroutines.awaitCancellation()
+            }
+        }
+        var extractionCalls = 0
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, videoModel.id),
+            videoResolver = resolver,
+            videoExtractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+                override suspend fun extract(reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference):
+                    com.craftmind.app.domain.reference.ExtractedPublicVideoFrames {
+                    extractionCalls++
+                    error("Cancelled resolution must not proceed to frame extraction")
+                }
+            },
+        )
+        val request = buildRequest().copy(
+            urlReference = BuildInput.UrlReference("https://raw.githubusercontent.com/owner/repo/main/video.mp4"),
+        )
+        val job = launch(Dispatchers.Default) { engine.generate(request) }
+
+        withTimeout(5_000L) { resolverEntered.await() }
+        job.cancelAndJoin()
+
+        assertEquals(0, extractionCalls)
+        assertEquals(0, provider.generateCalls)
+    }
+
+    @Test
+    fun cancellationDuringVideoAnalysisClosesAllFramesAndSkipsBuildPlanGeneration() = kotlinx.coroutines.runBlocking {
+        val videoModel = model.copy(capabilities = model.capabilities.copy(vision = true, multipleImages = true))
+        val videoUrl = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val validatedUrl = (com.craftmind.app.domain.reference.PublicVideoReferenceUrlPolicy.validate(videoUrl)
+            as com.craftmind.app.domain.reference.PublicVideoUrlValidation.Valid).value
+        val resolved = com.craftmind.app.domain.reference.ResolvedPublicVideoReference(
+            validatedUrl.canonicalUrl,
+            validatedUrl.sourceDomain,
+            validatedUrl.mediaType,
+            64_000L,
+        )
+        val frames = testVideoFrames()
+        val provider = FakeProvider(videoModel, validDocument(), suspendOnImageRequest = true)
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, videoModel.id),
+            videoResolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+                override suspend fun resolve(url: String) = resolved
+            },
+            videoExtractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+                override suspend fun extract(reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference) = frames
+            },
+        )
+        val request = buildRequest().copy(urlReference = BuildInput.UrlReference(videoUrl))
+        val job = launch(Dispatchers.Default) { engine.generate(request) }
+
+        withTimeout(5_000L) { provider.imageCallStarted.await() }
+        job.cancelAndJoin()
+
+        assertEquals(1, provider.generateCalls)
+        assertEquals(2, provider.requests.single().imageInputs.size)
+        assertTrue(runCatching { frames.frames.first().image.useBytes { it.size } }.isFailure)
     }
 
     @Test
@@ -250,6 +455,70 @@ class AiBuildEngineTest {
     }
 
     @Test
+    fun videoRefinementUsesSavedBoundedTextNotesAndNeverReFetchesUrlOrResendsFrames() = kotlinx.coroutines.runBlocking {
+        val provider = FakeProvider(model, validEditDocument())
+        var resolverCalls = 0
+        var extractorCalls = 0
+        val resolver = object : com.craftmind.app.domain.reference.PublicVideoReferenceResolver {
+            override suspend fun resolve(url: String): com.craftmind.app.domain.reference.ResolvedPublicVideoReference {
+                resolverCalls++
+                error("Refinement must never resolve the public-video URL")
+            }
+        }
+        val extractor = object : com.craftmind.app.domain.reference.PublicVideoFrameExtractor {
+            override suspend fun extract(reference: com.craftmind.app.domain.reference.ResolvedPublicVideoReference):
+                com.craftmind.app.domain.reference.ExtractedPublicVideoFrames {
+                extractorCalls++
+                error("Refinement must never extract video frames")
+            }
+        }
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, model.id),
+            videoResolver = resolver,
+            videoExtractor = extractor,
+        )
+        val videoUrl = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val source = com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource(
+            sourceType = com.craftmind.app.domain.buildplan.BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+            sourceDomain = "raw.githubusercontent.com",
+            mediaType = "video/mp4",
+            durationMillis = 10_000L,
+            sampledTimestampsMillis = listOf(1_000L, 9_500L),
+            providerId = providerId.value,
+            modelId = model.id,
+            analysis = BuildImageAnalysis(
+                summary = "A compact pavilion is visible across two stages.",
+                observedDetails = listOf("The later frame shows a shallow roof and four supports."),
+                inferredDetails = listOf("The supports may be timber."),
+                uncertainties = listOf("The rear is not visible."),
+            ),
+        )
+        val request = editRequest(BuildPlanTestFixtures.semanticPlan(), "Refine the roof").copy(
+            originalRequest = BuildRequestSnapshot(
+                prompt = "Build a pavilion",
+                urlReference = videoUrl,
+                referenceAnalysisSource = source,
+            ),
+        )
+
+        engine.refine(request)
+
+        assertEquals(1, provider.generateCalls)
+        assertEquals(0, resolverCalls)
+        assertEquals(0, extractorCalls)
+        assertTrue(provider.lastRequest!!.imageInputs.isEmpty())
+        assertTrue(provider.lastRequest!!.prompt.contains("The original public video was fetched once"))
+        assertTrue(provider.lastRequest!!.prompt.contains("observedDetails"))
+        assertTrue(provider.lastRequest!!.prompt.contains("The later frame shows a shallow roof and four supports"))
+        assertTrue(provider.lastRequest!!.prompt.contains("The supports may be timber"))
+        assertTrue(provider.lastRequest!!.prompt.contains("does not redownload the video"))
+        assertFalse(provider.lastRequest!!.prompt.contains(videoUrl))
+        assertFalse(provider.lastRequest!!.prompt.contains("videoBytes"))
+    }
+
+    @Test
     fun keepsCredentialsOutOfRefinementPromptsAndTypedErrors() = kotlinx.coroutines.runBlocking {
         val secret = "refinementCredentialSentinelNotARealKey"
         val provider = FakeProvider(model, "not-json")
@@ -339,6 +608,8 @@ class AiBuildEngineTest {
         credential: String?,
         selection: AiProviderSelection?,
         imagePreparer: AiImageInputPreparer? = null,
+        videoResolver: com.craftmind.app.domain.reference.PublicVideoReferenceResolver? = null,
+        videoExtractor: com.craftmind.app.domain.reference.PublicVideoFrameExtractor? = null,
     ): AiBuildEngine = AiBuildEngine(
         registry = com.craftmind.app.domain.ai.AiProviderRegistry(listOf(provider)),
         credentialStore = MemoryCredentialStore(credential),
@@ -346,6 +617,8 @@ class AiBuildEngineTest {
         parser = BuildPlanParser(DefaultBuildPlanValidator()),
         nowEpochMillis = { 456L },
         imageInputPreparer = imagePreparer,
+        publicVideoReferenceResolver = videoResolver,
+        publicVideoFrameExtractor = videoExtractor,
     )
 
     private fun editRequest(base: BuildPlan, instruction: String) = BuildEditRequest(
@@ -393,6 +666,16 @@ class AiBuildEngineTest {
         ),
     )
 
+    private fun testVideoFrames() = com.craftmind.app.domain.reference.ExtractedPublicVideoFrames(
+        durationMillis = 10_000L,
+        videoWidth = 640,
+        videoHeight = 360,
+        frames = listOf(
+            com.craftmind.app.domain.reference.PublicVideoFrame(1_000L, AiImageInput("image/jpeg", 2, 2, byteArrayOf(1, 2, 3))),
+            com.craftmind.app.domain.reference.PublicVideoFrame(9_500L, AiImageInput("image/jpeg", 2, 2, byteArrayOf(4, 5, 6))),
+        ),
+    )
+
     private fun buildRequest(withReferences: Boolean = false) = BuildRequest(
         requestId = "request-engine-test",
         prompt = "A stone garden pavilion",
@@ -401,7 +684,7 @@ class AiBuildEngineTest {
             mediaType = "image/png",
             sizeBytes = 1024,
         ) else null,
-        urlReference = if (withReferences) BuildInput.UrlReference("https://example.org/reference") else null,
+        urlReference = null,
         createdAtEpochMillis = 123L,
     )
 
@@ -435,6 +718,7 @@ class AiBuildEngineTest {
                 structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
                 cancellation = true,
                 streaming = false,
+                multipleImages = model.capabilities.multipleImages,
                 ),
         )
         var listModelsCalls = 0

@@ -29,6 +29,8 @@ data class AiProviderCapabilities(
     val structuredOutput: StructuredOutputMode,
     val cancellation: Boolean,
     val streaming: Boolean,
+    /** The adapter can submit multiple image Parts in one request; model support is checked separately. */
+    val multipleImages: Boolean = false,
 )
 
 data class AiModelCapabilities(
@@ -40,6 +42,8 @@ data class AiModelCapabilities(
     val maximumOutputTokens: Int?,
     val toolCalling: Boolean = false,
     val streaming: Boolean = false,
+    /** True only for exact models verified for multi-image input by this adapter. */
+    val multipleImages: Boolean = false,
 )
 
 data class AiProviderDefinition(
@@ -81,12 +85,18 @@ data class AiGenerationResponse(
     val usage: AiUsage?,
     /** Persistable text-only provenance; never contains raw image bytes or a file copy. */
     val imageAnalysisSource: BuildImageAnalysisSource? = null,
+    /** Bounded text-only provenance from a public video whose frames were actually fetched and analyzed. */
+    val referenceAnalysisSource: com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource? = null,
 )
 
 enum class AiGenerationStage {
     VALIDATING_REQUEST,
+    VALIDATING_REFERENCE_URL,
+    RESOLVING_PUBLIC_VIDEO_REFERENCE,
+    EXTRACTING_VIDEO_FRAMES,
     PREPARING_IMAGE_LOCALLY,
     ANALYZING_IMAGE_WITH_SELECTED_MODEL,
+    ANALYZING_VIDEO_FRAMES_WITH_SELECTED_MODEL,
     GENERATING_BUILD_PLAN,
     VALIDATING_BUILD_PLAN,
 }

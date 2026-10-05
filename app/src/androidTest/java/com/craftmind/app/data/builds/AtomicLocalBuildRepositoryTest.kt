@@ -18,6 +18,8 @@ import com.craftmind.app.domain.buildplan.BuildPlanMetadata
 import com.craftmind.app.domain.buildplan.BuildPlanOperation
 import com.craftmind.app.domain.buildplan.BuildPlanOperationKind
 import com.craftmind.app.domain.buildplan.BuildPlanValidationResult
+import com.craftmind.app.domain.buildplan.BuildReferenceAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildReferenceSourceType
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRepositoryError
 import com.craftmind.app.domain.buildplan.BuildRepositoryException
@@ -134,6 +136,77 @@ class AtomicLocalBuildRepositoryTest {
             reopened.load()
             assertEquals(source, reopened.records.value.single().request.imageAnalysisSource)
             assertEquals(request.imageReference?.contentUri, reopened.records.value.single().request.imageContentUri)
+        } finally {
+            historyFile.delete()
+        }
+    }
+
+    @Test
+    fun persistsBoundedPublicVideoAnalysisAsTextProvenanceAndReopensItWithoutFrameBytes() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val historyFile = File(context.noBackupFilesDir, "local-build-records-v1.json")
+        historyFile.delete()
+        val url = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val request = BuildRequest(
+            requestId = "request-atomic-video",
+            prompt = "Build the finished pavilion",
+            imageReference = null,
+            urlReference = BuildInput.UrlReference(url),
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val source = BuildReferenceAnalysisSource(
+            sourceType = BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+            sourceDomain = "raw.githubusercontent.com",
+            mediaType = "video/mp4",
+            durationMillis = 10_000L,
+            sampledTimestampsMillis = listOf(1_000L, 9_500L),
+            providerId = "google_gemini",
+            modelId = "gemini-3.5-flash",
+            analysis = BuildImageAnalysis(
+                summary = "An open pavilion is visible in two distinct stages.",
+                observedDetails = listOf("The later frame shows four supports and a shallow roof."),
+                inferredDetails = listOf("The roof may be timber."),
+                uncertainties = listOf("The rear side is not visible."),
+            ),
+        )
+        try {
+            val validator = DefaultBuildPlanValidator()
+            val repository = AtomicLocalBuildRepository(
+                context,
+                nowEpochMillis = { 1_700_000_000_100 },
+                historyPolicy = com.craftmind.app.domain.buildplan.BuildHistoryPolicy(validator),
+            )
+            repository.load()
+            val plan = validPlan().copy(
+                metadata = validPlan().metadata.copy(
+                    sourceRequestId = request.requestId,
+                    providerId = source.providerId,
+                    modelId = source.modelId,
+                ),
+            )
+            val saved = repository.save(
+                requireValid(validator, plan),
+                request,
+                imageAnalysisSource = null,
+                referenceAnalysisSource = source,
+            )
+
+            assertEquals(url, saved.request.urlReference)
+            assertEquals(source, saved.request.referenceAnalysisSource)
+            val serialized = historyFile.readText()
+            assertTrue(serialized.contains(source.providerId))
+            assertTrue(serialized.contains(source.modelId))
+            assertTrue(serialized.contains("sampledTimestampsMillis"))
+            assertFalse(serialized.contains("frameBytes"))
+            assertFalse(serialized.contains("data:image/"))
+
+            val reopened = AtomicLocalBuildRepository(
+                context,
+                historyPolicy = com.craftmind.app.domain.buildplan.BuildHistoryPolicy(validator),
+            )
+            reopened.load()
+            assertEquals(source, reopened.records.value.single().request.referenceAnalysisSource)
+            assertEquals(url, reopened.records.value.single().request.urlReference)
         } finally {
             historyFile.delete()
         }

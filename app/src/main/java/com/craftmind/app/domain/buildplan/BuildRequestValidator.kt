@@ -1,5 +1,8 @@
 package com.craftmind.app.domain.buildplan
 
+import com.craftmind.app.domain.reference.PublicVideoReferenceFailure
+import com.craftmind.app.domain.reference.PublicVideoReferenceUrlPolicy
+import com.craftmind.app.domain.reference.PublicVideoUrlValidation
 import java.net.URI
 import java.util.Locale
 import java.util.UUID
@@ -12,6 +15,11 @@ enum class BuildRequestValidationError {
     URL_SCHEME_NOT_ALLOWED,
     URL_CREDENTIALS_NOT_ALLOWED,
     URL_TOO_LONG,
+    URL_UNSAFE_HOST,
+    UNSUPPORTED_PUBLIC_VIDEO_SOURCE,
+    URL_QUERY_OR_FRAGMENT_NOT_ALLOWED,
+    URL_PORT_NOT_ALLOWED,
+    MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED,
     UNSUPPORTED_IMAGE_TYPE,
     IMAGE_TOO_LARGE,
     INVALID_IMAGE_REFERENCE,
@@ -71,24 +79,51 @@ class BuildRequestValidator(
 
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
             ?: return UrlValidationResult.Invalid(BuildRequestValidationError.INVALID_URL)
-        if (scheme != "http" && scheme != "https") {
+        if (scheme != "https") {
             return UrlValidationResult.Invalid(BuildRequestValidationError.URL_SCHEME_NOT_ALLOWED)
         }
-        if (uri.host.isNullOrBlank() || uri.rawAuthority.isNullOrBlank()) {
+        val host = uri.host?.lowercase(Locale.ROOT)
+        if (host.isNullOrBlank() || uri.rawAuthority.isNullOrBlank() || uri.isOpaque) {
             return UrlValidationResult.Invalid(BuildRequestValidationError.INVALID_URL)
         }
         if (uri.rawUserInfo != null) {
             return UrlValidationResult.Invalid(BuildRequestValidationError.URL_CREDENTIALS_NOT_ALLOWED)
         }
+        if (uri.rawQuery != null || uri.rawFragment != null) {
+            return UrlValidationResult.Invalid(BuildRequestValidationError.URL_QUERY_OR_FRAGMENT_NOT_ALLOWED)
+        }
         if (uri.port !in -1..65535) {
             return UrlValidationResult.Invalid(BuildRequestValidationError.INVALID_URL)
         }
+        if (uri.port != -1 && uri.port != 443) {
+            return UrlValidationResult.Invalid(BuildRequestValidationError.URL_PORT_NOT_ALLOWED)
+        }
+        val authority = uri.rawAuthority.lowercase(Locale.ROOT)
+        if (authority != host && authority != "$host:443") {
+            return UrlValidationResult.Invalid(BuildRequestValidationError.URL_PORT_NOT_ALLOWED)
+        }
+        if (host.contains(':') || host.matches(Regex("[0-9.]+")) ||
+            host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+            host.endsWith(".internal") || host.endsWith(".lan") || host.endsWith(".home.arpa")
+        ) {
+            return UrlValidationResult.Invalid(BuildRequestValidationError.URL_UNSAFE_HOST)
+        }
 
-        return UrlValidationResult.Valid(normalized)
+        return when (val reference = PublicVideoReferenceUrlPolicy.validate(normalized)) {
+            is PublicVideoUrlValidation.Valid -> UrlValidationResult.Valid(reference.value.canonicalUrl)
+            is PublicVideoUrlValidation.Invalid -> when (reference.failure) {
+                PublicVideoReferenceFailure.UNSUPPORTED_SOURCE ->
+                    UrlValidationResult.Invalid(BuildRequestValidationError.UNSUPPORTED_PUBLIC_VIDEO_SOURCE)
+                else -> UrlValidationResult.Invalid(BuildRequestValidationError.URL_UNSAFE_HOST)
+            }
+        }
     }
 
     fun create(draft: BuildRequestDraft): BuildRequestValidationResult {
-        if (draft.prompt.isBlank() && draft.imageReference == null) {
+        if (draft.imageReference != null && draft.urlReference != null) {
+            return BuildRequestValidationResult.Invalid(BuildRequestValidationError.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED)
+        }
+        if (draft.prompt.isBlank() && draft.imageReference == null && draft.urlReference == null) {
             return BuildRequestValidationResult.Invalid(BuildRequestValidationError.EMPTY_PROMPT)
         }
         if (draft.prompt.length > MAX_PROMPT_LENGTH) {

@@ -1,5 +1,6 @@
 package com.craftmind.app.domain.buildplan
 
+import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -101,6 +102,99 @@ class BuildHistoryPolicyTest {
         )
         assertEquals(analysisSource, accepted.appended.request.imageAnalysisSource)
         assertTrue(policy.isValidHistory(accepted.records))
+    }
+
+    @Test
+    fun publicVideoHistoryPersistsOnlyBoundedTextEvidenceAndReusesItForRefinement() {
+        val url = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val request = BuildRequest(
+            requestId = "request-video-history",
+            prompt = "Build the completed pavilion in this clip",
+            imageReference = null,
+            urlReference = BuildInput.UrlReference(url),
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val source = BuildReferenceAnalysisSource(
+            sourceType = BuildReferenceSourceType.RAW_GITHUB_VIDEO,
+            sourceDomain = "raw.githubusercontent.com",
+            mediaType = "video/mp4",
+            durationMillis = 10_000L,
+            sampledTimestampsMillis = listOf(1_000L, 3_500L, 6_000L, 8_000L, 9_500L),
+            providerId = "google_gemini",
+            modelId = "gemini-3.5-flash",
+            analysis = BuildImageAnalysis(
+                summary = "An open pavilion is visible across several stages.",
+                observedDetails = listOf("The later frame shows a shallow roof above four supports."),
+                inferredDetails = listOf("The supports may be timber."),
+                uncertainties = listOf("The rear wall is partly occluded."),
+            ),
+        )
+        val basePlan = BuildPlanTestFixtures.semanticPlan().copy(
+            metadata = BuildPlanTestFixtures.semanticPlan().metadata.copy(
+                sourceRequestId = request.requestId,
+                providerId = source.providerId,
+                modelId = source.modelId,
+            ),
+        )
+
+        val first = policy.appendInitial(
+            emptyList(),
+            BuildPlanTestFixtures.validated(basePlan),
+            request,
+            1_700_000_000_100,
+            referenceAnalysisSource = source,
+        )
+        assertEquals(source, first.appended.request.referenceAnalysisSource)
+        assertTrue(source.isWellFormed(url))
+        assertTrue(policy.isValidHistory(first.records))
+
+        val encoded = kotlinx.serialization.json.Json { encodeDefaults = true }
+            .encodeToString(BuildRequestSnapshot.serializer(), first.appended.request)
+        assertTrue(encoded.contains(source.analysis.summary))
+        assertTrue(encoded.contains("sampledTimestampsMillis"))
+        assertTrue(encoded.contains(url))
+        assertFalse(encoded.contains("videoBytes"))
+
+        val contextSerializer = com.craftmind.app.data.ai.BuildPlanContextSerializer()
+        val model = com.craftmind.app.domain.ai.AiModel(
+            id = source.modelId,
+            providerId = com.craftmind.app.domain.ai.AiProviderId(source.providerId),
+            displayName = "Gemini 3.5 Flash",
+            capabilities = com.craftmind.app.domain.ai.AiModelCapabilities(
+                textGeneration = true,
+                vision = false,
+                publicUrlReferences = false,
+                structuredOutput = com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE,
+                maximumContextTokens = 16_000,
+                maximumOutputTokens = 2_000,
+            ),
+        )
+        val editRequest = validEditRequest(first.appended)
+        val serialized = contextSerializer.serialize(editRequest, model) as com.craftmind.app.data.ai.BuildPlanContextResult.Ready
+        assertTrue(serialized.context.json.contains("The original public video was fetched once"))
+        assertTrue(serialized.context.json.contains(source.analysis.observedDetails.single()))
+        assertFalse(serialized.context.json.contains(url))
+    }
+
+    @Test
+    fun rejectsPublicVideoHistoryWhenTextAnalysisWasNotActuallyProvided() {
+        val url = "https://raw.githubusercontent.com/owner/repo/main/video.mp4"
+        val request = BuildRequest(
+            requestId = "request-unanalysed-video",
+            prompt = "Build a pavilion",
+            imageReference = null,
+            urlReference = BuildInput.UrlReference(url),
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val plan = BuildPlanTestFixtures.semanticPlan().copy(
+            metadata = BuildPlanTestFixtures.semanticPlan().metadata.copy(sourceRequestId = request.requestId),
+        )
+
+        val failure = runCatching {
+            policy.appendInitial(emptyList(), BuildPlanTestFixtures.validated(plan), request, 1_700_000_000_100)
+        }.exceptionOrNull() as? BuildRepositoryException
+
+        assertEquals(BuildRepositoryError.INVALID_RECORD, failure?.error)
     }
 
     @Test

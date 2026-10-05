@@ -248,6 +248,16 @@ class ProviderSettingsViewModel(
         AiErrorCode.IMAGE_TOO_LARGE -> "The image exceeds CraftMind's size limit. Choose a smaller file."
         AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED -> "The image dimensions exceed CraftMind's safe decoding limit."
         AiErrorCode.IMAGE_MIME_MISMATCH -> "The image contents do not match its declared format. Choose it again."
+        AiErrorCode.MULTI_IMAGE_UNSUPPORTED -> "Select a model verified for multi-image Vision before analyzing video frames."
+        AiErrorCode.MULTIPLE_VISUAL_REFERENCES_UNSUPPORTED -> "Use one visual reference at a time; remove either the image or video URL."
+        AiErrorCode.REFERENCE_UNSAFE_URL, AiErrorCode.REFERENCE_UNSAFE_DESTINATION,
+        AiErrorCode.REFERENCE_UNSUPPORTED_SOURCE, AiErrorCode.REFERENCE_UNAVAILABLE,
+        AiErrorCode.REFERENCE_ACCESS_RESTRICTED, AiErrorCode.REFERENCE_REDIRECT_BLOCKED,
+        AiErrorCode.REFERENCE_RANGE_UNSUPPORTED, AiErrorCode.REFERENCE_MEDIA_UNSUPPORTED,
+        AiErrorCode.REFERENCE_TOO_LARGE, AiErrorCode.REFERENCE_DURATION_UNSUPPORTED,
+        AiErrorCode.REFERENCE_FRAME_EXTRACTION_FAILED, AiErrorCode.REFERENCE_NO_DISTINCT_FRAMES,
+        AiErrorCode.REFERENCE_TRANSFER_LIMIT, AiErrorCode.REFERENCE_TIMEOUT ->
+            "This public video could not be analyzed within CraftMind's supported source and safety limits."
         AiErrorCode.INVALID_AI_RESPONSE, AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, AiErrorCode.INVALID_BUILD_PLAN,
         AiErrorCode.INVALID_BUILD_EDIT, AiErrorCode.NO_CHANGES_PROPOSED ->
             "The provider returned data that CraftMind could not safely validate."
