@@ -2,6 +2,7 @@ package com.craftmind.app.presentation.settings
 
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 
 data class BridgePairingState(
     val host: String = "",
@@ -11,6 +12,7 @@ data class BridgePairingState(
     val profile: TrustedMinecraftBridge? = null,
     val isProfileLoaded: Boolean = false,
     val connection: BridgeConnectionState = BridgeConnectionState.Disconnected,
+    val compatibility: MinecraftCompatibilityResult? = null,
     val isWorking: Boolean = false,
     val message: String? = null,
     val showRevokeConfirmation: Boolean = false,

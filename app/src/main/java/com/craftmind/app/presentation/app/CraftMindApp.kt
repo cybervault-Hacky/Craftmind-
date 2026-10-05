@@ -38,6 +38,7 @@ import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.presentation.builds.BuildExecutionEvent
 import com.craftmind.app.presentation.builds.BuildExecutionState
 import com.craftmind.app.presentation.builds.BuildRefinementEvent
@@ -85,6 +86,7 @@ fun CraftMindApp(
     onRefinementEvent: (BuildRefinementEvent) -> Unit,
     executionState: BuildExecutionState,
     onExecutionEvent: (BuildExecutionEvent) -> Unit,
+    compatibilityResolver: MinecraftCompatibilityResolver,
 ) {
     var selectedRoute by rememberSaveable { mutableStateOf(MainDestination.HOME.route) }
     var reviewContent by remember { mutableStateOf<PlanReviewContent?>(null) }
@@ -235,6 +237,7 @@ fun CraftMindApp(
             bridgeState = bridgePairingState,
             executionState = executionState,
             onExecutionEvent = onExecutionEvent,
+            compatibilityResolver = compatibilityResolver,
             onDismiss = {
                 reviewContent = null
                 onRefinementEvent(BuildRefinementEvent.DismissResult)

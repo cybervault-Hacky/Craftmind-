@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 
 @Composable
 internal fun MinecraftBridgeSettingsContent(
@@ -115,17 +116,59 @@ internal fun MinecraftBridgeSettingsContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         connected?.capabilities?.let { capabilities ->
+            val runtime = capabilities.runtimeDescriptor
+            val compatibility = state.compatibility
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
-                    "${capabilities.minecraftVersion} · ${capabilities.loaderName} ${capabilities.loaderVersion} · bridge ${capabilities.bridgeVersion}",
+                    "${runtime.edition.displayName} · Minecraft ${runtime.version.displayIdentifier}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                Text(
+                    "Loader: ${runtime.loader.displayName} ${runtime.loaderVersion ?: "unknown"} · bridge ${runtime.bridgeVersion ?: "unknown"} · protocol ${runtime.bridgeProtocolVersion ?: "unknown"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Server JVM: ${runtime.javaRuntimeMajor?.let { "Java $it" } ?: "not reported"} · adapter toolchain target: ${compatibility?.limits?.javaToolchainMajor?.let { "Java $it" } ?: "not matched"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Compatibility: ${compatibility?.status?.name ?: MinecraftCompatibilityStatus.UNKNOWN.name}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (compatibility?.status == MinecraftCompatibilityStatus.SUPPORTED) {
+                        MaterialTheme.colorScheme.primary
+                    } else MaterialTheme.colorScheme.tertiary,
+                )
+                Text("Adapter: ${compatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Runtime-reported capabilities: ${runtime.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                compatibility?.let { result ->
+                    Text(
+                        "Adapter/runtime capabilities: ${result.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Missing capabilities: ${result.missingCapabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Available limits: ${result.limits.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${result.limits.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${result.limits.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth} blocks" } ?: "dimension limit unknown"}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    result.warnings.forEach { warning ->
+                        Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    result.reasons.forEach { reason ->
+                        Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                    }
+                }
                 Text("World access: ${if (capabilities.worldAccess) "reported on" else "off"}", style = MaterialTheme.typography.bodySmall)
-                Text("Construction: ${if (capabilities.executionCompatible) "authenticated and available" else "disabled or incompatible"}", style = MaterialTheme.typography.bodySmall)
+                Text("Construction: ${if (capabilities.constructionExecute) "reported on" else "disabled"}", style = MaterialTheme.typography.bodySmall)
                 Text("Cancellation: ${if (capabilities.cancellation) "reported available" else "unavailable"}", style = MaterialTheme.typography.bodySmall)
                 Text("Current origin dimension: ${capabilities.dimensionId ?: "not selected"}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Capabilities come from a pinned-HTTPS signed session. BuildPlan v2 is sent only through a separate server preflight and after a final user confirmation. Provider keys remain on this device. The server requires operator opt-in and /craftmind origin set.",
+                    "Pairing authenticates and pins this bridge, but does not establish compatibility. BuildPlan v2 is sent only when the resolver returns SUPPORTED, capability and limit checks pass, server preflight succeeds, and you explicitly confirm. Provider keys remain on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

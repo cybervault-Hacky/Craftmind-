@@ -44,6 +44,10 @@ import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
+import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.presentation.settings.BridgePairingState
 import kotlinx.coroutines.delay
 import java.net.URI
@@ -65,6 +69,7 @@ fun PlanReviewScreen(
     executionState: BuildExecutionState = BuildExecutionState(),
     onExecutionEvent: (BuildExecutionEvent) -> Unit = {},
     onDismiss: () -> Unit,
+    compatibilityResolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
 ) {
     var refinementDraft by remember(record?.recordId) { mutableStateOf("") }
     val currentRecord = record?.let { selected ->
@@ -92,6 +97,25 @@ fun PlanReviewScreen(
         }
     } ?: false
     val displayedPlan = ready?.candidate?.plan ?: plan
+    val bridgeConnection = bridgeState.connection as? BridgeConnectionState.Connected
+    val runtimeDescriptor = bridgeConnection?.capabilities?.runtimeDescriptor
+    val planCompatibility = remember(displayedPlan, runtimeDescriptor) {
+        runtimeDescriptor?.let { compatibilityResolver.resolve(displayedPlan, it) }
+    }
+    val planRequirements = remember(displayedPlan) { BuildPlanRequirements.from(displayedPlan) }
+    val registeredProfileSummary = remember(compatibilityResolver) {
+        compatibilityResolver.registeredAdapters().flatMap { adapter ->
+            adapter.supportedRuntimeDescriptors.map { profile ->
+                buildList {
+                    add("${profile.edition.displayName} ${profile.version.displayIdentifier}")
+                    add("${profile.loader.displayName} ${profile.loaderVersion}")
+                    profile.requiredPlatformApiVersion?.let { add("${profile.loader.displayName} API $it") }
+                    add("bridge ${profile.bridgeVersion} · protocol ${profile.bridgeProtocolVersion}")
+                    profile.javaToolchainMajor?.let { add("Java $it toolchain target") }
+                }.joinToString(" · ", prefix = "${adapter.adapterId.value}: ")
+            }
+        }.ifEmpty { listOf("none registered") }.joinToString("; ")
+    }
     val dismissReview = {
         if (matchingState is BuildRefinementState.Generating) onRefinementEvent(BuildRefinementEvent.Cancel)
         if (executionState.flow is BuildExecutionFlow.PreviewReady) onExecutionEvent(BuildExecutionEvent.DismissPreview)
@@ -370,9 +394,10 @@ private fun ConstructionExecutionCard(
         }
     }
 
-    val connection = bridgeState.connection as? BridgeConnectionState.Connected
-    val compatibleBridge = connection?.takeIf {
-        it.capabilities.executionCompatible && it.bridge.bridgeId == it.capabilities.bridgeId
+    val compatibleBridge = bridgeConnection?.takeIf {
+        planCompatibility?.let { result ->
+            result.status == MinecraftCompatibilityStatus.SUPPORTED && result.canExecute
+        } == true && it.bridge.bridgeId == it.capabilities.bridgeId
     }
     val constructionEnabled = compatibleBridge != null
     val eligibleSavedVersion = record != null && !candidateReview && currentRecord?.recordId == record.recordId &&
@@ -391,9 +416,52 @@ private fun ConstructionExecutionCard(
         matchingFlow !is BuildExecutionFlow.Preparing && matchingFlow !is BuildExecutionFlow.Starting &&
         matchingFlow !is BuildExecutionFlow.PreviewReady
 
+    ReviewCard("Minecraft compatibility and available limits") {
+        Text(
+            "Compatibility: ${planCompatibility?.status?.name ?: MinecraftCompatibilityStatus.UNKNOWN.name}",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            runtimeDescriptor?.let {
+                "Runtime: ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · bridge ${it.bridgeVersion ?: "unknown"} · protocol ${it.bridgeProtocolVersion ?: "unknown"}"
+            } ?: "Runtime: unknown — connect to a pinned bridge to resolve compatibility.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text("Selected adapter: ${planCompatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Plan requires: ${planRequirements.requiredCapabilities.sortedBy { it.name }.joinToString { it.displayName }}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Available capabilities: ${planCompatibility?.capabilities?.sortedBy { it.name }?.joinToString { it.displayName }?.ifEmpty { "none" } ?: "not resolved"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Missing capabilities: ${planCompatibility?.missingCapabilities?.sortedBy { it.name }?.joinToString { it.displayName }?.ifEmpty { "none" } ?: "not resolved"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (planCompatibility?.missingCapabilities?.isNotEmpty() == true) MaterialTheme.colorScheme.tertiary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Bridge limits: ${runtimeDescriptor?.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${runtimeDescriptor?.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"}; adapter dimensions ${planCompatibility?.limits?.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth}" } ?: "not matched"}.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Registered profile(s): $registeredProfileSummary. Protocol v1 does not report the server JVM or loaded platform API separately; those values are not independently verified by this screen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        planCompatibility?.reasons?.forEach { reason ->
+            Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+        }
+        planCompatibility?.warnings?.forEach { warning ->
+            Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+
     ReviewCard("Minecraft construction · explicit confirmation required") {
         Text(
-            "This sends only the saved, validated BuildPlan v2 to the paired Fabric bridge. Preflight places zero blocks. Placement begins only after the separate final confirmation below.",
+            "This sends only the saved, validated, platform-neutral BuildPlan v2 through the exactly matched adapter and existing authenticated bridge. Preflight places zero blocks. Construction begins only after the separate final confirmation below.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -409,7 +477,7 @@ private fun ConstructionExecutionCard(
 
         if (!constructionEnabled) {
             Text(
-                "Disabled: connect and authenticate to a compatible bridge with construction.execute = true, matching Minecraft/Fabric/protocol, a selected operator origin, and cancellation support.",
+                "Disabled: compatibility must resolve to SUPPORTED for this plan, the exact registered adapter must match, all required capabilities and limits must pass, and authenticated server preflight must succeed. Pairing alone is not compatibility.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.tertiary,
             )
@@ -452,7 +520,16 @@ private fun ConstructionExecutionCard(
                     ) { Text("Cancel preview") }
                 }
                 if (showFinalConfirmation) {
-                    val summary = "World: $world\nDimension: ${current.preview.dimensionId}\nOrigin: ${current.preview.resolvedOrigin.label()}\nPlan: ${current.preview.planTitle} · version ${current.preview.planVersion}\nOperations: ${current.preview.operationCount}\nStrategy: ${plan.originStrategy.name}"
+                    val runtimeLabel = runtimeDescriptor?.let {
+                        "${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"}"
+                    } ?: "runtime unknown"
+                    val adapterLabel = planCompatibility?.adapterId?.value ?: "none"
+                    val limitsLabel = planCompatibility?.limits?.let {
+                        "${it.maximumValidatedOperations ?: "unknown"} operations · ${it.maximumRequestBytes ?: "unknown"} request bytes · ${it.maximumDimensions?.let { dimensions -> "${dimensions.width}×${dimensions.height}×${dimensions.depth} blocks" } ?: "dimension limit unknown"}"
+                    } ?: "unavailable"
+                    val capabilityGaps = planCompatibility?.missingCapabilities
+                        ?.sortedBy { it.name }?.joinToString { it.displayName }?.ifEmpty { "none" } ?: "not resolved"
+                    val summary = "Compatibility: ${planCompatibility?.status?.name ?: "UNKNOWN"}\nRuntime: $runtimeLabel\nAdapter: $adapterLabel\nCapability gaps: $capabilityGaps\nAvailable limits: $limitsLabel\nWorld: $world\nDimension: ${current.preview.dimensionId}\nOrigin: ${current.preview.resolvedOrigin.label()}\nPlan: ${current.preview.planTitle} · version ${current.preview.planVersion}\nOperations: ${current.preview.operationCount}\nStrategy: ${plan.originStrategy.name}"
                     AlertDialog(
                         onDismissRequest = { showFinalConfirmation = false },
                         title = { Text("Authorize block placement?") },

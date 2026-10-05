@@ -2,8 +2,12 @@ package com.craftmind.app.presentation.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +17,7 @@ import kotlinx.coroutines.launch
 
 class BridgePairingViewModel(
     private val bridge: MinecraftBridgePairingRepository,
+    private val compatibilityResolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(BridgePairingState(isProfileLoaded = false))
     val state = mutableState.asStateFlow()
@@ -22,7 +27,13 @@ class BridgePairingViewModel(
             bridge.profile.collect { profile -> mutableState.update { it.copy(profile = profile, isProfileLoaded = true) } }
         }
         viewModelScope.launch {
-            bridge.connectionState.collect { connection -> mutableState.update { it.copy(connection = connection) } }
+            bridge.connectionState.collect { connection ->
+                val connected = connection as? BridgeConnectionState.Connected
+                val compatibility = connected?.let {
+                    compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor)
+                }
+                mutableState.update { it.copy(connection = connection, compatibility = compatibility) }
+            }
         }
     }
 
@@ -59,7 +70,7 @@ class BridgePairingViewModel(
             try {
                 bridge.pair(current.host.trim(), port, current.tlsFingerprint.trim(), code)
                 mutableState.update {
-                    it.copy(isWorking = false, message = "Device paired. The bridge identity and authenticated capabilities were verified.")
+                    it.copy(isWorking = false, message = "Device paired. TLS identity and authentication are separate from runtime compatibility; pairing alone never enables construction.")
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -92,12 +103,18 @@ class BridgePairingViewModel(
             try {
                 bridge.refreshCapabilities()
                 val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
+                val compatibility = connected?.let { compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor) }
                 mutableState.update {
                     it.copy(
                         isWorking = false,
-                        message = if (connected?.capabilities?.executionCompatible == true)
-                            "Authenticated bridge reports construction available for the current operator-selected origin."
-                        else "Capabilities refreshed. Construction is disabled or incompatible; check server opt-in, compatibility, world availability, and the operator-selected origin.",
+                        compatibility = compatibility,
+                        message = when {
+                            compatibility?.let { it.status == MinecraftCompatibilityStatus.SUPPORTED && it.canExecute } == true ->
+                                "Capabilities refreshed. A supported adapter and the required authenticated runtime capabilities are available."
+                            compatibility?.status == MinecraftCompatibilityStatus.SUPPORTED ->
+                                "Capabilities refreshed. The runtime is supported, but one or more runtime capabilities or limits are not ready for construction."
+                            else -> "Capabilities refreshed. The runtime is not supported or could not be identified; no adapter will be selected for construction.",
+                        },
                     )
                 }
             } catch (error: CancellationException) {

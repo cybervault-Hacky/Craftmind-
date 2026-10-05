@@ -1,6 +1,9 @@
 package com.craftmind.app.domain.minecraft
 
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -31,11 +34,29 @@ data class BridgeCapabilitiesSnapshot(
     val dimensionId: String? = null,
     val worldSessionId: String? = null,
 ) {
+    /** Typed, fail-safe interpretation of the existing protocol-v1 runtime fields. */
+    val runtimeDescriptor: MinecraftRuntimeDescriptor
+        get() = MinecraftRuntimeDescriptor.fromBridgeV1(
+            bridgeProtocolVersion = protocolVersion,
+            bridgeVersion = bridgeVersion,
+            minecraftVersion = minecraftVersion,
+            loaderName = loaderName,
+            loaderVersion = loaderVersion,
+            worldAccess = worldAccess,
+            constructionExecute = constructionExecute,
+            cancellation = cancellation,
+            maximumValidatedOperations = maximumValidatedOperations,
+            maximumRequestBytes = maximumRequestBytes,
+            supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions.toSet(),
+            operatorOriginAvailable = dimensionId != null && worldSessionId != null,
+        )
+
+    val compatibilityResult: MinecraftCompatibilityResult
+        get() = DefaultMinecraftCompatibility.resolver.resolveRuntime(runtimeDescriptor)
+
+    /** Runtime-level execution gate, resolved through the registered adapter rather than scattered version checks. */
     val executionCompatible: Boolean
-        get() = protocolVersion == 1 && bridgeVersion == "1.1.0" && minecraftVersion == "1.20.1" && loaderName == "Fabric" &&
-            loaderVersion == "0.16.10" && worldAccess && constructionExecute && cancellation &&
-            dimensionId != null && worldSessionId != null && 2 in supportedBuildPlanSchemaVersions &&
-            maximumValidatedOperations in 1..4096 && maximumRequestBytes in 1024..1_048_576
+        get() = compatibilityResult.canExecute
 }
 
 sealed interface BridgeConnectionState {

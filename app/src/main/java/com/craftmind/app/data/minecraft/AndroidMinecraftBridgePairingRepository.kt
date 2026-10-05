@@ -18,6 +18,9 @@ import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
+import com.craftmind.app.domain.minecraft.compatibility.failureReasonCode
 import com.craftmind.bridge.protocol.BridgeCrypto
 import com.craftmind.bridge.protocol.BridgeEnvelope
 import com.craftmind.bridge.protocol.BridgeNetworkAddressPolicy
@@ -57,7 +60,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 
 /** Strict private-LAN HTTPS client. Sessions are memory-only; endpoint pins and Android Keystore identity persist. */
-class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridgePairingRepository {
+class AndroidMinecraftBridgePairingRepository(
+    context: Context,
+    private val compatibilityResolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
+) : MinecraftBridgePairingRepository {
     private val profileRepository = DataStoreMinecraftBridgeProfileRepository(context.applicationContext)
     private val signingKey = AndroidBridgeSigningKey()
     private val operationLock = Mutex()
@@ -294,7 +300,8 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
             withContext(Dispatchers.IO) {
                 val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
                 val capabilities = session.capabilities ?: fail("BRIDGE_CAPABILITIES_UNAVAILABLE")
-                if (!capabilities.executionCompatible) fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
+                val compatibility = compatibilityResolver.resolve(record.plan, capabilities.runtimeDescriptor)
+                if (!compatibility.canExecute) fail(compatibility.failureReasonCode())
                 if (record.plan.status != BuildStatus.READY || record.plan.metadata.schemaVersion != BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION ||
                     record.plan.metadata.intent == null || record.plan.operations.isEmpty() ||
                     record.plan.operations.size > capabilities.maximumValidatedOperations) {
@@ -526,7 +533,7 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
             BridgeProtocolCodec.requiredString(payload, "identityFingerprint", 95),
         )
         val bridgeVersion = BridgeProtocolCodec.requiredString(payload, "bridgeVersion", 64)
-        val minecraftVersion = BridgeProtocolCodec.requiredString(payload, "minecraftVersion", 32)
+        val minecraftVersion = BridgeProtocolCodec.requiredString(payload, "minecraftVersion", 48)
         val loaderName = BridgeProtocolCodec.requiredString(payload, "loaderName", 32)
         val loaderVersion = BridgeProtocolCodec.requiredString(payload, "loaderVersion", 64)
         val worldAccess = BridgeProtocolCodec.requiredBoolean(payload, "worldAccess")
@@ -538,13 +545,15 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         val worldSessionId = BridgeProtocolCodec.nullableString(payload, "worldSessionId", 128)
         val validDimension = dimensionId == null || dimensionId.matches(Regex("[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,64}"))
         val validWorldSession = worldSessionId == null || worldSessionId.matches(Regex("[A-Za-z0-9_-]{1,128}"))
-        if (protocolVersion != BridgeProtocol.VERSION || !bridgeId.matches(BRIDGE_ID_PATTERN) || fingerprint.isEmpty() ||
-            bridgeVersion != SUPPORTED_BRIDGE_VERSION || minecraftVersion != "1.20.1" || loaderName != "Fabric" ||
-            loaderVersion != "0.16.10" || maxOperations !in 1..BridgeProtocol.MAX_OPERATIONS ||
-            maxRequestBytes !in 1024..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES || !validDimension || !validWorldSession ||
-            (constructionExecute && (!worldAccess || !cancellation || dimensionId == null || worldSessionId == null)) ||
-            (cancellation && !constructionExecute)) {
-            fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
+        val validRuntimeVersion = minecraftVersion.matches(MINECRAFT_VERSION_TOKEN_PATTERN)
+        val validLoaderName = loaderName.matches(LOADER_NAME_PATTERN)
+        val validLoaderVersion = loaderVersion.matches(VERSION_TOKEN_PATTERN)
+        val validBridgeVersion = bridgeVersion.matches(VERSION_TOKEN_PATTERN)
+        if (protocolVersion !in 1..64 || !bridgeId.matches(BRIDGE_ID_PATTERN) || fingerprint.isEmpty() ||
+            !validRuntimeVersion || !validLoaderName || !validLoaderVersion || !validBridgeVersion ||
+            maxOperations !in 0..BridgeProtocol.MAX_OPERATIONS ||
+            maxRequestBytes !in 0..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES || !validDimension || !validWorldSession) {
+            fail("BRIDGE_CAPABILITIES_INVALID")
         }
         val versionsElement = payload.get("supportedBuildPlanSchemaVersions")
         if (versionsElement == null || !versionsElement.isJsonArray) fail("BRIDGE_CAPABILITIES_INVALID")
@@ -557,9 +566,7 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
                 fail("BRIDGE_CAPABILITIES_INVALID")
             }
         }
-        if (versions.isEmpty() || versions.size > 8 || BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION !in versions) {
-            fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
-        }
+        if (versions.size > 8) fail("BRIDGE_CAPABILITIES_INVALID")
         if (expectedProfile != null && (bridgeId != expectedProfile.bridgeId ||
                 fingerprint != BridgeCrypto.normalizeFingerprint(expectedProfile.tlsFingerprint))) {
             fail("BRIDGE_IDENTITY_CHANGED")
@@ -1079,12 +1086,14 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         const val START_PATH = "/v1/executions/start"
         const val STATUS_PATH = "/v1/executions/status"
         const val CANCEL_PATH = "/v1/executions/cancel"
-        const val SUPPORTED_BRIDGE_VERSION = "1.1.0"
         val EXECUTION_ID_PATTERN = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
         val BUILD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,80}")
         val RECORD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,128}")
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val BRIDGE_ID_PATTERN = Regex("bridge-[0-9a-f]{32}")
+        val MINECRAFT_VERSION_TOKEN_PATTERN = Regex("[A-Za-z0-9._+/-]{1,48}")
+        val LOADER_NAME_PATTERN = Regex("[A-Za-z0-9 ._+-]{1,32}")
+        val VERSION_TOKEN_PATTERN = Regex("[A-Za-z0-9._+-]{1,64}")
         val ERROR_CODE_PATTERN = Regex("[A-Z][A-Z0-9_]{0,63}")
     }
 }

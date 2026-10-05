@@ -70,6 +70,25 @@ class BuildExecutionViewModelTest {
     }
 
     @Test
+    fun pairedUnsupportedRuntimeCannotPreflightOrStartThroughTheJavaFabricAdapter() = runTest(mainDispatcher) {
+        val record = BuildPlanTestFixtures.record()
+        val bridge = FakeBridge()
+        val compatible = connected()
+        bridge.connectionState.value = compatible.copy(
+            capabilities = compatible.capabilities.copy(minecraftVersion = "1.21.1"),
+        )
+        val viewModel = createViewModel(bridge, MemoryBuilds(record), MemoryExecutions())
+        runCurrent()
+
+        viewModel.dispatch(BuildExecutionEvent.Prepare(record))
+        runCurrent()
+
+        assertEquals("BRIDGE_RUNTIME_UNSUPPORTED", (viewModel.state.value.flow as BuildExecutionFlow.Failed).reasonCode)
+        assertEquals(0, bridge.prepareCalls)
+        assertEquals(0, bridge.startCalls)
+    }
+
+    @Test
     fun preparedPlanNeedsSeparateExplicitConfirmationBeforeStart() = runTest(mainDispatcher) {
         val record = BuildPlanTestFixtures.record()
         val bridge = FakeBridge().apply { connectionState.value = connected() }

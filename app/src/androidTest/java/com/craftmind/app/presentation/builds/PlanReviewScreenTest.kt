@@ -411,7 +411,7 @@ class PlanReviewScreenTest {
         }
 
         compose.onNodeWithText("Preflight with Minecraft bridge").assertExists().assertIsNotEnabled()
-        compose.onNodeWithText("Disabled: connect and authenticate to a compatible bridge with construction.execute = true, matching Minecraft/Fabric/protocol, a selected operator origin, and cancellation support.").assertExists()
+        compose.onNodeWithText("Disabled: compatibility must resolve to SUPPORTED for this plan, the exact registered adapter must match, all required capabilities and limits must pass, and authenticated server preflight must succeed. Pairing alone is not compatibility.").assertExists()
     }
 
     private fun compatibleBridgeState(constructionExecute: Boolean = true): BridgePairingState {

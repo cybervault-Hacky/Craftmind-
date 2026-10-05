@@ -20,6 +20,8 @@ import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.buildplan.LocalBuildRepository
 import com.craftmind.app.domain.minecraft.LocalBuildExecutionRepository
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.security.CredentialStore
 import com.craftmind.app.domain.settings.ThemePreferenceRepository
 
@@ -48,5 +50,7 @@ class AppContainer(context: Context) {
     val buildHistoryPolicy = BuildHistoryPolicy(buildPlanValidator)
     val localBuilds: LocalBuildRepository = AtomicLocalBuildRepository(appContext, historyPolicy = buildHistoryPolicy)
     val localBuildExecutions: LocalBuildExecutionRepository = AtomicLocalBuildExecutionRepository(appContext)
-    val minecraftBridge: MinecraftBridgePairingRepository = AndroidMinecraftBridgePairingRepository(appContext)
+    val minecraftCompatibilityResolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver
+    val minecraftBridge: MinecraftBridgePairingRepository =
+        AndroidMinecraftBridgePairingRepository(appContext, minecraftCompatibilityResolver)
 }

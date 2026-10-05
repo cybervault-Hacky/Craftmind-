@@ -53,7 +53,9 @@ class MainActivity : ComponentActivity() {
             )
             val providerSettingsState by providerSettingsViewModel.state.collectAsStateWithLifecycle()
             val bridgePairingViewModel: BridgePairingViewModel = viewModel(
-                factory = remember(appContainer) { BridgePairingViewModelFactory(appContainer.minecraftBridge) },
+                factory = remember(appContainer) {
+                    BridgePairingViewModelFactory(appContainer.minecraftBridge, appContainer.minecraftCompatibilityResolver)
+                },
             )
             val bridgePairingState by bridgePairingViewModel.state.collectAsStateWithLifecycle()
             val buildsViewModel: BuildsViewModel = viewModel(
@@ -72,6 +74,7 @@ class MainActivity : ComponentActivity() {
                         appContainer.minecraftBridge,
                         appContainer.localBuilds,
                         appContainer.localBuildExecutions,
+                        compatibilityResolver = appContainer.minecraftCompatibilityResolver,
                     )
                 },
             )
@@ -127,6 +130,7 @@ class MainActivity : ComponentActivity() {
                     onRefinementEvent = refinementViewModel::dispatch,
                     executionState = executionState,
                     onExecutionEvent = executionViewModel::dispatch,
+                    compatibilityResolver = appContainer.minecraftCompatibilityResolver,
                 )
             }
         }
