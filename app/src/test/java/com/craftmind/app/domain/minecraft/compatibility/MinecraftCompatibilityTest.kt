@@ -127,10 +127,18 @@ class MinecraftCompatibilityTest {
     }
 
     @Test
-    fun centralProfileRegistryContainsOnlyTheRealJava1201FabricProfile() {
+    fun centralProfileRegistryKeepsTheRealJava1201FabricProfileAndNeverInventsSupport() {
         val profile = MinecraftRuntimeProfileRegistry.javaFabric1201
+        // The production Java profile registry itself still contains exactly the production profile.
         assertEquals(listOf(profile), MinecraftRuntimeProfileRegistry.allProfiles())
-        assertEquals(listOf(profile), DefaultMinecraftCompatibility.resolver.registeredProfiles())
+        // Phase 12 additionally registers declared, uncertified legacy contracts; they are never SUPPORTED.
+        val registered = DefaultMinecraftCompatibility.resolver.registeredProfiles()
+        assertEquals(listOf(profile) + LegacyRuntimeProfileRegistry.allProfiles(), registered)
+        registered.filter { it.releaseChannel != MinecraftVersionChannel.RELEASE }.forEach { legacyProfile ->
+            assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, legacyProfile.supportStatus)
+            assertEquals(MinecraftRuntimeCertification.NOT_PERFORMED, legacyProfile.runtimeCertification)
+            assertFalse(legacyProfile.authorizesExecution)
+        }
         assertEquals(profile.adapterId, DefaultMinecraftCompatibility.resolver.registeredAdapters().first().adapterId)
         // Phase 11 registers exactly one Bedrock contract boundary in addition to the Java adapter; the contract
         // claims no certified Bedrock runtime and can never authorize construction.

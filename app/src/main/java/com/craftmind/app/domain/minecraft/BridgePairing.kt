@@ -1,7 +1,7 @@
 package com.craftmind.app.domain.minecraft
 
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
-import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeLimitation
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
@@ -48,7 +48,7 @@ data class BridgeCapabilitiesSnapshot(
     /** Bedrock host/runtime version where safely reported; null otherwise. */
     val platformVersion: String? = null,
     /** Integration limitations declared by the reported runtime; only Bedrock reports them. */
-    val limitations: Set<BedrockRuntimeLimitation> = emptySet(),
+    val limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
     val supportedCapabilities: Set<MinecraftCapability>,
     val worldAccess: Boolean,
     val constructionExecute: Boolean,

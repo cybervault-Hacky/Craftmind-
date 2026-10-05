@@ -3,7 +3,7 @@ package com.craftmind.app.data.minecraft
 import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
-import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeLimitation
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation
 import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
@@ -35,7 +35,7 @@ class BedrockBridgeCapabilitiesWireCodecTest {
         assertEquals(MinecraftLoader.BEDROCK_NATIVE.wireValue, snapshot.loaderName)
         assertEquals(MinecraftRuntimePlatform.DEDICATED_SERVER, snapshot.platform)
         assertEquals("1.21.60.3", snapshot.platformVersion)
-        assertEquals(setOf(BedrockRuntimeLimitation.NO_ROLLBACK, BedrockRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY), snapshot.limitations)
+        assertEquals(setOf(MinecraftRuntimeLimitation.NO_ROLLBACK, MinecraftRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY), snapshot.limitations)
         assertEquals(REPORTED_CAPABILITIES, snapshot.supportedCapabilities)
         assertEquals(BridgeCrypto.formatFingerprint("00".repeat(32)), snapshot.identityFingerprint)
 
@@ -49,6 +49,24 @@ class BedrockBridgeCapabilitiesWireCodecTest {
         // Recognized by the Bedrock contract boundary, but never executable while no runtime is certified.
         assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, snapshot.compatibilityResult.status)
         assertFalse(snapshot.executionCompatible)
+    }
+
+    @Test
+    fun rejectsLegacyOrExperimentalJavaLimitationNamesOnABedrockPayload() {
+        // A Bedrock payload may only declare Bedrock limitations: legacy/experimental Java declarations are a
+        // different family and must never be accepted here, even though they share the limitation model.
+        listOf(
+            "LEGACY_RUNTIME_NOT_VERIFIED",
+            "LEGACY_BRIDGE_INTERFACE_UNVERIFIED",
+            "BLOCK_STATE_MAPPING_NOT_VERIFIED",
+        ).forEach { name ->
+            assertFailure("BRIDGE_CAPABILITIES_INVALID") {
+                BedrockBridgeCapabilitiesWireCodec.read(
+                    validBedrockPayload().apply { add("limitations", JsonArray().apply { add(name) }) },
+                    null,
+                )
+            }
+        }
     }
 
     @Test
@@ -102,8 +120,8 @@ class BedrockBridgeCapabilitiesWireCodecTest {
             BedrockBridgeCapabilitiesWireCodec.read(
                 validBedrockPayload().apply {
                     add("limitations", JsonArray().apply {
-                        BedrockRuntimeLimitation.entries.forEach { add(it.name) }
-                        add(BedrockRuntimeLimitation.NO_ROLLBACK.name)
+                        MinecraftRuntimeLimitation.entries.forEach { add(it.name) }
+                        add(MinecraftRuntimeLimitation.NO_ROLLBACK.name)
                     })
                 },
                 null,
@@ -256,8 +274,8 @@ class BedrockBridgeCapabilitiesWireCodecTest {
         addProperty("maximumExecutionSeconds", 300)
         add("supportedBuildPlanSchemaVersions", JsonArray().apply { add(2) })
         add("limitations", JsonArray().apply {
-            add(BedrockRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY.name)
-            add(BedrockRuntimeLimitation.NO_ROLLBACK.name)
+            add(MinecraftRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY.name)
+            add(MinecraftRuntimeLimitation.NO_ROLLBACK.name)
         })
         addProperty("dimensionId", "minecraft:overworld")
         addProperty("worldSessionId", "bedrock-world-session-1")

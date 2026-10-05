@@ -4,7 +4,7 @@ import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.BridgeCapabilitiesSnapshot
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
-import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeLimitation
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftEdition
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftLoader
@@ -34,7 +34,27 @@ internal object BedrockBridgeCapabilitiesWireCodec {
     private val knownCapabilityNames = MinecraftCapability.entries
         .filter { it != MinecraftCapability.UNKNOWN }
         .associateBy { it.wireValue }
-    private val knownLimitations = BedrockRuntimeLimitation.entries.associateBy { it.name }
+    /**
+     * Only the limitations a Bedrock bridge may declare are accepted from the wire. Java/legacy limitation names
+     * stay unknown here so a Bedrock payload can never borrow another family's declaration.
+     */
+    /**
+     * Integration limitations a Bedrock runtime may declare over the wire: a strict subset of the shared
+     * limitation model, so legacy/experimental Java limitation names are rejected on a Bedrock payload.
+     */
+    private val BEDROCK_WIRE_LIMITATIONS = setOf(
+        MinecraftRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY,
+        MinecraftRuntimeLimitation.NO_ROLLBACK,
+        MinecraftRuntimeLimitation.NO_AUTOMATIC_RESUME,
+        MinecraftRuntimeLimitation.RECOVERY_REQUIRED_AFTER_INTERRUPTION,
+        MinecraftRuntimeLimitation.PROGRESS_IS_BRIDGE_REPORTED,
+        MinecraftRuntimeLimitation.SINGLE_ACTIVE_EXECUTION,
+        MinecraftRuntimeLimitation.NO_BLOCK_ENTITY_DATA,
+        MinecraftRuntimeLimitation.NO_TRANSACTIONAL_PLACEMENT,
+        MinecraftRuntimeLimitation.ORIGIN_MUST_BE_OPERATOR_SELECTED,
+    )
+
+    private val knownLimitations = BEDROCK_WIRE_LIMITATIONS.associateBy { it.name }
     private val executionCapabilities = setOf(
         MinecraftCapability.BUILD_EXECUTION,
         MinecraftCapability.BLOCK_PLACEMENT,
@@ -125,7 +145,7 @@ internal object BedrockBridgeCapabilitiesWireCodec {
 
         val limitationElement = payload.get("limitations")
         if (limitationElement == null || !limitationElement.isJsonArray ||
-            limitationElement.asJsonArray.size() > BedrockRuntimeLimitation.entries.size) {
+            limitationElement.asJsonArray.size() > BEDROCK_WIRE_LIMITATIONS.size) {
             fail("BRIDGE_CAPABILITIES_INVALID")
         }
         val limitationNames = limitationElement.asJsonArray.map(::readArrayString)

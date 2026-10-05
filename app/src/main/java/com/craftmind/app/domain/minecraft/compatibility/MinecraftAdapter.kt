@@ -131,6 +131,18 @@ class MinecraftAdapterRegistry {
         profile.loader.edition != profile.edition -> "edition and loader family are inconsistent"
         profile.supportStatus !in setOf(MinecraftCompatibilityStatus.SUPPORTED, MinecraftCompatibilityStatus.EXPERIMENTAL) ->
             "only implemented supported or explicitly experimental profiles may be registered"
+        !releaseChannelMatches(profile.releaseChannel, profile.version.channel) ->
+            "the declared release channel must match the version identifier's channel (a legacy profile may declare a release token)"
+        profile.supportStatus == MinecraftCompatibilityStatus.SUPPORTED && !profile.runtimeCertification.authorizesSupport ->
+            "a SUPPORTED profile requires recorded runtime certification that authorizes support"
+        profile.isLegacyOrExperimental && profile.limitations.isEmpty() ->
+            "a legacy/pre-release/snapshot/beta/alpha profile must declare its limitations"
+        !MinecraftAdapterRegistry.SAFE_VERSION.matches(profile.blockStateSupportRevision) ->
+            "block/state support revision must be a bounded exact token"
+        profile.contentValidationMode == MinecraftContentValidationMode.APP_SIDE_MAPPING &&
+            profile.blockStateCatalog.isDeclared &&
+            profile.blockStateSupportRevision == MinecraftTargetBlockStateCatalog.NONE_DECLARED_REVISION ->
+            "a declared block/state mapping requires a real support revision"
         !SAFE_VERSION.matches(profile.loaderVersion) || !SAFE_VERSION.matches(profile.bridgeVersion) ->
             "loader and bridge versions must be bounded exact tokens"
         profile.bridgeProtocolVersion != BridgeProtocol.VERSION -> "bridge protocol version is not supported by this app build"
@@ -176,7 +188,7 @@ class MinecraftAdapterRegistry {
             MinecraftCompatibilityStatus.UNSUPPORTED,
         ) -> "a Bedrock contract status must be SUPPORTED, EXPERIMENTAL, or UNSUPPORTED"
         profile.status == MinecraftCompatibilityStatus.SUPPORTED &&
-            (!profile.certification.authorizesSupport || profile.certifiedMinecraftVersions.isEmpty()) ->
+            (!profile.certification.authorizesBedrockSupport || profile.certifiedMinecraftVersions.isEmpty()) ->
             "a SUPPORTED Bedrock contract requires recorded runtime certification and a certified Minecraft version"
         profile.certifiedMinecraftVersions.any { !it.isKnown } -> "certified Bedrock versions must be exact known versions"
         profile.maximumValidatedOperations !in 1..BridgeProtocol.MAX_OPERATIONS ->
@@ -229,18 +241,33 @@ class MinecraftAdapterRegistry {
 
     private companion object {
         val SAFE_VERSION = Regex("[A-Za-z0-9._+-]{1,64}")
+
+        /**
+         * A profile may only claim a release channel that its exact version identifier can actually carry. A
+         * LEGACY profile may describe an older *release* token (1.7.10) — that explicit registry decision is the
+         * only reason such a runtime is treated as legacy — while a beta/alpha/snapshot token keeps its channel.
+         */
+        fun releaseChannelMatches(declared: MinecraftVersionChannel, parsed: MinecraftVersionChannel): Boolean =
+            declared != MinecraftVersionChannel.UNKNOWN && (
+                declared == parsed || (declared == MinecraftVersionChannel.LEGACY && parsed == MinecraftVersionChannel.RELEASE)
+                )
     }
 }
 
 /**
- * The production adapters registered by this build: the exact Java 1.20.1/Fabric adapter and the Bedrock
- * contract boundary, which is recognized but can never authorize construction while no Bedrock runtime is
- * certified. Other versions/loaders remain explicit, unsupported extension points.
+ * The production adapters registered by this build: the exact Java 1.20.1/Fabric production adapter, the
+ * legacy/experimental Java contracts (recognized, never executable while uncertified), and the Bedrock contract
+ * boundary, which is recognized but can never authorize construction while no Bedrock runtime is certified.
+ * Other versions/loaders remain explicit, unsupported extension points.
  */
 object DefaultMinecraftCompatibility {
     internal val registry: MinecraftAdapterRegistry by lazy {
         MinecraftAdapterRegistry().apply {
             when (val result = register(JavaFabric1201Adapter())) {
+                MinecraftAdapterRegistrationResult.Registered -> Unit
+                else -> error("Default Minecraft adapter registry is invalid: $result")
+            }
+            when (val result = register(LegacyJavaRuntimeAdapter())) {
                 MinecraftAdapterRegistrationResult.Registered -> Unit
                 else -> error("Default Minecraft adapter registry is invalid: $result")
             }

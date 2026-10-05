@@ -4,9 +4,10 @@ import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.bridge.protocol.BridgeProtocol
 
 /**
- * Central source of compatibility identities shipped by this build. This intentionally contains exactly
- * one production profile; other versions/loaders stay unsupported until a concrete adapter is implemented
- * and independently verified.
+ * Central source of compatibility identities shipped by this build: exactly one production Java profile plus the
+ * declared legacy/experimental contracts in [LegacyRuntimeProfileRegistry] and the Bedrock contract in
+ * [BedrockRuntimeProfileRegistry]. Other versions, loaders, and release channels stay unsupported until a
+ * concrete adapter is implemented and independently verified; nothing here is classified as legacy automatically.
  */
 object MinecraftRuntimeProfileRegistry {
     val javaFabric1201 = SupportedMinecraftRuntimeDescriptor(
@@ -24,6 +25,18 @@ object MinecraftRuntimeProfileRegistry {
         ),
         requiredFabricApiVersion = "0.92.2+1.20.1",
         supportStatus = MinecraftCompatibilityStatus.SUPPORTED,
+        releaseChannel = MinecraftVersionChannel.RELEASE,
+        /*
+         * CERTIFIED here records that this registry entry is CraftMind's shipped production Java target
+         * (Phases 2-9). It is not a new Phase-12 runtime test: legacy and experimental contracts below that rung
+         * can never claim SUPPORTED, and the registry rejects a SUPPORTED profile without a supporting rung.
+         */
+        runtimeCertification = MinecraftRuntimeCertification.CERTIFIED,
+        limitations = emptySet(),
+        // The production Fabric bridge validates every requested block/state server-side during preflight; there
+        // is no app-side substitution, so the app-side catalog stays empty and unused.
+        blockStateSupportRevision = MinecraftTargetBlockStateCatalog.SERVER_VALIDATED_REVISION,
+        contentValidationMode = MinecraftContentValidationMode.SERVER_SIDE_VALIDATION,
         maximumValidatedOperations = BuildPlanLimits.MAX_OPERATIONS,
         maximumRequestBytes = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES,
         maximumOperationsPerTick = BridgeProtocol.MAX_OPERATIONS_PER_TICK,

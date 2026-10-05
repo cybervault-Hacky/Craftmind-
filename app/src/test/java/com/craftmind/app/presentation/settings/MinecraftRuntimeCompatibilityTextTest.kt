@@ -2,6 +2,7 @@ package com.craftmind.app.presentation.settings
 
 import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
+import com.craftmind.app.domain.minecraft.compatibility.LegacyRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
@@ -104,6 +105,45 @@ class MinecraftRuntimeCompatibilityTextTest {
         assertTrue(reason.contains("not currently supported"))
         assertTrue(reason.contains("No BuildPlan will be sent for execution"))
         assertTrue(result.reasonCodes.any { it.name == "BEDROCK_RUNTIME_NOT_CERTIFIED" })
+    }
+
+    @Test
+    fun recognizedLegacyRuntimeExplainsCertificationAndNoBuildPlanIsSent() {
+        val legacy = MinecraftRuntimeDescriptor(
+            appVersion = "1.0.0",
+            edition = MinecraftEdition.JAVA,
+            version = MinecraftVersion.parse("1.7.10"),
+            javaRuntimeMajor = 8,
+            loader = MinecraftLoader.FORGE,
+            loaderVersion = "10.13.4.1614",
+            bridgeProtocolVersion = BridgeProtocol.VERSION,
+            bridgeVersion = LegacyRuntimeProfileRegistry.LEGACY_BRIDGE_CONTRACT_VERSION,
+            capabilities = setOf(MinecraftCapability.WORLD_ACCESS),
+            supportedBuildPlanSchemaVersions = setOf(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION),
+            maximumValidatedOperations = BridgeProtocol.MAX_OPERATIONS,
+            maximumRequestBytes = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES,
+            maximumOperationsPerTick = BridgeProtocol.MAX_OPERATIONS_PER_TICK,
+            maximumExecutionSeconds = BridgeProtocol.MAX_EXECUTION_SECONDS,
+            limitations = LegacyRuntimeProfileRegistry.declaredLimitations(),
+        )
+
+        val result = resolver.resolveRuntime(legacy)
+        assertFalse(result.canExecute)
+        assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, result.status)
+
+        val reason = result.unavailableReason(legacy)
+        assertTrue(reason.contains("legacy or experimental"))
+        assertTrue(reason.contains("no recorded runtime certification"))
+        assertTrue(reason.contains("No BuildPlan will be sent for execution"))
+
+        val status = legacy.statusLabel(result)
+        assertTrue(status.contains("Compatibility: EXPERIMENTAL"))
+        assertTrue(status.contains("runtime certification: Not performed"))
+
+        // The release channel is visible for every runtime, so a legacy/beta/snapshot target cannot be mistaken
+        // for a plain release build.
+        assertTrue(legacy.runtimeFactsLabel().contains("release channel RELEASE"))
+        assertTrue(legacy.runtimeFactsLabel().contains("Java runtime reported by bridge: Java 8"))
     }
 
     @Test

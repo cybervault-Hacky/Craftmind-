@@ -153,10 +153,33 @@ class MinecraftCompatibilityResolver(
         }
         val sameEditionAndVersion = profiles.filter { it.edition == runtime.edition && it.version == runtime.version }
         if (sameEditionAndVersion.isEmpty()) {
-            return unsupported(
-                MinecraftCompatibilityReasonCode.UNSUPPORTED_MINECRAFT_VERSION,
-                "Minecraft ${runtime.version.identifier} has no registered production adapter. No nearest-version fallback is used.",
-            )
+            // The identifier's own channel decides which diagnosis is honest. A legacy identifier (classic/beta-era
+            // token), a snapshot, or a beta/alpha/pre-release build is never mapped to a release version, and a
+            // release token is never treated as legacy just because it is old: only a registered profile declares
+            // legacy status.
+            when (runtime.version.channel) {
+                MinecraftVersionChannel.LEGACY -> return unsupported(
+                    MinecraftCompatibilityReasonCode.UNSUPPORTED_LEGACY_VERSION,
+                    "Minecraft ${runtime.version.displayIdentifier} is a legacy Minecraft identifier with no registered " +
+                        "compatibility profile. Legacy identifiers are never mapped to a release build or to a nearest version.",
+                )
+
+                MinecraftVersionChannel.PRE_RELEASE,
+                MinecraftVersionChannel.SNAPSHOT,
+                MinecraftVersionChannel.BETA,
+                MinecraftVersionChannel.ALPHA,
+                -> return unsupported(
+                    MinecraftCompatibilityReasonCode.UNSUPPORTED_RELEASE_CHANNEL,
+                    "Minecraft ${runtime.version.displayIdentifier} is a ${runtime.version.channel.name} build and no " +
+                        "registered compatibility profile covers that release channel. A snapshot, beta, alpha, or " +
+                        "pre-release runtime is never matched to a release version and is not silently treated as supported.",
+                )
+
+                else -> return unsupported(
+                    MinecraftCompatibilityReasonCode.UNSUPPORTED_MINECRAFT_VERSION,
+                    "Minecraft ${runtime.version.identifier} has no registered production adapter. No nearest-version fallback is used.",
+                )
+            }
         }
         val sameLoader = sameEditionAndVersion.filter { it.loader == runtime.loader }
         if (sameLoader.isEmpty()) {
@@ -313,8 +336,24 @@ class MinecraftCompatibilityResolver(
         } else if (runtime.platform != MinecraftRuntimePlatform.UNKNOWN) {
             add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Only a Bedrock runtime may report a Bedrock runtime platform.")
         }
-        if (runtime.edition != MinecraftEdition.BEDROCK && runtime.limitations.isNotEmpty()) {
-            add(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to "Only a Bedrock runtime may report Bedrock integration limitations.")
+        // A runtime may report integration limitations when it is genuinely outside the production release family: a
+        // Bedrock/Legacy edition, a snapshot/beta/alpha/pre-release identifier, or an exact identity that this build
+        // explicitly declares as a legacy/experimental contract. A production release runtime must not borrow them.
+        val mayDeclareLimitations = runtime.edition == MinecraftEdition.BEDROCK ||
+            runtime.edition == MinecraftEdition.LEGACY ||
+            runtime.version.channel != MinecraftVersionChannel.RELEASE ||
+            // Covering the reported edition + Minecraft version is enough: a runtime whose loader/bridge identity
+            // does not match is then reported with its real reason (loader, protocol, or bridge mismatch) instead
+            // of an unrelated descriptor error.
+            registry.allProfiles().any { profile ->
+                profile.releaseChannel != MinecraftVersionChannel.RELEASE &&
+                    profile.edition == runtime.edition && profile.version == runtime.version
+            }
+        if (!mayDeclareLimitations && runtime.limitations.isNotEmpty()) {
+            add(
+                MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR to
+                    "Only a Bedrock runtime may report Bedrock integration limitations.",
+            )
         }
     }
 
@@ -323,7 +362,14 @@ class MinecraftCompatibilityResolver(
             add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "Edition could not be determined safely.")
         }
         if (!runtime.version.isKnown) {
-            add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "Minecraft version is missing or unrecognized.")
+            add(
+                MinecraftCompatibilityReasonCode.UNKNOWN_MINECRAFT_VERSION to
+                    "Minecraft version is missing or unrecognized; an unknown version is never assumed to be a nearby release.",
+            )
+            add(
+                MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to
+                    "The runtime descriptor stays incomplete while no trustworthy Minecraft version is reported.",
+            )
         }
         if (runtime.loader == MinecraftLoader.UNKNOWN) {
             add(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR to "Loader is missing or unrecognized.")
@@ -395,9 +441,10 @@ fun MinecraftCompatibilityResult.failureReasonCode(): String = when {
     MinecraftCompatibilityReasonCode.BRIDGE_PROTOCOL_MISMATCH in reasonCodes -> "BRIDGE_PROTOCOL_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.BRIDGE_VERSION_MISMATCH in reasonCodes -> "BRIDGE_VERSION_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.UNSUPPORTED_BEDROCK_PLATFORM in reasonCodes -> "BEDROCK_PLATFORM_UNSUPPORTED"
+    MinecraftCompatibilityReasonCode.UNSUPPORTED_LEGACY_VERSION in reasonCodes -> "UNSUPPORTED_LEGACY_VERSION"
+    MinecraftCompatibilityReasonCode.UNSUPPORTED_RELEASE_CHANNEL in reasonCodes -> "UNSUPPORTED_RELEASE_CHANNEL"
     status == MinecraftCompatibilityStatus.UNSUPPORTED -> "BRIDGE_RUNTIME_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.BEDROCK_RUNTIME_NOT_CERTIFIED in reasonCodes -> "BEDROCK_RUNTIME_NOT_CERTIFIED"
-    status == MinecraftCompatibilityStatus.EXPERIMENTAL -> "BRIDGE_RUNTIME_EXPERIMENTAL"
     MinecraftCompatibilityReasonCode.UNSUPPORTED_BUILDPLAN_SCHEMA in reasonCodes -> "BUILD_PLAN_SCHEMA_UNSUPPORTED"
     MinecraftCompatibilityReasonCode.UNSUPPORTED_BLOCK_STATE in reasonCodes -> "UNSUPPORTED_BLOCK_STATE"
     MinecraftCompatibilityReasonCode.UNSUPPORTED_BLOCK in reasonCodes -> "UNSUPPORTED_BLOCK"
@@ -406,6 +453,10 @@ fun MinecraftCompatibilityResult.failureReasonCode(): String = when {
     MinecraftCompatibilityReasonCode.MISSING_CAPABILITY in reasonCodes || missingCapabilities.isNotEmpty() ->
         if (missingCapabilities.any { it in CONSTRUCTION_CAPABILITIES }) "CONSTRUCTION_DISABLED"
         else "BRIDGE_CAPABILITIES_UNSUPPORTED"
+    // A recognized but uncertified runtime is reported only after any concrete plan-specific cause, so the plan
+    // review still names an actionable reason; it is always more specific than the plain EXPERIMENTAL fallback.
+    MinecraftCompatibilityReasonCode.RUNTIME_NOT_CERTIFIED in reasonCodes -> "RUNTIME_NOT_CERTIFIED"
+    status == MinecraftCompatibilityStatus.EXPERIMENTAL -> "BRIDGE_RUNTIME_EXPERIMENTAL"
     else -> "BUILD_PLAN_NOT_EXECUTABLE"
 }
 

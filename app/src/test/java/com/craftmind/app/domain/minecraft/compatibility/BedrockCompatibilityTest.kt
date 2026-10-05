@@ -115,7 +115,7 @@ class BedrockCompatibilityTest {
 
         assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, result.status)
         assertEquals(contract.adapterId, result.adapterId)
-        assertEquals(BedrockRuntimeCertification.NOT_PERFORMED, result.runtimeCertification)
+        assertEquals(MinecraftRuntimeCertification.NOT_PERFORMED, result.runtimeCertification)
         assertEquals("BEDROCK_RUNTIME_NOT_CERTIFIED", result.failureReasonCode())
         assertTrue(result.reasonCodes.contains(MinecraftCompatibilityReasonCode.BEDROCK_RUNTIME_NOT_CERTIFIED))
         assertTrue(result.missingCapabilities.isEmpty())
@@ -300,7 +300,7 @@ class BedrockCompatibilityTest {
             listOf(
                 certifiedTestProfile().copy(
                     status = MinecraftCompatibilityStatus.SUPPORTED,
-                    certification = BedrockRuntimeCertification.NOT_PERFORMED,
+                    certification = MinecraftRuntimeCertification.NOT_PERFORMED,
                 ),
             ),
         )
@@ -316,10 +316,10 @@ class BedrockCompatibilityTest {
         assertTrue((secondResult as MinecraftAdapterRegistrationResult.InvalidRuntimeProfile).reason.contains("certified Minecraft version"))
         assertTrue(registry.allAdapters().isEmpty())
 
-        assertFalse(BedrockRuntimeCertification.NOT_PERFORMED.authorizesSupport)
-        assertFalse(BedrockRuntimeCertification.UNIT_TESTED.authorizesSupport)
-        assertFalse(BedrockRuntimeCertification.BRIDGE_TESTED.authorizesSupport)
-        assertTrue(BedrockRuntimeCertification.RUNTIME_TESTED.authorizesSupport)
+        assertFalse(MinecraftRuntimeCertification.NOT_PERFORMED.authorizesSupport)
+        assertFalse(MinecraftRuntimeCertification.UNIT_TESTED.authorizesSupport)
+        assertFalse(MinecraftRuntimeCertification.BRIDGE_TESTED.authorizesSupport)
+        assertTrue(MinecraftRuntimeCertification.RUNTIME_TESTED.authorizesSupport)
     }
 
     @Test
@@ -335,7 +335,7 @@ class BedrockCompatibilityTest {
 
         val runtimeOnly = certifiedResolver.resolveRuntime(runtime)
         assertEquals(MinecraftCompatibilityStatus.SUPPORTED, runtimeOnly.status)
-        assertEquals(BedrockRuntimeCertification.RUNTIME_TESTED, runtimeOnly.runtimeCertification)
+        assertEquals(MinecraftRuntimeCertification.RUNTIME_TESTED, runtimeOnly.runtimeCertification)
         assertTrue(runtimeOnly.canExecute)
 
         val withPlanContent = certifiedResolver.resolve(BuildPlanTestFixtures.semanticPlan(), runtime)
@@ -354,7 +354,7 @@ class BedrockCompatibilityTest {
     @Test
     fun shippedBedrockRegistryClaimsNoCertifiedRuntime() {
         assertTrue(contract.certifiedMinecraftVersions.isEmpty())
-        assertEquals(BedrockRuntimeCertification.NOT_PERFORMED, contract.certification)
+        assertEquals(MinecraftRuntimeCertification.NOT_PERFORMED, contract.certification)
         assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, contract.status)
         assertEquals(MinecraftEdition.BEDROCK, contract.edition)
         assertEquals(BridgeProtocol.VERSION, contract.bridgeProtocolVersion)
@@ -374,73 +374,73 @@ class BedrockCompatibilityTest {
     @Test
     fun bedrockBlockStateCatalogRejectsUnverifiedDuplicateAndInvalidMappings() {
         assertThrows(IllegalArgumentException::class.java) {
-            BedrockBlockStateCatalog(listOf(testAxisMapping().copy(verification = BedrockMappingVerification.NOT_VERIFIED)))
+            MinecraftTargetBlockStateCatalog(listOf(testAxisMapping().copy(verification = BlockStateMappingVerification.NOT_VERIFIED)))
         }
         assertThrows(IllegalArgumentException::class.java) {
-            BedrockBlockStateCatalog(listOf(testAxisMapping(), testAxisMapping()))
+            MinecraftTargetBlockStateCatalog(listOf(testAxisMapping(), testAxisMapping()))
         }
         assertThrows(IllegalArgumentException::class.java) {
-            BedrockStateTranslation("Axis", mapOf("x" to "x"))
+            BlockStateTranslation("Axis", mapOf("x" to "x"))
         }
         assertThrows(IllegalArgumentException::class.java) {
-            BedrockStateTranslation("axis", emptyMap())
+            BlockStateTranslation("axis", emptyMap())
         }
         assertThrows(IllegalArgumentException::class.java) {
-            BedrockBlockStateMapping("minecraft:test block", verification = BedrockMappingVerification.RUNTIME_VERIFIED)
+            MinecraftTargetBlockStateMapping("minecraft:test block", verification = BlockStateMappingVerification.RUNTIME_VERIFIED)
         }
     }
 
     @Test
     fun bedrockBlockStateCatalogResolvesOnlyDeclaredMappingsAndNeverSubstitutes() {
-        val catalog = BedrockBlockStateCatalog(
+        val catalog = MinecraftTargetBlockStateCatalog(
             listOf(
                 testAxisMapping(),
-                BedrockBlockStateMapping(
+                MinecraftTargetBlockStateMapping(
                     blockId = "minecraft:test_stairs",
                     stateTranslations = mapOf(
-                        "facing" to BedrockStateTranslation(
-                            bedrockProperty = "weirdo_direction",
+                        "facing" to BlockStateTranslation(
+                            targetProperty = "weirdo_direction",
                             valueTranslations = mapOf("east" to "0", "north" to "2"),
                         ),
                     ),
-                    verification = BedrockMappingVerification.RUNTIME_VERIFIED,
+                    verification = BlockStateMappingVerification.RUNTIME_VERIFIED,
                 ),
-                BedrockBlockStateMapping(
+                MinecraftTargetBlockStateMapping(
                     blockId = "minecraft:test_glass",
-                    verification = BedrockMappingVerification.RUNTIME_VERIFIED,
+                    verification = BlockStateMappingVerification.RUNTIME_VERIFIED,
                 ),
             ),
         )
 
         assertEquals(
-            BedrockBlockStateResolution.Supported("minecraft:test_axis_block", mapOf("axis" to "x")),
+            MinecraftBlockStateResolution.Supported("minecraft:test_axis_block", mapOf("axis" to "x")),
             catalog.resolve("minecraft:test_axis_block", mapOf("axis" to "x")),
         )
         assertEquals(
-            BedrockBlockStateResolution.Supported("minecraft:test_stairs", mapOf("weirdo_direction" to "0")),
+            MinecraftBlockStateResolution.Supported("minecraft:test_stairs", mapOf("weirdo_direction" to "0")),
             catalog.resolve("minecraft:test_stairs", mapOf("facing" to "east")),
         )
         assertEquals(
-            BedrockBlockStateResolution.Supported("minecraft:test_glass", emptyMap()),
+            MinecraftBlockStateResolution.Supported("minecraft:test_glass", emptyMap()),
             catalog.resolve("minecraft:test_glass", emptyMap()),
         )
         assertEquals(
-            BedrockBlockStateResolution.UnsupportedState("minecraft:test_stairs", listOf("facing")),
+            MinecraftBlockStateResolution.UnsupportedState("minecraft:test_stairs", listOf("facing")),
             catalog.resolve("minecraft:test_stairs", mapOf("facing" to "south")),
         )
         assertEquals(
-            BedrockBlockStateResolution.UnsupportedState(
+            MinecraftBlockStateResolution.UnsupportedState(
                 "minecraft:test_axis_block",
                 listOf("weirdo_direction"),
             ),
             catalog.resolve("minecraft:test_axis_block", mapOf("axis" to "x", "weirdo_direction" to "1")),
         )
         assertEquals(
-            BedrockBlockStateResolution.UnsupportedBlock("minecraft:oak_planks"),
+            MinecraftBlockStateResolution.UnsupportedBlock("minecraft:oak_planks"),
             catalog.resolve("minecraft:oak_planks", emptyMap()),
         )
         assertEquals(
-            BedrockBlockStateResolution.UnsupportedState(
+            MinecraftBlockStateResolution.UnsupportedState(
                 "minecraft:test_axis_block",
                 (1..8).map { "property_$it" },
             ),
@@ -448,7 +448,7 @@ class BedrockCompatibilityTest {
         )
         assertEquals(3, catalog.mappingCount)
         assertTrue(catalog.declaredBlockIds().contains("minecraft:test_axis_block"))
-        assertFalse(BedrockBlockStateCatalog.EMPTY.isDeclared)
+        assertFalse(MinecraftTargetBlockStateCatalog.EMPTY.isDeclared)
     }
 
     @Test
@@ -486,7 +486,7 @@ class BedrockCompatibilityTest {
 
         val javaWithBedrockFacts = javaRuntime().copy(
             platform = MinecraftRuntimePlatform.DEDICATED_SERVER,
-            limitations = setOf(BedrockRuntimeLimitation.NO_ROLLBACK),
+            limitations = setOf(MinecraftRuntimeLimitation.NO_ROLLBACK),
         )
         val crossEdition = resolver.resolveRuntime(javaWithBedrockFacts)
         assertEquals(MinecraftCompatibilityStatus.UNKNOWN, crossEdition.status)
@@ -564,7 +564,7 @@ class BedrockCompatibilityTest {
         maximumExecutionSeconds = maximumExecutionSeconds,
         worldAvailable = true,
         operatorOriginAvailable = true,
-        limitations = setOf(BedrockRuntimeLimitation.NO_ROLLBACK),
+        limitations = setOf(MinecraftRuntimeLimitation.NO_ROLLBACK),
     )
 
     private fun javaRuntime() = MinecraftRuntimeDescriptor(
@@ -589,7 +589,7 @@ class BedrockCompatibilityTest {
     /** Test-only contract that records real runtime certification; never registered in the shipped app. */
     private fun certifiedTestProfile(
         certifiedVersions: Set<MinecraftVersion> = setOf(MinecraftVersion.parse("1.21.60")),
-        catalog: BedrockBlockStateCatalog = BedrockBlockStateCatalog.EMPTY,
+        catalog: MinecraftTargetBlockStateCatalog = MinecraftTargetBlockStateCatalog.EMPTY,
     ) = BedrockRuntimeProfile(
         adapterId = contract.adapterId,
         edition = MinecraftEdition.BEDROCK,
@@ -599,7 +599,7 @@ class BedrockCompatibilityTest {
         certifiedMinecraftVersions = certifiedVersions,
         contractCapabilities = REPORTED_CAPABILITIES,
         requiredBuildPlanSchemaVersions = setOf(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION),
-        limitations = setOf(BedrockRuntimeLimitation.NO_ROLLBACK),
+        limitations = setOf(MinecraftRuntimeLimitation.NO_ROLLBACK),
         maximumValidatedOperations = 4096,
         maximumRequestBytes = 1_048_576,
         maximumOperationsPerTick = 32,
@@ -608,15 +608,15 @@ class BedrockCompatibilityTest {
         blockStateSupportRevision = "test-only-revision",
         blockStateCatalog = catalog,
         status = MinecraftCompatibilityStatus.SUPPORTED,
-        certification = BedrockRuntimeCertification.RUNTIME_TESTED,
+        certification = MinecraftRuntimeCertification.RUNTIME_TESTED,
     )
 
-    private fun testAxisMapping() = BedrockBlockStateMapping(
+    private fun testAxisMapping() = MinecraftTargetBlockStateMapping(
         blockId = "minecraft:test_axis_block",
         stateTranslations = mapOf(
-            "axis" to BedrockStateTranslation("axis", mapOf("x" to "x", "y" to "y", "z" to "z")),
+            "axis" to BlockStateTranslation("axis", mapOf("x" to "x", "y" to "y", "z" to "z")),
         ),
-        verification = BedrockMappingVerification.RUNTIME_VERIFIED,
+        verification = BlockStateMappingVerification.RUNTIME_VERIFIED,
     )
 
     /** A repository that fails the test if a Bedrock adapter ever touches the shared authenticated bridge. */

@@ -4,11 +4,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
-import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
@@ -16,6 +20,10 @@ import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescript
 /**
  * Settings-facing compatibility block. It shows only bridge-reported capabilities, structured reasons, bounded
  * diagnostics, and declared limitations; missing facts are shown as missing rather than synthesized.
+ *
+ * The compatibility status, the release channel, the recorded certification, the declared limitations, and the
+ * reason a build cannot run are always visible; the raw capability/adapter detail is collapsible so the honest
+ * summary is never hidden behind an advanced panel.
  */
 @Composable
 internal fun MinecraftRuntimeCompatibilityBlock(
@@ -23,6 +31,7 @@ internal fun MinecraftRuntimeCompatibilityBlock(
     compatibility: MinecraftCompatibilityResult?,
     modifier: Modifier = Modifier,
 ) {
+    var advancedExpanded by remember { mutableStateOf(false) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(runtime.runtimeIdentityLabel(), style = MaterialTheme.typography.bodyMedium)
         Text(runtime.runtimeFactsLabel(), style = MaterialTheme.typography.bodySmall)
@@ -41,13 +50,21 @@ internal fun MinecraftRuntimeCompatibilityBlock(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        Text("Adapter: ${compatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
-        Text(
-            "Capabilities reported by the authenticated bridge: " +
-                runtime.capabilities.sortedBy { it.name }.joinToString { "✓ ${it.displayName}" }.ifEmpty { "none" },
-            style = MaterialTheme.typography.bodySmall,
-        )
-        if (runtime.isBedrock) {
+        TextButton(onClick = { advancedExpanded = !advancedExpanded }) {
+            Text(
+                if (advancedExpanded) "Hide advanced compatibility details" else "Show advanced compatibility details",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (advancedExpanded) {
+            Text("Adapter: ${compatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Capabilities reported by the authenticated bridge: " +
+                    runtime.capabilities.sortedBy { it.name }.joinToString { "✓ ${it.displayName}" }.ifEmpty { "none" },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (runtime.isBedrock || runtime.limitations.isNotEmpty()) {
             Text(
                 "Declared limitations: " +
                     runtime.limitations.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none reported" },
@@ -55,12 +72,21 @@ internal fun MinecraftRuntimeCompatibilityBlock(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        compatibility?.let { result ->
+        compatibility?.runtimeCertification?.let { certification ->
             Text(
-                "Missing capabilities: " +
-                    result.missingCapabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" },
+                "Recorded runtime certification: ${certification.displayName}",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        compatibility?.let { result ->
+            if (advancedExpanded) {
+                Text(
+                    "Missing capabilities: " +
+                        result.missingCapabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             result.diagnostics.take(MAXIMUM_SETTINGS_DIAGNOSTICS).forEach { diagnostic ->
                 Text(
                     "Unsupported content: ${diagnostic.blockId ?: "unknown block"}" +

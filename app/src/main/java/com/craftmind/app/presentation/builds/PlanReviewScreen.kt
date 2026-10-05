@@ -115,6 +115,9 @@ fun PlanReviewScreen(
                     add("${profile.edition.displayName} ${profile.version.displayIdentifier}")
                     add("${profile.loader.displayName} ${profile.loaderVersion}")
                     profile.requiredFabricApiVersion?.let { add("Fabric API $it") }
+                    add("channel ${profile.releaseChannel.name} · status ${profile.supportStatus.name}")
+                    add("certification ${profile.runtimeCertification.displayName}")
+                    add("content ${profile.contentValidationMode.displayName}")
                     add("bridge ${profile.bridgeVersion} · protocol ${profile.bridgeProtocolVersion}")
                     profile.javaRuntimeRequirement?.let {
                         add("Java ${it.requiredMajor} (supported ${it.minimumSupportedMajor}–${it.maximumSupportedMajor})")
@@ -450,6 +453,14 @@ private fun ConstructionExecutionCard(
                 Text("Build unavailable", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
                 Text("Reason: ${result.unavailableReason(runtimeDescriptor)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            runtimeDescriptor.limitations.takeIf { it.isNotEmpty() }?.let { limitations ->
+                Text(
+                    "Declared integration limitations: " +
+                        limitations.sortedBy { it.name }.joinToString { it.displayName },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Text("Selected adapter: ${planCompatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
         Text(
@@ -458,6 +469,7 @@ private fun ConstructionExecutionCard(
         )
         Text(
             "Version: ${runtimeDescriptor?.version?.displayIdentifier ?: "not reported"}" +
+                (runtimeDescriptor?.let { " · release channel ${it.version.channel.name}" } ?: "") +
                 (runtimeDescriptor?.takeIf { it.isBedrock }?.let { " · platform ${it.platform.displayName} ${it.platformVersion ?: ""}".trimEnd() } ?: ""),
             style = MaterialTheme.typography.bodySmall,
         )

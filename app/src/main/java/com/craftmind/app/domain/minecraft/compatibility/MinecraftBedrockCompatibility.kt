@@ -28,46 +28,6 @@ enum class MinecraftRuntimePlatform(val wireValue: String, val displayName: Stri
     }
 }
 
-/** Integration limitations that a Bedrock contract declares up front instead of implying reliability. */
-enum class BedrockRuntimeLimitation(val displayName: String) {
-    CANCELLATION_AT_BATCH_BOUNDARY("Cancellation is applied at the next bounded batch boundary"),
-    NO_ROLLBACK("Cancelled or failed work can leave partial world changes"),
-    NO_AUTOMATIC_RESUME("An interrupted build is never resumed automatically"),
-    RECOVERY_REQUIRED_AFTER_INTERRUPTION("Interrupted world state requires operator inspection"),
-    PROGRESS_IS_BRIDGE_REPORTED("Progress is only bridge-reported; CraftMind never estimates it"),
-    SINGLE_ACTIVE_EXECUTION("Only one prepared, queued, or running build is allowed"),
-    NO_BLOCK_ENTITY_DATA("BuildPlan v2 cannot carry block-entity data"),
-    NO_TRANSACTIONAL_PLACEMENT("Block placement is not transactional across the whole plan"),
-    ORIGIN_MUST_BE_OPERATOR_SELECTED("The world origin is selected by an operator on the Minecraft side"),
-}
-
-/**
- * How far the Bedrock integration has actually been verified.
- *
- * This ladder exists so that a registry entry can never authorize construction without recorded runtime
- * verification. Only [RUNTIME_TESTED] may back a `SUPPORTED` Bedrock contract.
- */
-enum class BedrockRuntimeCertification(val displayName: String) {
-    NOT_PERFORMED("Not performed"),
-    UNIT_TESTED("Source-level unit tests only"),
-    BRIDGE_TESTED("Verified against a Bedrock bridge without a Minecraft runtime"),
-    RUNTIME_TESTED("Verified against a real Minecraft Bedrock runtime");
-
-    val authorizesSupport: Boolean get() = this == RUNTIME_TESTED
-}
-
-/**
- * One structured, bounded compatibility diagnostic suitable for the Android UI, logs, tests, and later AI
- * refinement. Diagnostics never contain credentials, tokens, or provider material.
- */
-data class MinecraftCompatibilityDiagnostic(
-    val reasonCode: MinecraftCompatibilityReasonCode,
-    val componentId: String?,
-    val blockId: String?,
-    val stateProperties: List<String> = emptyList(),
-    val detail: String,
-)
-
 /**
  * One declared CraftMind Bedrock integration contract.
  *
@@ -85,7 +45,7 @@ data class BedrockRuntimeProfile(
     /** Capabilities this contract defines. A bridge may never report a capability outside this set. */
     val contractCapabilities: Set<MinecraftCapability>,
     val requiredBuildPlanSchemaVersions: Set<Int>,
-    val limitations: Set<BedrockRuntimeLimitation>,
+    val limitations: Set<MinecraftRuntimeLimitation>,
     val maximumValidatedOperations: Int,
     val maximumRequestBytes: Int,
     val maximumOperationsPerTick: Int,
@@ -93,9 +53,9 @@ data class BedrockRuntimeProfile(
     val maximumDimensions: MinecraftDimensionLimits,
     /** Revision label of the block/state mapping set below; never a version guess. */
     val blockStateSupportRevision: String,
-    val blockStateCatalog: BedrockBlockStateCatalog,
+    val blockStateCatalog: MinecraftTargetBlockStateCatalog,
     val status: MinecraftCompatibilityStatus,
-    val certification: BedrockRuntimeCertification,
+    val certification: MinecraftRuntimeCertification,
 ) {
     init {
         require(edition == MinecraftEdition.BEDROCK) { "A Bedrock contract must declare the Bedrock edition" }
@@ -118,7 +78,7 @@ data class BedrockRuntimeProfile(
  * Central list of CraftMind Bedrock integration contracts shipped by this build.
  *
  * Exactly one contract is declared and it is **not certified**: [BedrockRuntimeProfile.certifiedMinecraftVersions]
- * is empty and [BedrockRuntimeCertification] is [BedrockRuntimeCertification.NOT_PERFORMED]. No Bedrock runtime
+ * is empty and [MinecraftRuntimeCertification] is [MinecraftRuntimeCertification.NOT_PERFORMED]. No Bedrock runtime
  * version is registered, and no Bedrock adapter can authorize construction in this build. Do not add a version
  * here unless a real Bedrock runtime test was performed and recorded.
  */
@@ -160,15 +120,15 @@ object BedrockRuntimeProfileRegistry {
         ),
         requiredBuildPlanSchemaVersions = setOf(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION),
         limitations = setOf(
-            BedrockRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY,
-            BedrockRuntimeLimitation.NO_ROLLBACK,
-            BedrockRuntimeLimitation.NO_AUTOMATIC_RESUME,
-            BedrockRuntimeLimitation.RECOVERY_REQUIRED_AFTER_INTERRUPTION,
-            BedrockRuntimeLimitation.PROGRESS_IS_BRIDGE_REPORTED,
-            BedrockRuntimeLimitation.SINGLE_ACTIVE_EXECUTION,
-            BedrockRuntimeLimitation.NO_BLOCK_ENTITY_DATA,
-            BedrockRuntimeLimitation.NO_TRANSACTIONAL_PLACEMENT,
-            BedrockRuntimeLimitation.ORIGIN_MUST_BE_OPERATOR_SELECTED,
+            MinecraftRuntimeLimitation.CANCELLATION_AT_BATCH_BOUNDARY,
+            MinecraftRuntimeLimitation.NO_ROLLBACK,
+            MinecraftRuntimeLimitation.NO_AUTOMATIC_RESUME,
+            MinecraftRuntimeLimitation.RECOVERY_REQUIRED_AFTER_INTERRUPTION,
+            MinecraftRuntimeLimitation.PROGRESS_IS_BRIDGE_REPORTED,
+            MinecraftRuntimeLimitation.SINGLE_ACTIVE_EXECUTION,
+            MinecraftRuntimeLimitation.NO_BLOCK_ENTITY_DATA,
+            MinecraftRuntimeLimitation.NO_TRANSACTIONAL_PLACEMENT,
+            MinecraftRuntimeLimitation.ORIGIN_MUST_BE_OPERATOR_SELECTED,
         ),
         maximumValidatedOperations = BuildPlanLimits.MAX_OPERATIONS,
         maximumRequestBytes = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES,
@@ -180,9 +140,9 @@ object BedrockRuntimeProfileRegistry {
             depth = BuildPlanLimits.MAX_BUILD_DEPTH,
         ),
         blockStateSupportRevision = BLOCK_STATE_SUPPORT_REVISION_NONE,
-        blockStateCatalog = BedrockBlockStateCatalog.EMPTY,
+        blockStateCatalog = MinecraftTargetBlockStateCatalog.EMPTY,
         status = MinecraftCompatibilityStatus.EXPERIMENTAL,
-        certification = BedrockRuntimeCertification.NOT_PERFORMED,
+        certification = MinecraftRuntimeCertification.NOT_PERFORMED,
     )
 
     fun allProfiles(): List<BedrockRuntimeProfile> = listOf(bedrockBridgeContract)
@@ -289,8 +249,8 @@ class BedrockBridgeAdapter(
             val catalog = profile.blockStateCatalog
             requirements.requestedContent.forEach { content ->
                 when (val resolution = catalog.resolve(content.blockId, content.state)) {
-                    is BedrockBlockStateResolution.Supported -> Unit
-                    is BedrockBlockStateResolution.UnsupportedBlock -> {
+                    is MinecraftBlockStateResolution.Supported -> Unit
+                    is MinecraftBlockStateResolution.UnsupportedBlock -> {
                         contentSupported = false
                         if (diagnostics.size < MAXIMUM_DIAGNOSTICS) {
                             diagnostics += MinecraftCompatibilityDiagnostic(
@@ -307,7 +267,7 @@ class BedrockBridgeAdapter(
                         }
                     }
 
-                    is BedrockBlockStateResolution.UnsupportedState -> {
+                    is MinecraftBlockStateResolution.UnsupportedState -> {
                         contentSupported = false
                         if (diagnostics.size < MAXIMUM_DIAGNOSTICS) {
                             diagnostics += MinecraftCompatibilityDiagnostic(
