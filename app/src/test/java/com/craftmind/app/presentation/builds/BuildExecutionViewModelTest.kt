@@ -316,7 +316,11 @@ class BuildExecutionViewModelTest {
     private class MemoryBuilds(vararg records: LocalBuildRecord) : LocalBuildRepository {
         override val records = MutableStateFlow(records.toList())
         override suspend fun load() = Unit
-        override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord = error("unused")
+        override suspend fun save(
+            plan: ValidatedBuildPlan,
+            request: BuildRequest,
+            imageAnalysisSource: com.craftmind.app.domain.buildplan.BuildImageAnalysisSource?,
+        ): LocalBuildRecord = error("unused")
         override suspend fun appendRefinement(baseRecordId: String, plan: ValidatedBuildPlan, request: BuildEditRequest, diff: BuildDiff): LocalBuildRecord = error("unused")
         override suspend fun revertTo(buildId: String, targetVersion: Int, expectedCurrentRecordId: String): LocalBuildRecord = error("unused")
     }

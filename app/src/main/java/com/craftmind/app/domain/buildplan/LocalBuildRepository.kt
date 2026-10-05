@@ -11,6 +11,8 @@ data class BuildRequestSnapshot(
     val imageDisplayName: String? = null,
     val imageSizeBytes: Long? = null,
     val urlReference: String? = null,
+    /** Text-only analysis and its model source, stored only after a successful initial image analysis. */
+    val imageAnalysisSource: BuildImageAnalysisSource? = null,
 )
 
 /** One immutable, locally stored version in a build's recoverable history. */
@@ -34,7 +36,16 @@ interface LocalBuildRepository {
     /** All immutable versions, ordered newest first. */
     val records: StateFlow<List<LocalBuildRecord>>
     suspend fun load()
-    suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord
+    suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord =
+        save(plan, request, imageAnalysisSource = null)
+
+    /** Image provenance is required on the storage boundary; implementations cannot silently discard it. */
+    suspend fun save(
+        plan: ValidatedBuildPlan,
+        request: BuildRequest,
+        imageAnalysisSource: BuildImageAnalysisSource?,
+    ): LocalBuildRecord
+
     suspend fun appendRefinement(
         baseRecordId: String,
         plan: ValidatedBuildPlan,

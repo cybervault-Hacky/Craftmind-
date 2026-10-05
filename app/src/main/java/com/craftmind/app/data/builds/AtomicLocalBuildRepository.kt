@@ -6,6 +6,7 @@ import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildDiff
 import com.craftmind.app.domain.buildplan.BuildHistoryPolicy
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildRepositoryError
 import com.craftmind.app.domain.buildplan.BuildRepositoryException
 import com.craftmind.app.domain.buildplan.BuildRequest
@@ -54,15 +55,27 @@ class AtomicLocalBuildRepository(
     }
 
     override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord =
-        withContext(Dispatchers.IO) {
-            mutex.withLock {
-                ensureLoaded()
-                val change = historyPolicy.appendInitial(mutableRecords.value, plan, request, nowEpochMillis())
-                persist(change.records)
-                mutableRecords.value = change.records
-                change.appended
-            }
+        save(plan, request, imageAnalysisSource = null)
+
+    override suspend fun save(
+        plan: ValidatedBuildPlan,
+        request: BuildRequest,
+        imageAnalysisSource: BuildImageAnalysisSource?,
+    ): LocalBuildRecord = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            ensureLoaded()
+            val change = historyPolicy.appendInitial(
+                records = mutableRecords.value,
+                plan = plan,
+                request = request,
+                savedAtEpochMillis = nowEpochMillis(),
+                imageAnalysisSource = imageAnalysisSource,
+            )
+            persist(change.records)
+            mutableRecords.value = change.records
+            change.appended
         }
+    }
 
     override suspend fun appendRefinement(
         baseRecordId: String,

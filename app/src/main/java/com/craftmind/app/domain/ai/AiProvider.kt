@@ -3,6 +3,8 @@ package com.craftmind.app.domain.ai
 import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildDiff
 import com.craftmind.app.domain.buildplan.BuildRequest
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.ValidatedBuildPlan
 import com.craftmind.app.domain.security.ProviderCredential
 
@@ -65,6 +67,8 @@ data class AiProviderRequest(
     val model: AiModel,
     val systemInstruction: String,
     val prompt: String,
+    /** Image data is ephemeral, limited to the initial vision-analysis request, and never part of history. */
+    val imageInputs: List<AiImageInput> = emptyList(),
 )
 
 data class AiProviderResponse(
@@ -75,7 +79,21 @@ data class AiProviderResponse(
 data class AiGenerationResponse(
     val plan: ValidatedBuildPlan,
     val usage: AiUsage?,
+    /** Persistable text-only provenance; never contains raw image bytes or a file copy. */
+    val imageAnalysisSource: BuildImageAnalysisSource? = null,
 )
+
+enum class AiGenerationStage {
+    VALIDATING_REQUEST,
+    PREPARING_IMAGE_LOCALLY,
+    ANALYZING_IMAGE_WITH_SELECTED_MODEL,
+    GENERATING_BUILD_PLAN,
+    VALIDATING_BUILD_PLAN,
+}
+
+interface AiImageInputPreparer {
+    suspend fun prepare(reference: BuildInput.ImageReference): AiImageInput
+}
 
 data class AiRefinementResponse(
     val plan: ValidatedBuildPlan,
@@ -92,6 +110,12 @@ data class AiUsage(
 /** One adapter per vendor/API family. UI code receives metadata, never transport details. */
 interface AiBuildGenerator {
     suspend fun generate(request: BuildRequest): AiGenerationResponse
+
+    /** Existing generators remain source-compatible; the production engine reports real pipeline stages. */
+    suspend fun generate(
+        request: BuildRequest,
+        onStage: (AiGenerationStage) -> Unit,
+    ): AiGenerationResponse = generate(request)
 }
 
 interface AiBuildRefiner {

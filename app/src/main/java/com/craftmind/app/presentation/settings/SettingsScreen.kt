@@ -113,7 +113,7 @@ fun SettingsScreen(
         ) {
             Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 5 · secure, preflighted Minecraft construction",
+                text = "Phase 6 · one-image AI planning · Phase 5 construction safety",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -252,6 +252,12 @@ private fun ProviderSettingsCard(
                                     Column {
                                         Text(model.displayName)
                                         Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            if (model.capabilities.vision) "Text + one-image vision analysis"
+                                            else "Text only · image analysis unavailable",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 },
                                 onClick = {
@@ -263,7 +269,11 @@ private fun ProviderSettingsCard(
                     }
                 }
                 Text(
-                    text = "Text generation with JSON output is supported. Vision, URL fetching, and image analysis are not supported by this adapter.",
+                    text = if (provider.capabilities.vision) {
+                        "One-image analysis is enabled only for models individually labeled Vision. JPEG, PNG, and WebP are validated and processed locally, then sent directly to that selected model. URLs are not fetched."
+                    } else {
+                        "This provider adapter does not support image analysis."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -281,6 +291,17 @@ private fun ProviderSettingsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = if (semanticRefinementSupported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                selectedModel?.let { model ->
+                    Text(
+                        if (model.capabilities.vision) {
+                            "Selected model is verified for image input. Image analysis uses a separate initial request; refinements receive only the saved plan and text-only analysis notes."
+                        } else {
+                            "Selected model is text-only for image analysis. An image request is blocked until you select a model labeled Vision."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (model.capabilities.vision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 

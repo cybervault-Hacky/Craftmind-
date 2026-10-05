@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalFocusManager
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.ai.AiGenerationStage
+import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.buildplan.BuildRequestValidationError
 import com.craftmind.app.domain.buildplan.BuildRequestValidator
 import com.craftmind.app.presentation.home.BuildComposerEvent
@@ -72,6 +74,9 @@ fun HomeScreen(
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
     onReviewPlan: (BuildGenerationState.Ready) -> Unit,
+    selectedModelId: String? = null,
+    selectedModel: AiModel? = null,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize().imePadding()) {
@@ -98,7 +103,15 @@ fun HomeScreen(
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState()),
                 ) {
-                    BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage, onReviewPlan = onReviewPlan)
+                    BuildComposerCard(
+                        state = state,
+                        onEvent = onEvent,
+                        onPickImage = onPickImage,
+                        onReviewPlan = onReviewPlan,
+                        selectedModelId = selectedModelId,
+                        selectedModel = selectedModel,
+                        onOpenSettings = onOpenSettings,
+                    )
                 }
             }
         } else {
@@ -110,7 +123,15 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 HomeIntroduction(showFoundationDetails = false)
-                BuildComposerCard(state = state, onEvent = onEvent, onPickImage = onPickImage, onReviewPlan = onReviewPlan)
+                BuildComposerCard(
+                    state = state,
+                    onEvent = onEvent,
+                    onPickImage = onPickImage,
+                    onReviewPlan = onReviewPlan,
+                    selectedModelId = selectedModelId,
+                    selectedModel = selectedModel,
+                    onOpenSettings = onOpenSettings,
+                )
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     PlannedPipelineCard()
                     PhaseTwoNotice()
@@ -292,9 +313,9 @@ private fun PhaseTwoNotice() {
                 tint = MaterialTheme.colorScheme.primary,
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Phase 3 · AI plans and local refinement · no world execution", style = MaterialTheme.typography.titleMedium)
+                Text("AI planning stays separate from Minecraft construction", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "A validated plan comes from a real configured AI provider. Images and URLs are preserved but not analyzed; CraftMind does not connect to Minecraft or place blocks.",
+                    text = "A selected compatible Gemini model may analyze one image for planning; the normal BuildPlan v2 validation, review, acceptance, and Phase 5 bridge safeguards still apply. Images never create a separate construction route, and URLs are not fetched.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -309,6 +330,9 @@ private fun BuildComposerCard(
     onEvent: (BuildComposerEvent) -> Unit,
     onPickImage: () -> Unit,
     onReviewPlan: (BuildGenerationState.Ready) -> Unit,
+    selectedModelId: String?,
+    selectedModel: AiModel?,
+    onOpenSettings: () -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
     val promptError = (state.generation as? BuildGenerationState.ValidationBlocked)
@@ -407,6 +431,13 @@ private fun BuildComposerCard(
                     reference = image,
                     onRemove = { onEvent(BuildComposerEvent.RemoveImage) },
                 )
+                if (selectedModel?.capabilities?.vision != true) {
+                    VisionModelRequiredNotice(
+                        selectedModelId = selectedModelId,
+                        selectedModel = selectedModel,
+                        onOpenSettings = onOpenSettings,
+                    )
+                }
             }
 
             state.urlReference?.let { reference ->
@@ -441,7 +472,7 @@ private fun BuildComposerCard(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    Text("Waiting for a real AI response…", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text(generationStageMessage(generation.stage), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                     TextButton(onClick = { onEvent(BuildComposerEvent.CancelGeneration) }) { Text("Cancel") }
                 }
                 is BuildGenerationState.Failed -> InlineNotice(
@@ -462,11 +493,12 @@ private fun BuildComposerCard(
 
             val generationInProgress = state.generation is BuildGenerationState.Generating
             val retryableFailure = (state.generation as? BuildGenerationState.Failed)?.retryable == true
+            val visionModelReady = state.imageReference == null || selectedModel?.capabilities?.vision == true
             Button(
                 onClick = {
                     onEvent(if (retryableFailure) BuildComposerEvent.Retry else BuildComposerEvent.Generate)
                 },
-                enabled = !generationInProgress,
+                enabled = !generationInProgress && visionModelReady,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp),
@@ -481,10 +513,40 @@ private fun BuildComposerCard(
                 Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
             }
             Text(
-                text = "Your prompt is sent directly to the selected AI provider. Image and URL references stay local and are not analyzed.",
+                text = when {
+                    state.imageReference != null && visionModelReady -> "On generation, one locally validated image is sent directly from this device to the selected vision model. Raw image bytes are not kept in CraftMind history and are not resent during refinement. URLs are never fetched."
+                    state.imageReference != null -> "The image stays local until a verified vision-capable model is selected. CraftMind will not switch models or send an image to a text-only model."
+                    else -> "Your prompt is sent directly to the selected AI provider. URL references stay local and are never fetched."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun VisionModelRequiredNotice(
+    selectedModelId: String?,
+    selectedModel: AiModel?,
+    onOpenSettings: () -> Unit,
+) {
+    val message = when {
+        selectedModelId == null -> "Select a model labeled Vision in Settings. Image analysis stays disabled until a compatible model is verified."
+        selectedModel == null -> "The saved model has not been verified in this session. Test the provider connection in Settings to refresh its capabilities."
+        else -> "${selectedModel.displayName} is text-only for this workflow. Choose a model labeled Vision; CraftMind will not fall back or switch models."
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.62f),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("A verified vision model is required", style = MaterialTheme.typography.titleSmall)
+            Text(message, style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp)) {
+                Text("Open AI settings")
+            }
         }
     }
 }
@@ -528,6 +590,14 @@ private fun GeneratedPlanCard(
     }
 }
 
+private fun generationStageMessage(stage: AiGenerationStage): String = when (stage) {
+    AiGenerationStage.VALIDATING_REQUEST -> "Checking the request and selected provider/model…"
+    AiGenerationStage.PREPARING_IMAGE_LOCALLY -> "Validating and preparing the image locally…"
+    AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL -> "Sending one image directly to the selected vision model for analysis…"
+    AiGenerationStage.GENERATING_BUILD_PLAN -> "Generating the BuildPlan v2 with the same selected provider/model…"
+    AiGenerationStage.VALIDATING_BUILD_PLAN -> "Parsing and validating the BuildPlan locally…"
+}
+
 private fun generationMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.INVALID_API_KEY -> "The selected provider rejected its saved API key. Update it in Settings."
     AiErrorCode.PROVIDER_UNAVAILABLE -> "The provider is temporarily unavailable. You can retry the request."
@@ -546,6 +616,13 @@ private fun generationMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.UNSUPPORTED_SCHEMA_VERSION -> "The AI returned an unsupported BuildPlan schema version."
     AiErrorCode.BUILD_TOO_LARGE -> "The AI plan exceeded CraftMind's size or dimension limits."
     AiErrorCode.RESPONSE_TOO_LARGE -> "The AI response exceeded CraftMind's response-size limit."
+    AiErrorCode.INVALID_BUILD_REQUEST -> "Add a written description or attach one readable JPEG, PNG, or WebP image."
+    AiErrorCode.VISION_UNSUPPORTED -> "The exact selected provider/model does not support image analysis. Choose a verified vision model; no fallback was used and the image was not sent."
+    AiErrorCode.IMAGE_UNREADABLE -> "The image could not be opened from its local reference. Choose it again; no image was uploaded."
+    AiErrorCode.IMAGE_CONTENT_INVALID -> "The file is not a valid supported image. Choose a readable JPEG, PNG, or WebP file."
+    AiErrorCode.IMAGE_TOO_LARGE -> "The image exceeds CraftMind's local or provider payload size limit. Choose a smaller image."
+    AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED -> "The image dimensions exceed CraftMind's safe decoding limit. Choose a smaller-resolution image."
+    AiErrorCode.IMAGE_MIME_MISMATCH -> "The file contents do not match the selected image type. Choose the image again."
     AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected provider or model cannot return the required structured plan."
     AiErrorCode.MISSING_CREDENTIAL -> "Save an API key for the selected provider in Settings before generating."
     AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted provider key could not be accessed. Check Settings and device security."
@@ -571,11 +648,11 @@ private fun ImageReferenceCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ImageThumbnail(contentUri = reference.contentUri)
+            ImageThumbnail(reference = reference)
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("Reference image", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "${reference.mediaType.substringAfter('/').uppercase(Locale.ROOT)} · ${formatSize(reference.sizeBytes)} · on this device",
+                    text = "${reference.mediaType.substringAfter('/').uppercase(Locale.ROOT)} · ${formatSize(reference.sizeBytes)} · local until generation",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -653,7 +730,11 @@ private fun RequestPreview(state: BuildComposerState) {
             )
         } else {
             Text(
-                text = "Add a description to complete this request.",
+                text = if (state.imageReference != null) {
+                    "No written prompt. The selected image is the only visual input; generation requires a verified vision-capable model."
+                } else {
+                    "Add a written description or attach a supported image."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -661,7 +742,11 @@ private fun RequestPreview(state: BuildComposerState) {
         if (state.imageReference != null) PreviewReferenceRow("Reference image", "Attached")
         state.urlReference?.let { PreviewReferenceRow("Public URL", hostAndPath(it.url)) }
         Text(
-            text = "Prompt is sent to the selected provider. Image and URL references stay local and are not analyzed.",
+            text = if (state.imageReference != null) {
+                "If you generate, one image is sent directly for analysis by the selected compatible vision model. URL references are not fetched."
+            } else {
+                "Prompt is sent directly to the selected provider. URL references stay local and are not fetched."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -766,7 +851,7 @@ private fun validationMessage(error: BuildRequestValidationError): String = when
     BuildRequestValidationError.URL_CREDENTIALS_NOT_ALLOWED -> "Remove any username or password from the URL."
     BuildRequestValidationError.URL_TOO_LONG -> "Keep the URL to ${BuildRequestValidator.MAX_URL_LENGTH} characters or fewer."
     BuildRequestValidationError.UNSUPPORTED_IMAGE_TYPE -> "Choose a JPEG, PNG, or WebP image."
-    BuildRequestValidationError.IMAGE_TOO_LARGE -> "Choose an image no larger than 12 MB."
+    BuildRequestValidationError.IMAGE_TOO_LARGE -> "Choose an image no larger than 12 MiB."
     BuildRequestValidationError.INVALID_IMAGE_REFERENCE -> "CraftMind could not read that image reference. Choose the image again."
 }
 
@@ -774,7 +859,7 @@ private fun formatSize(sizeBytes: Long?): String {
     if (sizeBytes == null) return "Size unavailable"
     if (sizeBytes < 1024L) return "$sizeBytes B"
     val megabytes = sizeBytes / (1024.0 * 1024.0)
-    return String.format(Locale.getDefault(), "%.1f MB", megabytes)
+    return String.format(Locale.getDefault(), "%.1f MiB", megabytes)
 }
 
 private fun hostAndPath(value: String): String = runCatching {

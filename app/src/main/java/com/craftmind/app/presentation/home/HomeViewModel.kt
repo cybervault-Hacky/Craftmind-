@@ -56,11 +56,18 @@ class HomeViewModel(
         mutableState.update { it.copy(generation = BuildGenerationState.Generating(request)) }
         generationJob = viewModelScope.launch {
             try {
-                val response = engine.generate(request)
+                val response = engine.generate(request) { stage ->
+                    mutableState.update { current ->
+                        val active = current.generation as? BuildGenerationState.Generating
+                        if (active == null || active.request.requestId != request.requestId) current else current.copy(
+                            generation = active.copy(stage = stage),
+                        )
+                    }
+                }
                 var localRecord: com.craftmind.app.domain.buildplan.LocalBuildRecord? = null
                 var localSaveFailed = false
                 try {
-                    localRecord = localBuilds.save(response.plan, request)
+                    localRecord = localBuilds.save(response.plan, request, response.imageAnalysisSource)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (_: BuildRepositoryException) {
@@ -76,6 +83,7 @@ class HomeViewModel(
                             plan = response.plan,
                             localRecord = localRecord,
                             localSaveFailed = localSaveFailed,
+                            imageAnalysisSource = response.imageAnalysisSource,
                         ),
                     )
                 }

@@ -3,7 +3,6 @@ package com.craftmind.app
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -105,12 +104,7 @@ class MainActivity : ComponentActivity() {
                 contract = ActivityResultContracts.OpenDocument(),
             ) { uri: Uri? ->
                 if (uri != null) {
-                    runCatching {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                        )
-                    }
+                    // Keep only the URI metadata in history. Do not persist a long-lived URI grant or image bytes.
                     homeViewModel.dispatch(
                         BuildComposerEvent.ImageSelected(readImageReference(context, uri)),
                     )

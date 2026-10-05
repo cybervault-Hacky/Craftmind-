@@ -5,12 +5,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.craftmind.app.designsystem.CraftMindTheme
 import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.ai.AiModel
+import com.craftmind.app.domain.ai.AiModelCapabilities
+import com.craftmind.app.domain.ai.AiProviderId
+import com.craftmind.app.domain.ai.StructuredOutputMode
 import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildDimensions
+import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildOriginStrategy
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanComponent
@@ -68,6 +75,53 @@ class HomeScreenTest {
         compose.onNodeWithText("Review plan details").assertExists()
         compose.onNodeWithText("The validated plan is available for review but could not be saved to the local Builds list.").assertExists()
     }
+
+    @Test
+    fun imageRequestIsBlockedUntilTheSelectedVerifiedModelSupportsVision() {
+        val textOnly = model(vision = false)
+        val visionCapable = model(vision = true)
+        var selectedModel by mutableStateOf(textOnly)
+        val state = BuildComposerState(
+            imageReference = BuildInput.ImageReference(
+                contentUri = "content://test/unavailable-thumbnail",
+                mediaType = "image/jpeg",
+                sizeBytes = 100L,
+            ),
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                HomeScreen(
+                    state = state,
+                    onEvent = {},
+                    onPickImage = {},
+                    onReviewPlan = {},
+                    selectedModelId = selectedModel.id,
+                    selectedModel = selectedModel,
+                )
+            }
+        }
+
+        compose.onNodeWithText("Generate with AI").assertIsNotEnabled()
+        compose.onNodeWithText("A verified vision model is required").assertExists()
+
+        compose.runOnIdle { selectedModel = visionCapable }
+        compose.onNodeWithText("Generate with AI").assertIsEnabled()
+        compose.onNodeWithText("A verified vision model is required").assertDoesNotExist()
+    }
+
+    private fun model(vision: Boolean) = AiModel(
+        id = if (vision) "gemini-3.5-flash" else "gemini-text-only",
+        providerId = AiProviderId("google_gemini"),
+        displayName = if (vision) "Gemini vision model" else "Gemini text model",
+        capabilities = AiModelCapabilities(
+            textGeneration = true,
+            vision = vision,
+            publicUrlReferences = false,
+            structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
+            maximumContextTokens = 64_000,
+            maximumOutputTokens = 8_000,
+        ),
+    )
 
     private fun request() = BuildRequest(
         requestId = "ui-request",

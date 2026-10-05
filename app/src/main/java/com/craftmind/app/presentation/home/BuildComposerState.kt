@@ -1,6 +1,8 @@
 package com.craftmind.app.presentation.home
 
 import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.ai.AiGenerationStage
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestDraft
@@ -33,7 +35,10 @@ sealed interface BuildGenerationState {
     data object Idle : BuildGenerationState
     data class ValidationBlocked(val error: BuildRequestValidationError) : BuildGenerationState
     data class Prepared(val request: BuildRequest) : BuildGenerationState
-    data class Generating(val request: BuildRequest) : BuildGenerationState
+    data class Generating(
+        val request: BuildRequest,
+        val stage: AiGenerationStage = AiGenerationStage.VALIDATING_REQUEST,
+    ) : BuildGenerationState
     data class Failed(val request: BuildRequest, val code: AiErrorCode, val retryable: Boolean) : BuildGenerationState
     data class Cancelled(val request: BuildRequest) : BuildGenerationState
     data class Ready(
@@ -41,6 +46,7 @@ sealed interface BuildGenerationState {
         val plan: ValidatedBuildPlan,
         val localRecord: LocalBuildRecord?,
         val localSaveFailed: Boolean,
+        val imageAnalysisSource: BuildImageAnalysisSource? = null,
     ) : BuildGenerationState
 }
 

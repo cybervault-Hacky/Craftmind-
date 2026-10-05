@@ -5,6 +5,7 @@ import com.craftmind.app.domain.buildplan.BlockBounds
 import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildPlanOperation
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -39,6 +40,7 @@ data class BuildPlanRefinementContextDocument(
     val operationContext: List<BuildPlanOperation>,
     val originalWrittenRequest: String,
     val imageReferencePresentButUnavailable: Boolean,
+    val imageAnalysisSource: BuildImageAnalysisSource?,
     val urlReferencePresentButUnavailable: Boolean,
     val contextNotice: String,
 )
@@ -113,6 +115,7 @@ class BuildPlanContextSerializer(
             operationContext = includedOperations,
             originalWrittenRequest = request.originalRequest.prompt,
             imageReferencePresentButUnavailable = request.originalRequest.imageContentUri != null,
+            imageAnalysisSource = request.originalRequest.imageAnalysisSource,
             urlReferencePresentButUnavailable = request.originalRequest.urlReference != null,
             contextNotice = buildList {
                 add(if (allOperationsFit) {
@@ -120,6 +123,16 @@ class BuildPlanContextSerializer(
                 } else {
                     "Some operation details are samples only. Do not replace operations for a component unless its full operations are included. Unmentioned operations are retained locally."
                 })
+                if (request.originalRequest.imageContentUri != null) {
+                    add(if (request.originalRequest.imageAnalysisSource != null) {
+                        "The original image bytes are not included in refinement. Only the saved text-only visual notes are present; observed details may be wrong and inferred details are uncertain."
+                    } else {
+                        "The original image bytes and any visual analysis are unavailable to refinement. Do not claim to have seen the image."
+                    })
+                }
+                if (request.originalRequest.urlReference != null) {
+                    add("The original URL was not fetched; do not claim to know its contents.")
+                }
                 if (plan.metadata.schemaVersion == BuildPlanLimits.LEGACY_SCHEMA_VERSION) {
                     add("This legacy schema has no semantic intent or component categories. Its component bounds are derived locally from saved placements. Upgrade it to the current schema by returning semantic metadata for every retained component, but preserve untargeted names, purposes, and placements.")
                 }

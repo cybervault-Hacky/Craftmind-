@@ -7,6 +7,9 @@ import com.craftmind.app.domain.buildplan.BuildComponentType
 import com.craftmind.app.domain.buildplan.BuildDiffCalculator
 import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildEditRequestValidator
+import com.craftmind.app.domain.buildplan.BuildImageAnalysis
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildIntent
 import com.craftmind.app.domain.buildplan.BuildOriginStrategy
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -23,6 +26,7 @@ import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -73,6 +77,68 @@ class AtomicLocalBuildRepositoryTest {
         }
     }
 
+    @Test
+    fun persistsImageOnlyTextProvenanceAndReferenceAcrossReopenWithoutImageBytes() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val historyFile = File(context.noBackupFilesDir, "local-build-records-v1.json")
+        historyFile.delete()
+        val request = BuildRequest(
+            requestId = "request-atomic-image",
+            prompt = "",
+            imageReference = BuildInput.ImageReference(
+                contentUri = "content://picker/temporary-image",
+                mediaType = "image/png",
+                sizeBytes = 2_048,
+            ),
+            urlReference = null,
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val source = BuildImageAnalysisSource(
+            providerId = "google_gemini",
+            modelId = "gemini-3.5-flash",
+            analysis = BuildImageAnalysis(
+                summary = "An open pavilion.",
+                observedDetails = listOf("Four supports and a shallow roof are visible."),
+                inferredDetails = listOf("The roof may be timber."),
+                uncertainties = listOf("The rear is hidden."),
+            ),
+        )
+        try {
+            val validator = DefaultBuildPlanValidator()
+            val repository = AtomicLocalBuildRepository(
+                context,
+                nowEpochMillis = { 1_700_000_000_100 },
+                historyPolicy = com.craftmind.app.domain.buildplan.BuildHistoryPolicy(validator),
+            )
+            repository.load()
+            val plan = validPlan().copy(
+                metadata = validPlan().metadata.copy(
+                    sourceRequestId = request.requestId,
+                    providerId = source.providerId,
+                    modelId = source.modelId,
+                ),
+            )
+            val saved = repository.save(requireValid(validator, plan), request, source)
+
+            assertEquals(request.imageReference?.contentUri, saved.request.imageContentUri)
+            assertEquals(source, saved.request.imageAnalysisSource)
+            val serialized = historyFile.readText()
+            assertTrue(serialized.contains(source.providerId))
+            assertTrue(serialized.contains(source.modelId))
+            assertFalse(serialized.contains("data:image/"))
+
+            val reopened = AtomicLocalBuildRepository(
+                context,
+                historyPolicy = com.craftmind.app.domain.buildplan.BuildHistoryPolicy(validator),
+            )
+            reopened.load()
+            assertEquals(source, reopened.records.value.single().request.imageAnalysisSource)
+            assertEquals(request.imageReference?.contentUri, reopened.records.value.single().request.imageContentUri)
+        } finally {
+            historyFile.delete()
+        }
+    }
+
     private fun requireValid(validator: DefaultBuildPlanValidator, plan: BuildPlan) = when (val result = validator.validate(plan)) {
         is BuildPlanValidationResult.Valid -> result.plan
         is BuildPlanValidationResult.Invalid -> error("Invalid test plan: ${result.issues}")
@@ -94,8 +160,13 @@ class AtomicLocalBuildRepositoryTest {
         originStrategy = BuildOriginStrategy.CENTERED_GROUND,
         components = listOf(
             BuildPlanComponent(
-                "main", BuildComponentType.BUILDING, "Pavilion", "Covered gathering area",
-                BlockBounds(BlockPosition(0, 0, 0), BuildDimensions(4, 4, 4)), null, 0,
+                componentId = "main",
+                name = "Pavilion",
+                purpose = "Covered gathering area",
+                bounds = BlockBounds(BlockPosition(0, 0, 0), BuildDimensions(4, 4, 4)),
+                type = BuildComponentType.BUILDING,
+                parentComponentId = null,
+                constructionOrder = 0,
             ),
         ),
         operations = listOf(

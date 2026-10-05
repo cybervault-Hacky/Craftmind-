@@ -88,7 +88,12 @@ class BuildRequestValidator(
     }
 
     fun create(draft: BuildRequestDraft): BuildRequestValidationResult {
-        validatePrompt(draft.prompt)?.let { return BuildRequestValidationResult.Invalid(it) }
+        if (draft.prompt.isBlank() && draft.imageReference == null) {
+            return BuildRequestValidationResult.Invalid(BuildRequestValidationError.EMPTY_PROMPT)
+        }
+        if (draft.prompt.length > MAX_PROMPT_LENGTH) {
+            return BuildRequestValidationResult.Invalid(BuildRequestValidationError.PROMPT_TOO_LONG)
+        }
 
         draft.imageReference?.let { image ->
             validateImage(image)?.let { return BuildRequestValidationResult.Invalid(it) }

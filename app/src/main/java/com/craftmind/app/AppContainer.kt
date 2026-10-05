@@ -3,6 +3,7 @@ package com.craftmind.app
 import android.content.Context
 import com.craftmind.app.data.ai.AiBuildEngine
 import com.craftmind.app.data.ai.BuildPlanParser
+import com.craftmind.app.data.ai.ContentResolverImageInputPreparer
 import com.craftmind.app.data.ai.GoogleGeminiProviderAdapter
 import com.craftmind.app.data.builds.AtomicLocalBuildRepository
 import com.craftmind.app.data.builds.AtomicLocalBuildExecutionRepository
@@ -34,6 +35,7 @@ class AppContainer(context: Context) {
         selections = providerSelections,
         parser = buildPlanParser,
         planValidator = buildPlanValidator,
+        imageInputPreparer = ContentResolverImageInputPreparer(appContext),
     )
     val buildHistoryPolicy = BuildHistoryPolicy(buildPlanValidator)
     val localBuilds: LocalBuildRepository = AtomicLocalBuildRepository(appContext, historyPolicy = buildHistoryPolicy)

@@ -8,6 +8,8 @@ import com.craftmind.app.domain.buildplan.BlockBounds
 import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildComponentType
 import com.craftmind.app.domain.buildplan.BuildDimensions
+import com.craftmind.app.domain.buildplan.BuildImageAnalysis
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildEditRequest
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanComponent
@@ -63,6 +65,36 @@ class BuildPlanContextSerializerTest {
         assertEquals(setOf("house", "roof"), result.context.fullOperationComponentIds)
         assertTrue(document.components.all { it.bounds != null && it.operationsIncludedCompletely })
         assertTrue(document.contextNotice.contains("legacy schema v1"))
+    }
+
+    @Test
+    fun refinementReceivesSavedTextOnlyVisualNotesWithoutImageUriOrBytes() {
+        val analysis = BuildImageAnalysis(
+            summary = "A compact stone-like tower with a steep roof.",
+            observedDetails = listOf("A tall narrow silhouette and a pointed roof are visible."),
+            inferredDetails = listOf("The pale surfaces may represent stone."),
+            uncertainties = listOf("The rear elevation and interior are not visible."),
+        )
+        val source = BuildImageAnalysisSource("google_gemini", "gemini-3.5-flash", analysis)
+        val request = request(
+            plan = BuildPlanTestFixtures.semanticPlan(),
+            snapshot = BuildRequestSnapshot(
+                prompt = "Build a compact tower",
+                imageContentUri = "content://secret/private-photo",
+                imageMediaType = "image/jpeg",
+                imageAnalysisSource = source,
+            ),
+            instruction = "Refine the roof",
+        )
+
+        val result = serializer.serialize(request, model) as BuildPlanContextResult.Ready
+        val document = kotlinx.serialization.json.Json.decodeFromString<BuildPlanRefinementContextDocument>(result.context.json)
+
+        assertEquals(source, document.imageAnalysisSource)
+        assertTrue(document.imageReferencePresentButUnavailable)
+        assertTrue(document.contextNotice.contains("text-only visual notes"))
+        assertFalse(result.context.json.contains("content://secret"))
+        assertFalse(result.context.json.contains("private-photo"))
     }
 
     @Test

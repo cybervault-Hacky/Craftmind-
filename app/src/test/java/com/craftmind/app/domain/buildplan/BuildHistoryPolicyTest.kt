@@ -1,6 +1,7 @@
 package com.craftmind.app.domain.buildplan
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -44,6 +45,126 @@ class BuildHistoryPolicyTest {
         assertEquals(listOf(accepted.appended.recordId, base.recordId), accepted.records.map(LocalBuildRecord::recordId))
         assertEquals("minecraft:stone", accepted.records.last().plan.operations.first().blockId)
         assertTrue(policy.isValidHistory(accepted.records))
+    }
+
+    @Test
+    fun imageOnlyBuildHistoryKeepsTextAnalysisSourceAcrossRefinementWithoutRawBytes() {
+        val request = BuildRequest(
+            requestId = "request-image-only",
+            prompt = "",
+            imageReference = BuildInput.ImageReference(
+                contentUri = "content://picker/temporary-image",
+                mediaType = "image/jpeg",
+                sizeBytes = 1_024,
+            ),
+            urlReference = null,
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val analysisSource = BuildImageAnalysisSource(
+            providerId = "google_gemini",
+            modelId = "gemini-3.5-flash",
+            analysis = BuildImageAnalysis(
+                summary = "A small open pavilion.",
+                observedDetails = listOf("Four supports and a shallow roof appear visible."),
+                inferredDetails = listOf("The supports may be wood."),
+                uncertainties = listOf("Exact dimensions cannot be determined from the image."),
+            ),
+        )
+        val basePlan = BuildPlanTestFixtures.semanticPlan().copy(
+            metadata = BuildPlanTestFixtures.semanticPlan().metadata.copy(
+                sourceRequestId = request.requestId,
+                providerId = analysisSource.providerId,
+                modelId = analysisSource.modelId,
+            ),
+        )
+        val first = policy.appendInitial(
+            emptyList(),
+            BuildPlanTestFixtures.validated(basePlan),
+            request,
+            1_700_000_000_100,
+            analysisSource,
+        )
+        assertEquals("", first.appended.request.prompt)
+        assertEquals(analysisSource, first.appended.request.imageAnalysisSource)
+        assertTrue(policy.isValidHistory(first.records))
+
+        val candidate = changedPlan(basePlan)
+        val editRequest = validEditRequest(first.appended)
+        val diff = BuildDiffCalculator().compare(basePlan, candidate, "Changed the roof", listOf("roof"), listOf("house"), editRequest.instruction)
+        val accepted = policy.appendRefinement(
+            first.records,
+            first.appended.recordId,
+            BuildPlanTestFixtures.validated(candidate),
+            editRequest,
+            diff,
+            1_700_000_000_200,
+        )
+        assertEquals(analysisSource, accepted.appended.request.imageAnalysisSource)
+        assertTrue(policy.isValidHistory(accepted.records))
+    }
+
+    @Test
+    fun rejectsImageHistoryWithoutMatchingAnalysisProvenance() {
+        val request = BuildRequest(
+            requestId = "request-image-provenance",
+            prompt = "",
+            imageReference = BuildInput.ImageReference(
+                contentUri = "content://picker/temporary-image",
+                mediaType = "image/jpeg",
+                sizeBytes = 1_024,
+            ),
+            urlReference = null,
+            createdAtEpochMillis = 1_700_000_000_000,
+        )
+        val source = BuildImageAnalysisSource(
+            providerId = "google_gemini",
+            modelId = "gemini-3.5-flash",
+            analysis = BuildImageAnalysis(
+                summary = "A small pavilion.",
+                observedDetails = listOf("Four supports are visible."),
+                inferredDetails = emptyList(),
+                uncertainties = listOf("The rear is hidden."),
+            ),
+        )
+        val plan = BuildPlanTestFixtures.semanticPlan().copy(
+            metadata = BuildPlanTestFixtures.semanticPlan().metadata.copy(
+                sourceRequestId = request.requestId,
+                providerId = source.providerId,
+                modelId = source.modelId,
+            ),
+        )
+
+        val missingSource = runCatching {
+            policy.appendInitial(emptyList(), BuildPlanTestFixtures.validated(plan), request, 1_700_000_000_100)
+        }.exceptionOrNull() as? BuildRepositoryException
+        assertEquals(BuildRepositoryError.INVALID_RECORD, missingSource?.error)
+
+        val mismatchedSource = runCatching {
+            policy.appendInitial(
+                emptyList(),
+                BuildPlanTestFixtures.validated(plan),
+                request,
+                1_700_000_000_100,
+                source.copy(modelId = "different-model"),
+            )
+        }.exceptionOrNull() as? BuildRepositoryException
+        assertEquals(BuildRepositoryError.INVALID_RECORD, mismatchedSource?.error)
+
+        val saved = policy.appendInitial(
+            emptyList(),
+            BuildPlanTestFixtures.validated(plan),
+            request,
+            1_700_000_000_100,
+            source,
+        ).appended
+        assertTrue(policy.isValidHistory(listOf(saved)))
+        val legacyImageRecord = saved.copy(request = saved.request.copy(imageAnalysisSource = null))
+        assertTrue("Phase 5 image-reference history remains readable", policy.isValidHistory(listOf(legacyImageRecord)))
+        assertFalse(policy.isValidHistory(listOf(saved.copy(request = saved.request.copy(imageContentUri = null)))))
+        val changedPlan = saved.plan.copy(
+            metadata = saved.plan.metadata.copy(modelId = "different-model"),
+        )
+        assertFalse(policy.isValidHistory(listOf(saved.copy(plan = changedPlan))))
     }
 
     @Test

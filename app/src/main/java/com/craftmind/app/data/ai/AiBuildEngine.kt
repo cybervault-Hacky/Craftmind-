@@ -5,6 +5,8 @@ import com.craftmind.app.domain.ai.AiBuildRefiner
 import com.craftmind.app.domain.ai.AiErrorCode
 import com.craftmind.app.domain.ai.AiFailure
 import com.craftmind.app.domain.ai.AiGenerationResponse
+import com.craftmind.app.domain.ai.AiGenerationStage
+import com.craftmind.app.domain.ai.AiImageInputPreparer
 import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.ai.AiProviderAdapter
 import com.craftmind.app.domain.ai.AiProviderException
@@ -15,8 +17,13 @@ import com.craftmind.app.domain.ai.AiProviderSelectionRepository
 import com.craftmind.app.domain.ai.AiRefinementResponse
 import com.craftmind.app.domain.ai.StructuredOutputMode
 import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildPlanValidationResult
+import com.craftmind.app.domain.buildplan.BuildRequest
+import com.craftmind.app.domain.buildplan.BuildRequestValidationError
+import com.craftmind.app.domain.buildplan.BuildRequestValidator
+import com.craftmind.app.domain.buildplan.UrlValidationResult
 import com.craftmind.app.domain.buildplan.BuildPlanValidator
 import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.buildplan.BuildStatus
@@ -35,6 +42,9 @@ class AiBuildEngine(
     private val planValidator: BuildPlanValidator = DefaultBuildPlanValidator(),
     private val contextSerializer: BuildPlanContextSerializer = BuildPlanContextSerializer(),
     private val editParser: BuildPlanEditParser = BuildPlanEditParser(planValidator),
+    private val imageInputPreparer: AiImageInputPreparer? = null,
+    private val imageAnalysisParser: BuildImageAnalysisParser = BuildImageAnalysisParser(),
+    private val requestValidator: BuildRequestValidator = BuildRequestValidator(),
 ) : AiBuildGenerator, AiBuildRefiner {
     fun providers() = registry.providers()
 
@@ -99,7 +109,14 @@ class AiBuildEngine(
 
     suspend fun currentSelection(): AiProviderSelection? = selections.selection.first()
 
-    override suspend fun generate(request: com.craftmind.app.domain.buildplan.BuildRequest): AiGenerationResponse {
+    override suspend fun generate(request: BuildRequest): AiGenerationResponse = generate(request) {}
+
+    override suspend fun generate(
+        request: BuildRequest,
+        onStage: (AiGenerationStage) -> Unit,
+    ): AiGenerationResponse {
+        onStage(AiGenerationStage.VALIDATING_REQUEST)
+        validateGenerationRequest(request)
         val selection = selections.selection.first() ?: throw providerFailure(
             if (registry.providers().isEmpty()) AiErrorCode.NO_PROVIDER_SELECTED else AiErrorCode.NO_MODEL_SELECTED,
         )
@@ -119,18 +136,89 @@ class AiBuildEngine(
                 throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
             }
 
-            val providerResponse = adapter.generateContent(
-                request = BuildPlanGenerationPrompt.forRequest(request, model),
-                credential = credential,
-            )
-            val plan = parser.parse(
-                content = providerResponse.content,
-                request = request,
-                providerId = selection.providerId.value,
-                modelId = model.id,
-                generatedAtEpochMillis = nowEpochMillis(),
-            )
-            AiGenerationResponse(plan = plan, usage = providerResponse.usage)
+            val reference = request.imageReference
+            if (reference == null) {
+                onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
+                val response = adapter.generateContent(BuildPlanGenerationPrompt.forRequest(request, model), credential)
+                onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
+                val plan = parsePlan(response.content, request, selection.providerId.value, model.id)
+                AiGenerationResponse(plan = plan, usage = response.usage)
+            } else {
+                if (!adapter.definition.capabilities.vision || !model.capabilities.vision) {
+                    throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
+                }
+                val preparer = imageInputPreparer ?: throw providerFailure(AiErrorCode.IMAGE_UNREADABLE)
+                onStage(AiGenerationStage.PREPARING_IMAGE_LOCALLY)
+                val image = preparer.prepare(reference)
+                try {
+                    onStage(AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL)
+                    val analysisResponse = adapter.generateContent(
+                        BuildImageAnalysisPrompt.forRequest(request, model, image),
+                        credential,
+                    )
+                    image.close()
+                    val analysis = imageAnalysisParser.parse(analysisResponse.content)
+                    onStage(AiGenerationStage.GENERATING_BUILD_PLAN)
+                    val planResponse = adapter.generateContent(
+                        BuildPlanGenerationPrompt.forRequest(request, model, analysis),
+                        credential,
+                    )
+                    onStage(AiGenerationStage.VALIDATING_BUILD_PLAN)
+                    val plan = parsePlan(planResponse.content, request, selection.providerId.value, model.id)
+                    AiGenerationResponse(
+                        plan = plan,
+                        usage = combineUsage(analysisResponse.usage, planResponse.usage),
+                        imageAnalysisSource = BuildImageAnalysisSource(
+                            providerId = selection.providerId.value,
+                            modelId = model.id,
+                            analysis = analysis,
+                        ),
+                    )
+                } finally {
+                    image.close()
+                }
+            }
+        }
+    }
+
+    private fun parsePlan(content: String, request: BuildRequest, providerId: String, modelId: String): com.craftmind.app.domain.buildplan.ValidatedBuildPlan =
+        parser.parse(
+            content = content,
+            request = request,
+            providerId = providerId,
+            modelId = modelId,
+            generatedAtEpochMillis = nowEpochMillis(),
+        )
+
+    private fun combineUsage(first: com.craftmind.app.domain.ai.AiUsage?, second: com.craftmind.app.domain.ai.AiUsage?): com.craftmind.app.domain.ai.AiUsage? {
+        if (first == null) return second
+        if (second == null) return first
+        return com.craftmind.app.domain.ai.AiUsage(
+            inputTokens = first.inputTokens?.let { left -> second.inputTokens?.let { right -> left + right } ?: left } ?: second.inputTokens,
+            outputTokens = first.outputTokens?.let { left -> second.outputTokens?.let { right -> left + right } ?: left } ?: second.outputTokens,
+            providerRequestId = second.providerRequestId,
+        )
+    }
+
+    private fun validateGenerationRequest(request: BuildRequest) {
+        if ((request.prompt.isBlank() && request.imageReference == null) ||
+            request.prompt.length > BuildRequestValidator.MAX_PROMPT_LENGTH
+        ) {
+            throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+        }
+        request.imageReference?.let { reference ->
+            when (requestValidator.validateImage(reference)) {
+                null -> Unit
+                BuildRequestValidationError.IMAGE_TOO_LARGE -> throw providerFailure(AiErrorCode.IMAGE_TOO_LARGE)
+                BuildRequestValidationError.UNSUPPORTED_IMAGE_TYPE,
+                BuildRequestValidationError.INVALID_IMAGE_REFERENCE -> throw providerFailure(AiErrorCode.IMAGE_CONTENT_INVALID)
+                else -> throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+            }
+        }
+        request.urlReference?.let { reference ->
+            if (requestValidator.validateUrl(reference.url) !is UrlValidationResult.Valid) {
+                throw providerFailure(AiErrorCode.INVALID_BUILD_REQUEST)
+            }
         }
     }
 
@@ -138,6 +226,9 @@ class AiBuildEngine(
         if (request.instruction.isBlank() || request.instruction.length > BuildPlanLimits.MAX_EDIT_INSTRUCTION_LENGTH ||
             request.baseRecordId.isBlank() || request.buildId.isBlank() || request.baseVersion < 1 ||
             request.basePlan.status != BuildStatus.READY ||
+            request.originalRequest.imageAnalysisSource?.let { source ->
+                request.originalRequest.imageContentUri == null || !source.isWellFormed()
+            } == true ||
             planValidator.validate(request.basePlan) !is BuildPlanValidationResult.Valid
         ) {
             throw providerFailure(AiErrorCode.INVALID_BUILD_EDIT)

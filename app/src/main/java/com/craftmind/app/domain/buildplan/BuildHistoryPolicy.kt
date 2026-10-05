@@ -12,9 +12,18 @@ class BuildHistoryPolicy(
         plan: ValidatedBuildPlan,
         request: BuildRequest,
         savedAtEpochMillis: Long,
+        imageAnalysisSource: BuildImageAnalysisSource? = null,
     ): Change {
         ensureValidPlan(plan.plan)
-        if (request.prompt.isBlank() || savedAtEpochMillis <= 0L || plan.plan.metadata.sourceRequestId != request.requestId) {
+        if ((request.prompt.isBlank() && request.imageReference == null) || savedAtEpochMillis <= 0L ||
+            plan.plan.metadata.sourceRequestId != request.requestId ||
+            (request.imageReference == null) != (imageAnalysisSource == null) ||
+            (imageAnalysisSource != null && (
+                !imageAnalysisSource.isWellFormed() ||
+                    imageAnalysisSource.providerId != plan.plan.metadata.providerId ||
+                    imageAnalysisSource.modelId != plan.plan.metadata.modelId
+                ))
+        ) {
             throw BuildRepositoryException(BuildRepositoryError.INVALID_RECORD)
         }
         val buildId = "build-${request.requestId}"
@@ -25,7 +34,7 @@ class BuildHistoryPolicy(
             buildId = buildId,
             version = 1,
             plan = plan.plan,
-            request = request.toSnapshot(),
+            request = request.toSnapshot(imageAnalysisSource),
             savedAtEpochMillis = savedAtEpochMillis,
         )
         return Change((listOf(record) + records).toList(), record)
@@ -131,9 +140,22 @@ class BuildHistoryPolicy(
                 val parent = record.parentRecordId?.let(byId::get)
                 parent != null && parent.buildId == record.buildId && parent.version == record.version - 1
             }
+            // Phase 5 history may retain an image URI without having analyzed it; preserve that legacy record.
+            val imageSourceWellFormed = record.request.imageAnalysisSource?.let { source ->
+                record.request.imageContentUri != null && source.isWellFormed()
+            } != false
             val sourceMatches = versionOne != null && record.plan.metadata.sourceRequestId.isNotBlank() &&
                 record.plan.metadata.sourceRequestId == versionOne.plan.metadata.sourceRequestId &&
-                record.request == versionOne.request && record.request.prompt.isNotBlank()
+                record.request == versionOne.request &&
+                (record.request.prompt.isNotBlank() || record.request.imageContentUri != null) &&
+                imageSourceWellFormed
+            val initialImageSource = versionOne?.request?.imageAnalysisSource
+            val imageSourceMatchesInitialPlan = when {
+                initialImageSource == null -> true
+                versionOne == null -> false
+                else -> initialImageSource.providerId == versionOne.plan.metadata.providerId &&
+                    initialImageSource.modelId == versionOne.plan.metadata.modelId
+            }
             val planValid = validator.validate(record.plan) is BuildPlanValidationResult.Valid &&
                 record.plan.status == BuildStatus.READY
             val diffValid = record.version == 1 || record.diff?.let { it.hasChanges || record.restoredFromVersion != null } == true
@@ -141,7 +163,7 @@ class BuildHistoryPolicy(
                 targetVersion in 1 until record.version && group.any { it.version == targetVersion }
             } ?: true
             val lineageValid = record.version == 1 || versionOne != null
-            parentValid && sourceMatches && planValid && diffValid && restoredVersionValid && lineageValid &&
+            parentValid && sourceMatches && imageSourceMatchesInitialPlan && planValid && diffValid && restoredVersionValid && lineageValid &&
                 (record.version == 1 || record.recordId == "${record.buildId}-v${record.version}")
         }
     }
@@ -175,11 +197,12 @@ class BuildHistoryPolicy(
     }
 }
 
-private fun BuildRequest.toSnapshot() = BuildRequestSnapshot(
+private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSource?) = BuildRequestSnapshot(
     prompt = prompt,
     imageContentUri = imageReference?.contentUri,
     imageMediaType = imageReference?.mediaType,
     imageDisplayName = imageReference?.displayName,
     imageSizeBytes = imageReference?.sizeBytes,
     urlReference = urlReference?.url,
+    imageAnalysisSource = imageAnalysisSource,
 )

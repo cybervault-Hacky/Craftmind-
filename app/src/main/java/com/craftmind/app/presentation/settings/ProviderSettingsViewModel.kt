@@ -241,6 +241,13 @@ class ProviderSettingsViewModel(
         AiErrorCode.MISSING_CREDENTIAL -> "Save a provider API key before testing the connection."
         AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted key could not be accessed. Check device security and try again."
         AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected provider or model does not support structured plan generation."
+        AiErrorCode.VISION_UNSUPPORTED -> "The selected model does not support image analysis; no model fallback was used."
+        AiErrorCode.INVALID_BUILD_REQUEST -> "The build request is invalid. Add a description or supported image."
+        AiErrorCode.IMAGE_UNREADABLE -> "The image could not be opened locally. Choose it again."
+        AiErrorCode.IMAGE_CONTENT_INVALID -> "The selected file is not a supported readable image."
+        AiErrorCode.IMAGE_TOO_LARGE -> "The image exceeds CraftMind's size limit. Choose a smaller file."
+        AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED -> "The image dimensions exceed CraftMind's safe decoding limit."
+        AiErrorCode.IMAGE_MIME_MISMATCH -> "The image contents do not match its declared format. Choose it again."
         AiErrorCode.INVALID_AI_RESPONSE, AiErrorCode.UNSUPPORTED_SCHEMA_VERSION, AiErrorCode.INVALID_BUILD_PLAN,
         AiErrorCode.INVALID_BUILD_EDIT, AiErrorCode.NO_CHANGES_PROPOSED ->
             "The provider returned data that CraftMind could not safely validate."

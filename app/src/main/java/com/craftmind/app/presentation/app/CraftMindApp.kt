@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
@@ -150,7 +151,11 @@ fun CraftMindApp(
                         buildsState = buildsState,
                         onReviewGeneratedPlan = { ready ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
-                            reviewContent = PlanReviewContent(ready.plan.plan, ready.request.toSnapshot(), ready.localRecord)
+                            reviewContent = PlanReviewContent(
+                                ready.plan.plan,
+                                ready.request.toSnapshot(ready.imageAnalysisSource),
+                                ready.localRecord,
+                            )
                         },
                         onReviewSavedPlan = { record ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
@@ -195,7 +200,11 @@ fun CraftMindApp(
                         buildsState = buildsState,
                         onReviewGeneratedPlan = { ready ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
-                            reviewContent = PlanReviewContent(ready.plan.plan, ready.request.toSnapshot(), ready.localRecord)
+                            reviewContent = PlanReviewContent(
+                                ready.plan.plan,
+                                ready.request.toSnapshot(ready.imageAnalysisSource),
+                                ready.localRecord,
+                            )
                         },
                         onReviewSavedPlan = { record ->
                             onRefinementEvent(BuildRefinementEvent.DismissResult)
@@ -256,6 +265,11 @@ private fun DestinationContent(
             onEvent = onComposerEvent,
             onPickImage = onPickImage,
             onReviewPlan = onReviewGeneratedPlan,
+            selectedModelId = providerSettingsState.selectedModelId,
+            selectedModel = providerSettingsState.models.firstOrNull {
+                it.id == providerSettingsState.selectedModelId && it.providerId == providerSettingsState.activeProviderId
+            },
+            onOpenSettings = { onNavigate(MainDestination.SETTINGS) },
         )
         MainDestination.BUILDS -> BuildsScreen(
             state = buildsState,
@@ -273,11 +287,12 @@ private fun DestinationContent(
     }
 }
 
-private fun BuildRequest.toSnapshot() = BuildRequestSnapshot(
+private fun BuildRequest.toSnapshot(imageAnalysisSource: BuildImageAnalysisSource? = null) = BuildRequestSnapshot(
     prompt = prompt,
     imageContentUri = imageReference?.contentUri,
     imageMediaType = imageReference?.mediaType,
     imageDisplayName = imageReference?.displayName,
     imageSizeBytes = imageReference?.sizeBytes,
     urlReference = urlReference?.url,
+    imageAnalysisSource = imageAnalysisSource,
 )

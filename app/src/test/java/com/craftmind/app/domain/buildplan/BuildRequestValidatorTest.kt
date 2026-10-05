@@ -90,6 +90,24 @@ class BuildRequestValidatorTest {
     }
 
     @Test
+    fun acceptsImageOnlyRequestButStillRejectsEmptyRequest() {
+        val image = BuildInput.ImageReference(
+            contentUri = "content://picker/items/only-image",
+            mediaType = "image/webp",
+            sizeBytes = 512L,
+        )
+        val result = validator.create(BuildRequestDraft(prompt = "", imageReference = image))
+        assertTrue(result is BuildRequestValidationResult.Valid)
+        val request = (result as BuildRequestValidationResult.Valid).request
+        assertEquals("", request.prompt)
+        assertEquals(image, request.imageReference)
+        assertEquals(
+            BuildRequestValidationResult.Invalid(BuildRequestValidationError.EMPTY_PROMPT),
+            validator.create(BuildRequestDraft(prompt = "")),
+        )
+    }
+
+    @Test
     fun imageValidationRejectsUnsupportedTypesAndOversizedFiles() {
         val unsupported = BuildInput.ImageReference(
             contentUri = "content://picker/1",

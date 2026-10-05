@@ -146,6 +146,17 @@ private fun BuildRecordCard(record: LocalBuildRecord, versionCount: Int, onRevie
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                text = record.request.imageAnalysisSource?.let { source ->
+                    "Initial image source: ${source.providerId} / ${source.modelId}"
+                } ?: if (record.request.imageContentUri != null) {
+                    "Image reference retained locally · no analysis source recorded"
+                } else {
+                    "Text-only source"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = onReview, shape = RoundedCornerShape(14.dp)) { Text("Review details") }
                 Text("Plan history · execution status is separate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

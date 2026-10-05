@@ -1,6 +1,7 @@
 package com.craftmind.app.data.ai
 
 import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.domain.ai.AiImageInput
 import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.ai.AiModelCapabilities
 import com.craftmind.app.domain.ai.AiProviderException
@@ -94,6 +95,112 @@ class GoogleGeminiProviderAdapterTest {
             assertNull(sent.requestUrl?.queryParameter("key"))
             assertTrue(sent.path.orEmpty().startsWith("/v1beta/models?"))
         } finally {
+            credential.close()
+        }
+    }
+
+    @Test
+    fun liveDiscoveryLabelsOnlyTheDocumentedExactGeminiImageModelsAsVision() = runBlocking {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/json").setBody(
+                """
+                {"models":[
+                  {"name":"models/gemini-3.5-flash","displayName":"Gemini 3.5 Flash","supportedGenerationMethods":["generateContent"]},
+                  {"name":"models/gemini-3.5-flash-lite","displayName":"Gemini 3.5 Flash-Lite","supportedGenerationMethods":["generateContent"]},
+                  {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","supportedGenerationMethods":["generateContent"]}
+                ]}
+                """.trimIndent(),
+            ),
+        )
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            val models = adapter.listModels(credential).associateBy(AiModel::id)
+            assertTrue(adapter.definition.capabilities.vision)
+            assertEquals(true, models["gemini-3.5-flash"]?.capabilities?.vision)
+            assertEquals(true, models["gemini-3.5-flash-lite"]?.capabilities?.vision)
+            assertEquals(false, models["gemini-2.5-flash"]?.capabilities?.vision)
+        } finally {
+            credential.close()
+        }
+    }
+
+    @Test
+    fun postsImageBytesAsGeminiInlineDataUsingActualMimeAndNoCredentialInBody() = runBlocking {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/json").setBody(
+                """{"candidates":[{"content":{"role":"model","parts":[{"text":"{}"}]},"finishReason":"STOP"}]}""",
+            ),
+        )
+        val imageBytes = byteArrayOf(9, 8, 7, 6, 5)
+        val image = AiImageInput("image/webp", 2, 1, imageBytes)
+        val visionModel = model.copy(id = "gemini-3.5-flash", capabilities = model.capabilities.copy(vision = true))
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            adapter.generateContent(
+                AiProviderRequest(visionModel, "vision system", "analyze this", listOf(image)),
+                credential,
+            )
+            val sent = server.takeRequest()
+            val body = sent.body.readUtf8()
+            val encoded = java.util.Base64.getEncoder().encodeToString(imageBytes)
+            val root = kotlinx.serialization.json.Json.parseToJsonElement(body) as kotlinx.serialization.json.JsonObject
+            val content = (root["contents"] as kotlinx.serialization.json.JsonArray).single() as kotlinx.serialization.json.JsonObject
+            val parts = content["parts"] as kotlinx.serialization.json.JsonArray
+            val inlineData = (parts[1] as kotlinx.serialization.json.JsonObject)["inline_data"] as kotlinx.serialization.json.JsonObject
+            assertEquals("image/webp", (inlineData["mime_type"] as kotlinx.serialization.json.JsonPrimitive).content)
+            assertEquals(encoded, (inlineData["data"] as kotlinx.serialization.json.JsonPrimitive).content)
+            assertEquals(2, parts.size)
+            assertTrue(body.contains("\"inline_data\""))
+            assertTrue(body.contains("\"mime_type\":\"image/webp\""))
+            assertTrue(body.contains("\"data\":\"$encoded\""))
+            assertTrue(body.contains("analyze this"))
+            assertEquals("$testKey", sent.getHeader("x-goog-api-key"))
+            assertFalse(body.contains(testKey))
+            assertNull(sent.requestUrl?.queryParameter("key"))
+            assertTrue(sent.path.orEmpty().contains("/v1beta/models/${visionModel.id}:generateContent"))
+        } finally {
+            image.close()
+            imageBytes.fill(0)
+            credential.close()
+        }
+    }
+
+    @Test
+    fun rejectsImageForNonVisionModelBeforeMakingANetworkRequest() = runBlocking {
+        val image = AiImageInput("image/jpeg", 1, 1, byteArrayOf(1, 2, 3))
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            val failure = try {
+                adapter.generateContent(AiProviderRequest(model, "system", "prompt", listOf(image)), credential)
+                throw AssertionError("Expected vision capability rejection")
+            } catch (expected: AiProviderException) {
+                expected
+            }
+            assertEquals(AiErrorCode.VISION_UNSUPPORTED, failure.failure.code)
+            assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+        } finally {
+            image.close()
+            credential.close()
+        }
+    }
+
+    @Test
+    fun mapsProviderImagePayloadRejectionToTypedImageSizeFailureWithoutRawBody() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(413).setBody("sensitive payload diagnostic"))
+        val image = AiImageInput("image/jpeg", 1, 1, byteArrayOf(1, 2, 3))
+        val visionModel = model.copy(id = "gemini-3.5-flash", capabilities = model.capabilities.copy(vision = true))
+        val credential = ProviderCredential.fromCharacters(testKey.toCharArray())
+        try {
+            val failure = try {
+                adapter.generateContent(AiProviderRequest(visionModel, "system", "analyze", listOf(image)), credential)
+                throw AssertionError("Expected provider image-size rejection")
+            } catch (expected: AiProviderException) {
+                expected
+            }
+            assertEquals(AiErrorCode.IMAGE_TOO_LARGE, failure.failure.code)
+            assertFalse(failure.message.orEmpty().contains("sensitive"))
+        } finally {
+            image.close()
             credential.close()
         }
     }

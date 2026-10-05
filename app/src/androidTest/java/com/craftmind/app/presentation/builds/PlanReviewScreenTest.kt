@@ -16,6 +16,8 @@ import com.craftmind.app.domain.buildplan.BuildComponentType
 import com.craftmind.app.domain.buildplan.BuildDiffCalculator
 import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildImageAnalysis
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildIntent
 import com.craftmind.app.domain.buildplan.BuildOriginStrategy
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -111,6 +113,52 @@ class PlanReviewScreenTest {
         compose.onNodeWithText("Changed the pavilion floor").assertExists()
         compose.onNodeWithText("Accept candidate").performClick()
         compose.runOnIdle { assertEquals(BuildRefinementEvent.Accept, event) }
+    }
+
+    @Test
+    fun imageReviewShowsProviderProvenanceAndKeepsObservedInferredAndUncertainNotesDistinct() {
+        val base = plan()
+        val source = BuildImageAnalysisSource(
+            providerId = base.metadata.providerId,
+            modelId = base.metadata.modelId,
+            analysis = BuildImageAnalysis(
+                summary = "A compact pavilion.",
+                observedDetails = listOf("Four narrow supports are visible."),
+                inferredDetails = listOf("The supports may be timber."),
+                uncertainties = listOf("The rear side is hidden."),
+            ),
+        )
+        val record = record(base, version = 1).copy(
+            request = BuildRequestSnapshot(
+                prompt = "",
+                imageContentUri = "content://temporary/unavailable-image",
+                imageMediaType = "image/png",
+                imageAnalysisSource = source,
+            ),
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Image-only request; no written prompt was supplied.").assertExists()
+        compose.onNodeWithText("Initial image analysis · AI-generated, not verified").assertExists()
+        compose.onNodeWithText("Observed details · may be inaccurate").assertExists()
+        compose.onNodeWithText("Inferred details · uncertain suggestions").assertExists()
+        compose.onNodeWithText("Uncertainties").assertExists()
+        compose.onNodeWithText("Four narrow supports are visible.").assertExists()
+        compose.onNodeWithText("The supports may be timber.").assertExists()
+        compose.onNodeWithText("The rear side is hidden.").assertExists()
+        compose.onNodeWithText("Refinement uses the validated plan and these saved text notes only; it does not resend or reanalyze the image. The notes are not a visual-accuracy guarantee.").assertExists()
     }
 
     @Test

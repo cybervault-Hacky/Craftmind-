@@ -7,6 +7,9 @@ import com.craftmind.app.domain.ai.AiGenerationResponse
 import com.craftmind.app.domain.ai.AiProviderException
 import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildDimensions
+import com.craftmind.app.domain.buildplan.BuildImageAnalysis
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
+import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildOriginStrategy
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanComponent
@@ -70,6 +73,39 @@ class HomeViewModelTest {
         assertEquals("A small stone pavilion", ready.request.prompt)
         assertEquals(1, records.saveCount)
         assertTrue(!ready.localSaveFailed)
+    }
+
+    @Test
+    fun imageOnlyGenerationPersistsTextOnlyProvenanceWithTheValidatedPlan() = runTest(mainDispatcher) {
+        val source = BuildImageAnalysisSource(
+            providerId = "google_gemini",
+            modelId = "gemini-test",
+            analysis = BuildImageAnalysis(
+                summary = "A compact pavilion.",
+                observedDetails = listOf("Four supports are visible."),
+                inferredDetails = listOf("The roof may be timber."),
+                uncertainties = listOf("The rear is hidden."),
+            ),
+        )
+        val generator = SequencedGenerator { request ->
+            AiGenerationResponse(validatedPlan(request), usage = null, imageAnalysisSource = source)
+        }
+        val records = MemoryBuildRepository()
+        val viewModel = HomeViewModel(generator, records, reducer())
+        viewModel.dispatch(
+            BuildComposerEvent.ImageSelected(
+                BuildInput.ImageReference("content://picker/image", "image/png", 1_024L),
+            ),
+        )
+        viewModel.dispatch(BuildComposerEvent.Generate)
+        advanceUntilIdle()
+
+        val ready = viewModel.state.value.generation as BuildGenerationState.Ready
+        assertEquals("", ready.request.prompt)
+        assertEquals(source, ready.imageAnalysisSource)
+        assertEquals(source, records.records.value.single().request.imageAnalysisSource)
+        assertEquals("google_gemini", records.records.value.single().plan.metadata.providerId)
+        assertEquals("gemini-test", records.records.value.single().plan.metadata.modelId)
     }
 
     @Test
@@ -182,12 +218,24 @@ class HomeViewModelTest {
         var saveCount = 0
 
         override suspend fun load() = Unit
-        override suspend fun save(plan: ValidatedBuildPlan, request: BuildRequest): LocalBuildRecord {
+        override suspend fun save(
+            plan: ValidatedBuildPlan,
+            request: BuildRequest,
+            imageAnalysisSource: com.craftmind.app.domain.buildplan.BuildImageAnalysisSource?,
+        ): LocalBuildRecord {
             saveCount++
             val record = LocalBuildRecord(
                 recordId = "${request.requestId}:${plan.plan.planId}",
                 plan = plan.plan,
-                request = com.craftmind.app.domain.buildplan.BuildRequestSnapshot(prompt = request.prompt),
+                request = com.craftmind.app.domain.buildplan.BuildRequestSnapshot(
+                    prompt = request.prompt,
+                    imageContentUri = request.imageReference?.contentUri,
+                    imageMediaType = request.imageReference?.mediaType,
+                    imageDisplayName = request.imageReference?.displayName,
+                    imageSizeBytes = request.imageReference?.sizeBytes,
+                    urlReference = request.urlReference?.url,
+                    imageAnalysisSource = imageAnalysisSource,
+                ),
                 savedAtEpochMillis = 456L,
             )
             mutableRecords.value = listOf(record) + mutableRecords.value

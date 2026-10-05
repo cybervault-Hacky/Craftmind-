@@ -233,6 +233,7 @@ class BuildRefinementViewModelTest {
         override suspend fun save(
             plan: ValidatedBuildPlan,
             request: com.craftmind.app.domain.buildplan.BuildRequest,
+            imageAnalysisSource: com.craftmind.app.domain.buildplan.BuildImageAnalysisSource?,
         ): LocalBuildRecord = error("Not used")
 
         override suspend fun appendRefinement(

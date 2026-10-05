@@ -2,6 +2,7 @@ package com.craftmind.app.data.ai
 
 import com.craftmind.app.domain.ai.AiErrorCode
 import com.craftmind.app.domain.ai.AiFailure
+import com.craftmind.app.domain.ai.AiImageInput
 import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.ai.AiModelCapabilities
 import com.craftmind.app.domain.ai.AiProviderAdapter
@@ -13,11 +14,14 @@ import com.craftmind.app.domain.ai.AiProviderRequest
 import com.craftmind.app.domain.ai.AiProviderResponse
 import com.craftmind.app.domain.ai.AiUsage
 import com.craftmind.app.domain.ai.StructuredOutputMode
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisLimits
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.security.ProviderCredential
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -44,6 +48,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okio.BufferedSink
 
 /** Real direct-to-Google Gemini REST adapter. No prompt or key goes through a CraftMind server. */
 class GoogleGeminiProviderAdapter internal constructor(
@@ -63,7 +68,7 @@ class GoogleGeminiProviderAdapter internal constructor(
         baseEndpoint = baseUrl.toString(),
         capabilities = AiProviderCapabilities(
             textGeneration = true,
-            vision = false,
+            vision = true,
             publicUrlReferences = false,
             structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
             cancellation = true,
@@ -105,7 +110,7 @@ class GoogleGeminiProviderAdapter internal constructor(
                     displayName = displayName,
                     capabilities = AiModelCapabilities(
                         textGeneration = true,
-                        vision = false,
+                        vision = id in VERIFIED_VISION_MODELS,
                         publicUrlReferences = false,
                         structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
                         maximumContextTokens = contextTokens,
@@ -147,39 +152,52 @@ class GoogleGeminiProviderAdapter internal constructor(
         ) {
             throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
         }
-
-        val requestJson = buildJsonObject {
-            put(
-                "systemInstruction",
-                buildJsonObject {
-                    put("parts", buildJsonArray { add(buildJsonObject { put("text", request.systemInstruction) }) })
-                },
-            )
-            put(
-                "contents",
-                buildJsonArray {
-                    add(
-                        buildJsonObject {
-                            put("role", "user")
-                            put("parts", buildJsonArray { add(buildJsonObject { put("text", request.prompt) }) })
-                        },
-                    )
-                },
-            )
-            put(
-                "generationConfig",
-                buildJsonObject {
-                    put("responseMimeType", "application/json")
-                    put("temperature", 0.2)
-                    put("candidateCount", 1)
-                    val modelMaximum = request.model.capabilities.maximumOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS
-                    put("maxOutputTokens", minOf(modelMaximum, DEFAULT_MAX_OUTPUT_TOKENS))
-                },
-            )
+        if (request.imageInputs.size > 1) throw providerFailure(AiErrorCode.UNSUPPORTED_CAPABILITY)
+        val image = request.imageInputs.singleOrNull()
+        if (image != null) {
+            if (!definition.capabilities.vision || !request.model.capabilities.vision ||
+                request.model.id !in VERIFIED_VISION_MODELS
+            ) {
+                throw providerFailure(AiErrorCode.VISION_UNSUPPORTED)
+            }
+            if (image.mediaType !in AiImageInput.SUPPORTED_MEDIA_TYPES ||
+                image.width <= 0 || image.height <= 0 || image.byteCount !in 1..AiImageInput.MAX_PROVIDER_IMAGE_BYTES
+            ) {
+                throw providerFailure(AiErrorCode.IMAGE_CONTENT_INVALID)
+            }
+            if (image.width > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
+                image.height > AiImageInput.MAX_PROVIDER_IMAGE_DIMENSION ||
+                image.width.toLong() * image.height.toLong() > AiImageInput.MAX_PROVIDER_IMAGE_PIXELS
+            ) {
+                throw providerFailure(AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED)
+            }
         }
 
-        val body = json.encodeToString(JsonObject.serializer(), requestJson)
-            .toRequestBody(JSON_MEDIA_TYPE)
+        val body = if (image == null) {
+            val requestJson = buildJsonObject {
+                put(
+                    "systemInstruction",
+                    buildJsonObject {
+                        put("parts", buildJsonArray { add(buildJsonObject { put("text", request.systemInstruction) }) })
+                    },
+                )
+                put(
+                    "contents",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("role", "user")
+                                put("parts", buildJsonArray { add(buildJsonObject { put("text", request.prompt) }) })
+                            },
+                        )
+                    },
+                )
+                put("generationConfig", generationConfig(request))
+            }
+            json.encodeToString(JsonObject.serializer(), requestJson).toRequestBody(JSON_MEDIA_TYPE)
+        } else {
+            multimodalRequestBody(request, image)
+        }
         val httpRequest = withProviderKey(
             Request.Builder()
                 .url(generateUrl(request.model.id))
@@ -187,15 +205,71 @@ class GoogleGeminiProviderAdapter internal constructor(
                 .post(body),
             credential,
         ).build()
-        val responseJson = executeJson(httpRequest, BuildPlanLimits.MAX_RESPONSE_BYTES)
+        val responseJson = executeJson(
+            httpRequest,
+            if (image != null) BuildImageAnalysisLimits.MAX_RESPONSE_BYTES else BuildPlanLimits.MAX_RESPONSE_BYTES,
+            requestTooLargeCode = if (image != null) AiErrorCode.IMAGE_TOO_LARGE else AiErrorCode.RESPONSE_TOO_LARGE,
+        )
         parseGenerationResponse(responseJson)
     }
 
-    private suspend fun executeJson(request: Request, maxBytes: Int): JsonObject {
+    private fun generationConfig(request: AiProviderRequest): JsonObject = buildJsonObject {
+        put("responseMimeType", "application/json")
+        put("temperature", 0.2)
+        put("candidateCount", 1)
+        val modelMaximum = request.model.capabilities.maximumOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS
+        put("maxOutputTokens", minOf(modelMaximum, DEFAULT_MAX_OUTPUT_TOKENS))
+    }
+
+    /** Streams base64 into Gemini's inline_data part without creating an image-sized Base64 String. */
+    private fun multimodalRequestBody(request: AiProviderRequest, image: AiImageInput): RequestBody =
+        object : RequestBody() {
+            override fun contentType() = JSON_MEDIA_TYPE
+            override fun contentLength() = -1L
+            override fun isOneShot() = true
+
+            override fun writeTo(sink: BufferedSink) {
+                sink.writeUtf8("{\"systemInstruction\":{\"parts\":[{\"text\":")
+                sink.writeUtf8(encodeJsonString(request.systemInstruction))
+                sink.writeUtf8("}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":")
+                sink.writeUtf8(encodeJsonString(request.prompt))
+                sink.writeUtf8("},{\"inline_data\":{\"mime_type\":")
+                sink.writeUtf8(encodeJsonString(image.mediaType))
+                sink.writeUtf8(",\"data\":\"")
+                val nonClosing = NonClosingOutputStream(sink.outputStream())
+                Base64.getEncoder().wrap(nonClosing).use { encoder ->
+                    image.useBytes { bytes -> encoder.write(bytes) }
+                }
+                sink.writeUtf8("\"}}]}],\"generationConfig\":")
+                sink.writeUtf8(json.encodeToString(JsonObject.serializer(), generationConfig(request)))
+                sink.writeUtf8("}")
+            }
+        }
+
+    private fun encodeJsonString(value: String): String =
+        json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(value))
+
+    private class NonClosingOutputStream(private val delegate: OutputStream) : OutputStream() {
+        override fun write(value: Int) = delegate.write(value)
+        override fun write(bytes: ByteArray, offset: Int, length: Int) = delegate.write(bytes, offset, length)
+        override fun flush() = delegate.flush()
+        override fun close() = flush()
+    }
+
+    private suspend fun executeJson(
+        request: Request,
+        maxBytes: Int,
+        requestTooLargeCode: AiErrorCode = AiErrorCode.RESPONSE_TOO_LARGE,
+    ): JsonObject {
         val response = client.newCall(request).await()
         val bytes = response.use { httpResponse ->
             if (!httpResponse.isSuccessful) {
-                throw providerFailure(com.craftmind.app.domain.ai.AiErrorMapper.forHttpStatus(httpResponse.code).code)
+                val code = if (httpResponse.code == 413) {
+                    requestTooLargeCode
+                } else {
+                    com.craftmind.app.domain.ai.AiErrorMapper.forHttpStatus(httpResponse.code).code
+                }
+                throw providerFailure(code)
             }
             httpResponse.body.readBounded(maxBytes)
         }
@@ -326,6 +400,14 @@ class GoogleGeminiProviderAdapter internal constructor(
         const val MAX_MODELS = MAX_MODEL_PAGES * MAX_MODELS_PER_PAGE
         const val MAX_MODEL_RESPONSE_BYTES = 1024 * 1024
         const val DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+        /**
+         * The Gemini ListModels API advertises generateContent and token limits, not input modalities.
+         * These exact stable IDs are documented as accepting image input and structured text output
+         * (https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash and
+         * https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite); each must still appear
+         * in the authenticated live model list before use.
+         */
+        val VERIFIED_VISION_MODELS = setOf("gemini-3.5-flash", "gemini-3.5-flash-lite")
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val MODEL_ID_PATTERN = Regex("[A-Za-z0-9._-]{1,160}")
         val RETRYABLE_ERRORS = setOf(

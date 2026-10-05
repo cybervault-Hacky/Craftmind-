@@ -3,6 +3,9 @@ package com.craftmind.app.data.ai
 import com.craftmind.app.domain.ai.AiErrorCode
 import com.craftmind.app.domain.ai.AiModel
 import com.craftmind.app.domain.ai.AiModelCapabilities
+import com.craftmind.app.domain.ai.AiGenerationStage
+import com.craftmind.app.domain.ai.AiImageInput
+import com.craftmind.app.domain.ai.AiImageInputPreparer
 import com.craftmind.app.domain.ai.AiProviderAdapter
 import com.craftmind.app.domain.ai.AiProviderCapabilities
 import com.craftmind.app.domain.ai.AiProviderDefinition
@@ -17,6 +20,8 @@ import com.craftmind.app.domain.buildplan.AiBlockOperationDocument
 import com.craftmind.app.domain.buildplan.AiBuildComponentDocument
 import com.craftmind.app.domain.buildplan.AiBuildEditDocument
 import com.craftmind.app.domain.buildplan.BuildEditRequest
+import com.craftmind.app.domain.buildplan.BuildImageAnalysis
+import com.craftmind.app.domain.buildplan.BuildImageAnalysisSource
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
@@ -38,8 +43,12 @@ import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.security.CredentialStore
 import com.craftmind.app.domain.security.ProviderCredential
 import kotlinx.serialization.encodeToString
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -79,17 +88,85 @@ class AiBuildEngineTest {
     }
 
     @Test
-    fun optionalImageAndUrlReferencesAreDisclosedButNotUploadedOrFetched() = kotlinx.coroutines.runBlocking {
+    fun refusesImageWhenTheExactSelectedModelDoesNotAdvertiseVision() = kotlinx.coroutines.runBlocking {
+        val provider = FakeProvider(model, validDocument())
+        val preparer = FakeImagePreparer()
+        val engine = engine(provider, credential = "test-key", selection = AiProviderSelection(providerId, model.id), imagePreparer = preparer)
+
+        assertEquals(AiErrorCode.VISION_UNSUPPORTED, failureCode { engine.generate(buildRequest(withReferences = true)) })
+        assertEquals(0, preparer.calls)
+        assertEquals(0, provider.generateCalls)
+    }
+
+    @Test
+    fun urlReferenceIsNeverFetchedAndItsValueIsNotSentToTheProvider() = kotlinx.coroutines.runBlocking {
         val provider = FakeProvider(model, validDocument())
         val engine = engine(provider, credential = "test-key", selection = AiProviderSelection(providerId, model.id))
+        val request = buildRequest().copy(urlReference = BuildInput.UrlReference("https://example.org/private-reference"))
 
-        engine.generate(buildRequest(withReferences = true))
+        engine.generate(request)
 
-        val sentPrompt = provider.lastRequest!!.prompt
-        assertTrue(sentPrompt.contains("not upload or analyze it"))
-        assertTrue(sentPrompt.contains("not fetched, opened, or analyzed"))
-        assertTrue(!sentPrompt.contains("content://private/image"))
-        assertTrue(!sentPrompt.contains("https://example.org/reference"))
+        assertTrue(provider.lastRequest!!.prompt.contains("not fetched, opened, or analyzed"))
+        assertTrue(!provider.lastRequest!!.prompt.contains("https://example.org/private-reference"))
+    }
+
+    @Test
+    fun imageOnlyRequestUsesOneSelectedVisionModelForAnalysisThenTextPlanAndReturnsEvidence() = kotlinx.coroutines.runBlocking {
+        val visionModel = model.copy(capabilities = model.capabilities.copy(vision = true))
+        val analysisJson = """{"schemaVersion":1,"summary":"An open pavilion.","observedDetails":["Four supports and a shallow roof are visible."],"inferredDetails":["The supports may be stone."],"uncertainties":["The rear is occluded."]}"""
+        val provider = FakeProvider(visionModel, validDocument(), precedingResponses = listOf(analysisJson))
+        val preparer = FakeImagePreparer()
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, visionModel.id),
+            imagePreparer = preparer,
+        )
+        val request = buildRequest(withReferences = true).copy(prompt = "")
+        val stages = mutableListOf<AiGenerationStage>()
+
+        val response = engine.generate(request, stages::add)
+
+        assertEquals(2, provider.generateCalls)
+        assertTrue(provider.requests[0].model.capabilities.vision)
+        assertEquals(visionModel.id, provider.requests[0].model.id)
+        assertEquals(1, provider.requests[0].imageInputs.size)
+        assertEquals("image/png", provider.requests[0].imageInputs.single().mediaType)
+        assertEquals(visionModel.id, provider.requests[1].model.id)
+        assertEquals(providerId, provider.requests[1].model.providerId)
+        assertTrue(provider.requests[0].prompt.contains("no written description"))
+        assertTrue(provider.requests[1].imageInputs.isEmpty())
+        assertTrue(provider.requests[1].prompt.contains("observedDetails"))
+        assertTrue(provider.requests[1].prompt.contains("inferredDetails"))
+        assertTrue(provider.requests[1].prompt.contains("rear is occluded"))
+        assertEquals(providerId.value, response.plan.plan.metadata.providerId)
+        assertEquals(visionModel.id, response.plan.plan.metadata.modelId)
+        assertEquals(providerId.value, response.imageAnalysisSource?.providerId)
+        assertEquals(visionModel.id, response.imageAnalysisSource?.modelId)
+        assertEquals("Four supports and a shallow roof are visible.", response.imageAnalysisSource?.analysis?.observedDetails?.single())
+        assertEquals(1, preparer.calls)
+        assertTrue(stages.contains(AiGenerationStage.ANALYZING_IMAGE_WITH_SELECTED_MODEL))
+        assertTrue(stages.contains(AiGenerationStage.GENERATING_BUILD_PLAN))
+    }
+
+    @Test
+    fun cancellationDuringImageUploadClosesTheEphemeralPayloadAndCreatesNoPlan() = kotlinx.coroutines.runBlocking {
+        val visionModel = model.copy(capabilities = model.capabilities.copy(vision = true))
+        val provider = FakeProvider(visionModel, validDocument(), suspendOnImageRequest = true)
+        val preparer = FakeImagePreparer()
+        val engine = engine(
+            provider,
+            credential = "test-key",
+            selection = AiProviderSelection(providerId, visionModel.id),
+            imagePreparer = preparer,
+        )
+        val job = launch(Dispatchers.Default) { engine.generate(buildRequest(withReferences = true)) }
+
+        withTimeout(5_000) { provider.imageCallStarted.await() }
+        job.cancelAndJoin()
+
+        assertEquals(1, provider.generateCalls)
+        assertTrue(runCatching { preparer.lastImage!!.useBytes { it.size } }.isFailure)
     }
 
     @Test
@@ -125,14 +202,51 @@ class AiBuildEngineTest {
         assertTrue(provider.lastRequest!!.systemInstruction.contains("one or more existing semantic components"))
         assertTrue(provider.lastRequest!!.prompt.contains("Target component hints"))
         assertTrue(provider.lastRequest!!.prompt.contains("roof"))
-        assertTrue(provider.lastRequest!!.prompt.contains("not uploaded or analyzed"))
+        assertTrue(provider.lastRequest!!.prompt.contains("no visual analysis is available"))
         assertTrue(provider.lastRequest!!.prompt.contains("not fetched or analyzed"))
+        assertTrue(provider.lastRequest!!.imageInputs.isEmpty())
         assertTrue(!provider.lastRequest!!.prompt.contains("content://private/original-image"))
         assertTrue(!provider.lastRequest!!.prompt.contains("https://example.org/private-reference"))
         assertEquals(base, request.basePlan)
         assertEquals("minecraft:bricks", response.plan.plan.operations[2].blockId)
         assertEquals("minecraft:stone", response.plan.plan.operations[0].blockId)
         assertEquals(1, response.diff.changedOperations.size)
+    }
+
+    @Test
+    fun refinementUsesSavedTextOnlyImageNotesWithoutResendingImageBytes() = kotlinx.coroutines.runBlocking {
+        val provider = FakeProvider(model, validEditDocument())
+        val engine = engine(provider, credential = "test-key", selection = AiProviderSelection(providerId, model.id))
+        val source = BuildImageAnalysisSource(
+            providerId = providerId.value,
+            modelId = model.id,
+            analysis = BuildImageAnalysis(
+                summary = "A compact pavilion.",
+                observedDetails = listOf("Four narrow supports are visible."),
+                inferredDetails = listOf("The supports may be wooden."),
+                uncertainties = listOf("The rear side is hidden."),
+            ),
+        )
+        val request = editRequest(BuildPlanTestFixtures.semanticPlan(), "Refine the roof").copy(
+            originalRequest = BuildRequestSnapshot(
+                prompt = "Build a compact pavilion",
+                imageContentUri = "content://private/original-image",
+                imageMediaType = "image/jpeg",
+                imageAnalysisSource = source,
+            ),
+        )
+
+        engine.refine(request)
+
+        assertTrue(provider.lastRequest!!.imageInputs.isEmpty())
+        assertTrue(provider.lastRequest!!.prompt.contains("Only the saved text-only visual notes"))
+        assertTrue(provider.lastRequest!!.prompt.contains("observedDetails"))
+        assertTrue(provider.lastRequest!!.prompt.contains("inferredDetails"))
+        assertTrue(provider.lastRequest!!.prompt.contains("Four narrow supports are visible"))
+        assertTrue(provider.lastRequest!!.prompt.contains("The supports may be wooden"))
+        assertTrue(!provider.lastRequest!!.prompt.contains("content://private/original-image"))
+        assertTrue(provider.lastRequest!!.prompt.contains("does not reanalyze the image"))
+        assertTrue(provider.lastRequest!!.systemInstruction.contains("untrusted visual evidence"))
     }
 
     @Test
@@ -224,12 +338,14 @@ class AiBuildEngineTest {
         provider: FakeProvider,
         credential: String?,
         selection: AiProviderSelection?,
+        imagePreparer: AiImageInputPreparer? = null,
     ): AiBuildEngine = AiBuildEngine(
         registry = com.craftmind.app.domain.ai.AiProviderRegistry(listOf(provider)),
         credentialStore = MemoryCredentialStore(credential),
         selections = MemorySelectionRepository(selection),
         parser = BuildPlanParser(DefaultBuildPlanValidator()),
         nowEpochMillis = { 456L },
+        imageInputPreparer = imagePreparer,
     )
 
     private fun editRequest(base: BuildPlan, instruction: String) = BuildEditRequest(
@@ -303,7 +419,10 @@ class AiBuildEngineTest {
         private val model: AiModel,
         private val responseContent: String,
         private val exposeModel: Boolean = true,
+        precedingResponses: List<String> = emptyList(),
+        private val suspendOnImageRequest: Boolean = false,
     ) : AiProviderAdapter {
+        private val responseSequence = (precedingResponses + responseContent).toMutableList()
         override val definition = AiProviderDefinition(
             id = model.providerId,
             displayName = "Test provider",
@@ -311,7 +430,7 @@ class AiBuildEngineTest {
             baseEndpoint = "https://provider.example/",
             capabilities = AiProviderCapabilities(
                 textGeneration = true,
-                vision = false,
+                vision = model.capabilities.vision,
                 publicUrlReferences = false,
                 structuredOutput = StructuredOutputMode.JSON_MIME_TYPE,
                 cancellation = true,
@@ -321,6 +440,8 @@ class AiBuildEngineTest {
         var listModelsCalls = 0
         var generateCalls = 0
         var lastRequest: AiProviderRequest? = null
+        val requests = mutableListOf<AiProviderRequest>()
+        val imageCallStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
 
         override suspend fun listModels(credential: ProviderCredential): List<AiModel> {
             listModelsCalls++
@@ -333,7 +454,22 @@ class AiBuildEngineTest {
         ): AiProviderResponse {
             generateCalls++
             lastRequest = request
-            return AiProviderResponse(responseContent)
+            requests += request
+            if (suspendOnImageRequest && request.imageInputs.isNotEmpty()) {
+                imageCallStarted.complete(Unit)
+                kotlinx.coroutines.awaitCancellation()
+            }
+            return AiProviderResponse(responseSequence.removeAt(0))
+        }
+    }
+
+    private class FakeImagePreparer : AiImageInputPreparer {
+        var calls = 0
+        var lastImage: AiImageInput? = null
+
+        override suspend fun prepare(reference: BuildInput.ImageReference): AiImageInput {
+            calls++
+            return AiImageInput("image/png", 2, 2, byteArrayOf(1, 2, 3)).also { lastImage = it }
         }
     }
 

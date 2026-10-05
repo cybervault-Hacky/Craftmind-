@@ -149,15 +149,59 @@ fun PlanReviewScreen(
                     if (ready != null) ProposedChangesCard(ready.diff)
 
                     ReviewCard("Your request") {
-                        Text(request.prompt, style = MaterialTheme.typography.bodyMedium)
+                        if (request.prompt.isNotBlank()) {
+                            Text(request.prompt, style = MaterialTheme.typography.bodyMedium)
+                        } else if (request.imageContentUri != null) {
+                            Text("Image-only request; no written prompt was supplied.", style = MaterialTheme.typography.bodyMedium)
+                        }
                         if (request.imageContentUri != null) {
-                            Text("Image reference retained locally; it was not uploaded or analyzed.", style = MaterialTheme.typography.bodySmall)
+                            val source = request.imageAnalysisSource
+                            if (source == null) {
+                                Text(
+                                    "A local image reference is recorded, but no initial image analysis is stored. Refinement never resends this image.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                Text(
+                                    "Initial image source: sent directly to ${source.providerId} / ${source.modelId}. The raw image is not stored by CraftMind; the local reference may later be unavailable.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    "Refinement uses the validated plan and these saved text notes only; it does not resend or reanalyze the image. The notes are not a visual-accuracy guarantee.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                         request.urlReference?.let { url ->
                             Text("URL reference retained locally but not fetched or analyzed: $url", style = MaterialTheme.typography.bodySmall)
                         }
                         ready?.request?.instruction?.let { instruction ->
                             Text("Refinement: $instruction", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    request.imageAnalysisSource?.let { source ->
+                        ReviewCard("Initial image analysis · AI-generated, not verified") {
+                            Text("Source: ${source.providerId} / ${source.modelId}", style = MaterialTheme.typography.labelMedium)
+                            Text(source.analysis.summary, style = MaterialTheme.typography.bodyMedium)
+                            if (source.analysis.observedDetails.isNotEmpty()) {
+                                Text("Observed details · may be inaccurate", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.observedDetails.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            if (source.analysis.inferredDetails.isNotEmpty()) {
+                                Text("Inferred details · uncertain suggestions", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.inferredDetails.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            if (source.analysis.uncertainties.isNotEmpty()) {
+                                Text("Uncertainties", style = MaterialTheme.typography.titleSmall)
+                                source.analysis.uncertainties.forEach { detail ->
+                                    Text("• $detail", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
                         }
                     }
 
@@ -734,6 +778,10 @@ private fun refinementMessage(code: AiErrorCode): String = when (code) {
     AiErrorCode.UNSUPPORTED_SCHEMA_VERSION -> "The provider returned an unsupported edit schema."
     AiErrorCode.BUILD_TOO_LARGE, AiErrorCode.RESPONSE_TOO_LARGE -> "The proposed plan or response exceeded CraftMind's safety limits."
     AiErrorCode.UNSUPPORTED_CAPABILITY -> "The selected model does not support structured semantic refinement. No fallback model was used."
+    AiErrorCode.VISION_UNSUPPORTED -> "Image capability is not used for refinement; no image was resent."
+    AiErrorCode.INVALID_BUILD_REQUEST -> "The original request metadata is invalid. The saved plan remains unchanged."
+    AiErrorCode.IMAGE_UNREADABLE, AiErrorCode.IMAGE_CONTENT_INVALID, AiErrorCode.IMAGE_TOO_LARGE,
+    AiErrorCode.IMAGE_DIMENSIONS_UNSUPPORTED, AiErrorCode.IMAGE_MIME_MISMATCH -> "Image data is never resent during refinement; the saved plan remains unchanged."
     AiErrorCode.MISSING_CREDENTIAL -> "Save the selected provider's API key in Settings."
     AiErrorCode.CREDENTIAL_STORAGE_FAILURE -> "The encrypted provider key could not be accessed."
     AiErrorCode.NO_PROVIDER_SELECTED -> "Choose a supported provider in Settings."
