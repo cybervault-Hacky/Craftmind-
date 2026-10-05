@@ -20,6 +20,7 @@ public final class BridgeProtocol {
     public static final int MAX_REQUEST_ID_LENGTH = 64;
     public static final int MAX_BRIDGE_ID_LENGTH = 80;
     public static final int MAX_BUILD_ID_LENGTH = 80;
+    public static final int MAX_PLAN_RECORD_ID_LENGTH = 128;
     public static final int MAX_PAYLOAD_DEPTH = 32;
     public static final int MAX_JSON_TOKENS = 100_000;
     public static final long MAX_CLOCK_SKEW_MILLIS = 120_000L;
@@ -29,7 +30,7 @@ public final class BridgeProtocol {
     public static final long SESSION_MAX_AGE_MILLIS = 30 * 60_000L;
     public static final int MAX_TRUSTED_CLIENTS = 32;
     public static final Set<String> EXECUTION_STATES = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-            "RECEIVED", "VALIDATED", "ACCEPTED", "QUEUED", "RUNNING", "COMPLETED", "REJECTED", "FAILED", "CANCELLED")));
+            "PREPARED", "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED")));
 
     private BridgeProtocol() { }
 
@@ -54,6 +55,26 @@ public final class BridgeProtocol {
         LIMIT_EXCEEDED,
         CONSTRUCTION_DISABLED,
         CANCELLATION_UNAVAILABLE,
+        EXECUTION_ID_INVALID,
+        EXECUTION_ID_CONFLICT,
+        ACTIVE_EXECUTION_EXISTS,
+        EXECUTION_NOT_FOUND,
+        PREFLIGHT_EXPIRED,
+        PREFLIGHT_TOKEN_INVALID,
+        ORIGIN_UNAVAILABLE,
+        ORIGIN_CHANGED,
+        WORLD_UNAVAILABLE,
+        WORLD_SESSION_MISMATCH,
+        WORLD_BOUNDS_REJECTED,
+        CHUNK_NOT_LOADED,
+        BLOCK_OCCUPIED,
+        ENTITY_IN_BUILD_AREA,
+        SPAWN_PROTECTED,
+        PROTECTED_REGION,
+        EXECUTION_STORE_UNAVAILABLE,
+        EXECUTION_TIMEOUT,
+        PLACEMENT_REJECTED,
+        SERVER_RESTARTED,
         INTERNAL_ERROR
     }
 }

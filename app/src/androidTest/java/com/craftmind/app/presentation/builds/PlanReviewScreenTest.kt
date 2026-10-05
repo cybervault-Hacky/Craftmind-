@@ -1,6 +1,7 @@
 package com.craftmind.app.presentation.builds
 
 import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNode
@@ -27,7 +28,14 @@ import com.craftmind.app.domain.buildplan.BuildStatus
 import com.craftmind.app.domain.buildplan.BuildPlanValidationResult
 import com.craftmind.app.domain.buildplan.DefaultBuildPlanValidator
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.minecraft.BridgeCapabilitiesSnapshot
+import com.craftmind.app.domain.minecraft.BridgeConnectionState
+import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
+import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
+import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
+import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.settings.BridgePairingState
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -140,6 +148,201 @@ class PlanReviewScreenTest {
         compose.onNodeWithText("Restore").assertExists().performClick()
         compose.runOnIdle { assertEquals(BuildRefinementEvent.RestoreVersion(current, 1), event) }
         compose.onNodeWithText("Restoring creates a new local version. It is not Minecraft undo.").assertExists()
+    }
+
+    @Test
+    fun finalPlacementRequiresASecondConfirmationWithResolvedWorldOriginVersionAndCount() {
+        val base = plan()
+        val record = record(base, version = 1)
+        val preview = MinecraftExecutionPreview(
+            executionId = "123e4567-e89b-42d3-a456-426614174000",
+            preflightToken = "A".repeat(43),
+            planRecordId = record.recordId,
+            planVersion = record.version,
+            planTitle = base.metadata.title,
+            dimensionId = "minecraft:overworld",
+            worldSessionId = "world-session-1",
+            resolvedOrigin = BlockPosition(12, 64, -8),
+            originStrategy = "SERVER_SELECTED_ORIGIN",
+            operationCount = base.operations.size,
+            createdAtEpochMillis = System.currentTimeMillis(),
+            eventSequence = 1,
+            expiresAtEpochMillis = System.currentTimeMillis() + 60_000,
+        )
+        var event: BuildExecutionEvent? = null
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    bridgeState = compatibleBridgeState(),
+                    executionState = BuildExecutionState(
+                        flow = BuildExecutionFlow.PreviewReady(record.recordId, preview),
+                        isLoading = false,
+                    ),
+                    onExecutionEvent = { event = it },
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Resolved world: Test realm · 192.168.1.20:19872 · world session world-session-1").assertExists()
+        compose.onNodeWithText("Operator-selected origin: (12, 64, -8) · server-resolved").assertExists()
+        compose.onNodeWithText("Immutable plan: Stone pavilion · version 1 · 1 placements").assertExists()
+        compose.onNodeWithText("Review final confirmation").performClick()
+        compose.onNodeWithText("Authorize block placement?").assertExists()
+        compose.onNodeWithText("Confirm and start construction").performClick()
+        compose.runOnIdle { assertEquals(BuildExecutionEvent.Confirm, event) }
+    }
+
+    @Test
+    fun finalConfirmationRemainsDisabledWhenLocalExecutionHistoryCouldNotLoad() {
+        val base = plan()
+        val record = record(base, version = 1)
+        val preview = MinecraftExecutionPreview(
+            executionId = "123e4567-e89b-42d3-a456-426614174000",
+            preflightToken = "A".repeat(43),
+            planRecordId = record.recordId,
+            planVersion = record.version,
+            planTitle = base.metadata.title,
+            dimensionId = "minecraft:overworld",
+            worldSessionId = "world-session-1",
+            resolvedOrigin = BlockPosition(12, 64, -8),
+            originStrategy = "SERVER_SELECTED_ORIGIN",
+            operationCount = base.operations.size,
+            createdAtEpochMillis = System.currentTimeMillis(),
+            eventSequence = 1,
+            expiresAtEpochMillis = System.currentTimeMillis() + 60_000,
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    bridgeState = compatibleBridgeState(),
+                    executionState = BuildExecutionState(
+                        flow = BuildExecutionFlow.PreviewReady(record.recordId, preview),
+                        isLoading = false,
+                        loadFailed = true,
+                    ),
+                    onExecutionEvent = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Local execution history could not be read. Construction is disabled until storage is available.").assertExists()
+        compose.onNodeWithText("Review final confirmation").assertExists().assertIsNotEnabled()
+    }
+
+    @Test
+    fun interruptedExecutionShowsCheckpointUncertaintyWithoutClaimingWorldState() {
+        val base = plan()
+        val record = record(base, version = 1)
+        val interrupted = LocalBuildExecutionRecord(
+            executionId = "123e4567-e89b-42d3-a456-426614174000",
+            buildId = record.buildId,
+            planRecordId = record.recordId,
+            planVersion = record.version,
+            bridgeId = "bridge-0123456789abcdef0123456789abcdef",
+            phase = MinecraftExecutionPhase.FAILED,
+            completedOperations = 1,
+            totalOperations = 2,
+            eventSequence = 4,
+            createdAtEpochMillis = 1_700_000_000_000,
+            updatedAtEpochMillis = 1_700_000_000_100,
+            dimensionId = "minecraft:overworld",
+            worldSessionId = "world-session-1",
+            resolvedOrigin = BlockPosition(12, 64, -8),
+            reasonCode = "SERVER_RESTARTED",
+        )
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    executionState = BuildExecutionState(
+                        records = listOf(interrupted),
+                        flow = BuildExecutionFlow.Tracking(interrupted),
+                        isLoading = false,
+                    ),
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Bridge execution: FAILED").assertExists()
+        compose.onNodeWithText("Bridge-reported operation count: 1 / 2 · event 4").assertExists()
+        compose.onNodeWithText("This is the last persisted bridge checkpoint. A server crash may have happened between a world write and its saved count, so the actual world can differ. Inspect the world in game before any new build; CraftMind will not resume or roll back.").assertExists()
+    }
+
+    @Test
+    fun constructionActionRemainsDisabledWithoutCompatibleAuthenticatedCapability() {
+        val base = plan()
+        val record = record(base, version = 1)
+        compose.setContent {
+            CraftMindTheme(themeMode = ThemeMode.LIGHT) {
+                PlanReviewScreen(
+                    plan = base,
+                    request = record.request,
+                    record = record,
+                    versions = listOf(record),
+                    refinementState = BuildRefinementState.Idle,
+                    onRefinementEvent = {},
+                    bridgeState = compatibleBridgeState(constructionExecute = false),
+                    executionState = BuildExecutionState(isLoading = false),
+                    onDismiss = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Preflight with Minecraft bridge").assertExists().assertIsNotEnabled()
+        compose.onNodeWithText("Disabled: connect and authenticate to a compatible bridge with construction.execute = true, matching Minecraft/Fabric/protocol, a selected operator origin, and cancellation support.").assertExists()
+    }
+
+    private fun compatibleBridgeState(constructionExecute: Boolean = true): BridgePairingState {
+        val bridge = TrustedMinecraftBridge(
+            host = "192.168.1.20",
+            port = 19872,
+            tlsFingerprint = "00".repeat(32),
+            bridgeId = "bridge-0123456789abcdef0123456789abcdef",
+            clientId = "client-test",
+            displayName = "Test realm",
+            pairedAtEpochMillis = 1_700_000_000_000,
+        )
+        val capabilities = BridgeCapabilitiesSnapshot(
+            protocolVersion = 1,
+            bridgeId = bridge.bridgeId,
+            identityFingerprint = bridge.tlsFingerprint,
+            bridgeVersion = "1.1.0",
+            minecraftVersion = "1.20.1",
+            loaderName = "Fabric",
+            loaderVersion = "0.16.10",
+            worldAccess = true,
+            constructionExecute = constructionExecute,
+            cancellation = true,
+            maximumValidatedOperations = 4096,
+            maximumRequestBytes = 1_048_576,
+            supportedBuildPlanSchemaVersions = listOf(2),
+            dimensionId = "minecraft:overworld",
+            worldSessionId = "world-session-1",
+        )
+        return BridgePairingState(
+            profile = bridge,
+            connection = BridgeConnectionState.Connected(bridge, capabilities, System.currentTimeMillis()),
+        )
     }
 
     private fun plan(): BuildPlan {

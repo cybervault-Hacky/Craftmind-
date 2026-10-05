@@ -54,6 +54,17 @@ public class BuildPlanContractValidatorTest {
     }
 
     @Test
+    public void rejectsInvalidExecutionIdAndUnversionedPlanRecord() {
+        JsonObject payload = request();
+        payload.addProperty("executionId", "not-a-uuid");
+        assertEquals(BridgeProtocol.ErrorCode.EXECUTION_ID_INVALID, validate(payload));
+
+        payload = request();
+        payload.addProperty("planVersion", 0);
+        assertEquals(BridgeProtocol.ErrorCode.INVALID_BUILD_REQUEST, validate(payload));
+    }
+
+    @Test
     public void rejectsUnknownPlanFieldsInvalidBlockStatesAndInconsistentLimits() {
         JsonObject payload = request();
         payload.getAsJsonObject("buildPlan").addProperty("command", "say hello");
@@ -86,7 +97,10 @@ public class BuildPlanContractValidatorTest {
     private static JsonObject request() {
         String json = """
                 {
+                  "executionId":"d809d98d-d65c-4ce4-9312-0d73db43b52f",
                   "buildId":"build_demo",
+                  "planRecordId":"build_demo-v1",
+                  "planVersion":1,
                   "buildPlanSchemaVersion":2,
                   "buildPlan":{
                     "planId":"plan_demo",

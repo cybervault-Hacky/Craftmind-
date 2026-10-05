@@ -15,6 +15,9 @@ public class BridgeHttpServerRouteTest {
         assertTrue(BridgeHttpServer.isAllowedPath("/v1/capabilities"));
         assertTrue(BridgeHttpServer.isAllowedPath("/v1/pair/revoke"));
         assertTrue(BridgeHttpServer.isAllowedPath("/v1/executions"));
+        assertTrue(BridgeHttpServer.isAllowedPath("/v1/executions/prepare"));
+        assertTrue(BridgeHttpServer.isAllowedPath("/v1/executions/start"));
+        assertTrue(BridgeHttpServer.isAllowedPath("/v1/executions/status"));
         assertTrue(BridgeHttpServer.isAllowedPath("/v1/executions/cancel"));
     }
 

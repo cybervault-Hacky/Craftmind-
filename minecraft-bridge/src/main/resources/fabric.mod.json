@@ -3,7 +3,7 @@
   "id": "craftmind_bridge",
   "version": "${version}",
   "name": "CraftMind Bridge",
-  "description": "Authenticated, validation-only bridge foundation for CraftMind Android. Construction is disabled.",
+  "description": "Authenticated, opt-in, preflighted BuildPlan-v2 construction bridge for CraftMind Android.",
   "environment": "server",
   "entrypoints": {
     "main": ["com.craftmind.bridge.fabric.CraftMindBridgeMod"]

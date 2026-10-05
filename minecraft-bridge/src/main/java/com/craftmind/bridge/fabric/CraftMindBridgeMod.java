@@ -1,9 +1,9 @@
 package com.craftmind.bridge.fabric;
 
-import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
@@ -12,7 +12,7 @@ import net.minecraft.text.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Server-only Fabric mod entry point. No world writes or block placement are registered. */
+/** Server-only Fabric entry point. Construction runs in bounded server-tick batches after explicit preflight. */
 public final class CraftMindBridgeMod implements ModInitializer {
     private static final Logger LOGGER = LoggerFactory.getLogger("CraftMindBridge");
     private static volatile BridgeRuntime runtime;
@@ -29,11 +29,18 @@ public final class CraftMindBridgeMod implements ModInitializer {
         }
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             BridgeRuntime current = runtime;
-            if (current != null) current.start();
+            if (current != null) current.start(server);
+        });
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            BridgeRuntime current = runtime;
+            if (current != null) current.endServerTick();
         });
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             BridgeRuntime current = runtime;
-            if (current != null) current.close();
+            if (current != null) {
+                current.serverStopping();
+                current.close();
+            }
         });
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> dispatcher.register(
                 CommandManager.literal("craftmind")
@@ -52,9 +59,17 @@ public final class CraftMindBridgeMod implements ModInitializer {
                                         .executes(context -> listClients(context.getSource())))
                                 .then(CommandManager.literal("revoke")
                                         .requires(source -> source.hasPermissionLevel(2))
-                                        .then(CommandManager.argument("clientId", StringArgumentType.word())
+                                        .then(CommandManager.argument("clientId", com.mojang.brigadier.arguments.StringArgumentType.word())
                                                 .executes(context -> revokeClient(context.getSource(),
-                                                        StringArgumentType.getString(context, "clientId"))))))));
+                                                        com.mojang.brigadier.arguments.StringArgumentType.getString(context, "clientId"))))))
+                        .then(CommandManager.literal("origin")
+                                .requires(source -> source.hasPermissionLevel(2))
+                                .then(CommandManager.literal("set")
+                                        .executes(context -> selectOrigin(context.getSource())))
+                                .then(CommandManager.literal("clear")
+                                        .executes(context -> clearOrigin(context.getSource())))
+                                .then(CommandManager.literal("status")
+                                        .executes(context -> showOrigin(context.getSource()))))));
     }
 
     private int showIdentity(ServerCommandSource source) {
@@ -119,6 +134,46 @@ public final class CraftMindBridgeMod implements ModInitializer {
             source.sendError(Text.literal("Revocation failed (" + error.getCode().name() + ")."));
             return 0;
         }
+    }
+
+    private int selectOrigin(ServerCommandSource source) {
+        BridgeRuntime current = runtime;
+        if (current == null) return unavailable(source);
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendError(Text.literal("Run /craftmind origin set in game from an operator account; no coordinates can be entered remotely."));
+            return 0;
+        }
+        BridgeBuildOrigin origin = current.selectOrigin(source.getWorld(), player.getBlockPos());
+        if (origin == null) {
+            source.sendError(Text.literal("The server world is not ready; no build origin was selected."));
+            return 0;
+        }
+        source.sendFeedback(() -> Text.literal("CraftMind build origin selected at " + origin.position.x + ", " +
+                origin.position.y + ", " + origin.position.z + " in " + origin.dimensionId +
+                ". This in-memory origin expires when the server restarts."), false);
+        return 1;
+    }
+
+    private int clearOrigin(ServerCommandSource source) {
+        BridgeRuntime current = runtime;
+        if (current == null) return unavailable(source);
+        current.clearOrigin();
+        source.sendFeedback(() -> Text.literal("CraftMind build origin cleared; construction capability is disabled until an operator selects another."), false);
+        return 1;
+    }
+
+    private int showOrigin(ServerCommandSource source) {
+        BridgeRuntime current = runtime;
+        if (current == null) return unavailable(source);
+        BridgeBuildOrigin origin = current.currentOrigin();
+        if (origin == null) {
+            source.sendFeedback(() -> Text.literal("No CraftMind build origin is selected."), false);
+        } else {
+            source.sendFeedback(() -> Text.literal("CraftMind build origin: " + origin.position.x + ", " +
+                    origin.position.y + ", " + origin.position.z + " in " + origin.dimensionId +
+                    " · memory-only until server restart."), false);
+        }
+        return 1;
     }
 
     private int unavailable(ServerCommandSource source) {

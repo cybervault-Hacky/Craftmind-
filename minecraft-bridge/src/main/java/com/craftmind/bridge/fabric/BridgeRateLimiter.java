@@ -13,7 +13,12 @@ final class BridgeRateLimiter {
 
     synchronized boolean allow(InetAddress address, String route, long nowMillis) {
         String key = address.getHostAddress() + '|' + route;
-        int maximum = "/v1/pair".equals(route) ? 5 : "/v1/executions".equals(route) ? 6 : 30;
+        int maximum;
+        if ("/v1/pair".equals(route)) maximum = 5;
+        else if ("/v1/executions/status".equals(route)) maximum = 40;
+        else if ("/v1/executions/cancel".equals(route)) maximum = 12;
+        else if (route.startsWith("/v1/executions")) maximum = 6;
+        else maximum = 30;
         Bucket bucket = buckets.get(key);
         if (bucket == null || nowMillis - bucket.windowStartMillis >= WINDOW_MILLIS || nowMillis < bucket.windowStartMillis) {
             if (buckets.size() >= MAX_TRACKED_ADDRESSES) removeOneBucket();

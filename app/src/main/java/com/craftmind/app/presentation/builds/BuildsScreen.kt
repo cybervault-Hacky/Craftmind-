@@ -49,7 +49,7 @@ fun BuildsScreen(
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("Builds", style = MaterialTheme.typography.headlineLarge)
             Text(
-                text = "Validated AI-generated plans saved on this device. Minecraft execution is not available.",
+                text = "Review accepted plans here. Construction is available only with an authenticated compatible bridge and a separate final confirmation.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -148,7 +148,7 @@ private fun BuildRecordCard(record: LocalBuildRecord, versionCount: Int, onRevie
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = onReview, shape = RoundedCornerShape(14.dp)) { Text("Review details") }
-                Text("Plan only · not executed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Plan history · execution status is separate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

@@ -88,9 +88,9 @@ sealed interface MinecraftBridgeResult<out T> {
 }
 
 /**
- * Legacy platform-independent execution abstraction retained for a future construction phase. Phase 4
- * pairing/session transport lives in BridgePairing.kt; it deliberately does not implement these
- * world-reading or construction methods.
+ * Legacy platform-independent abstraction retained for source compatibility; it has no concrete implementation
+ * and is not the Phase 5 execution path. The secure typed Fabric transport and execution lifecycle live in
+ * BridgePairing.kt and BuildExecution.kt.
  */
 interface MinecraftBridge {
     val connectionState: StateFlow<MinecraftConnectionState>

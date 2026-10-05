@@ -1,9 +1,21 @@
 package com.craftmind.app.data.minecraft
 
 import android.content.Context
+import com.craftmind.app.domain.buildplan.BlockBounds
+import com.craftmind.app.domain.buildplan.BlockPosition
+import com.craftmind.app.domain.buildplan.BuildPlan
+import com.craftmind.app.domain.buildplan.BuildPlanComponent
+import com.craftmind.app.domain.buildplan.BuildPlanOperation
+import com.craftmind.app.domain.buildplan.BuildStatus
+import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.BridgeCapabilitiesSnapshot
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
+import com.craftmind.app.domain.minecraft.MinecraftCancellationResult
+import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
+import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
+import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
+import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
 import com.craftmind.bridge.protocol.BridgeCrypto
@@ -13,6 +25,7 @@ import com.craftmind.bridge.protocol.BridgeProtocol
 import com.craftmind.bridge.protocol.BridgeProtocolCodec
 import com.craftmind.bridge.protocol.BridgeProtocolException
 import com.google.gson.JsonArray
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -248,6 +261,178 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         }
     }
 
+    override suspend fun refreshCapabilities() {
+        try {
+            operationLock.withLock {
+                withContext(Dispatchers.IO) {
+                    val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
+                    if (session.expiresAtEpochMillis <= System.currentTimeMillis()) fail("AUTH_SESSION_EXPIRED")
+                    val body = createEnvelope("capabilities.request", JsonObject())
+                    try {
+                        val response = postAuthenticated(session, CAPABILITIES_PATH, body)
+                        requireResponse(response, body.requestId, "capabilities.response")
+                        val capabilities = readCapabilities(response.payload, session.profile)
+                        activeSession = session.copy(capabilities = capabilities)
+                    } finally {
+                        BridgeCrypto.zero(body.bytes)
+                    }
+                }
+            }
+            publishConnected()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            publishFailure(error)
+            throw error.asBridgeFailure()
+        }
+    }
+
+    override suspend fun prepareExecution(record: LocalBuildRecord, executionId: String): MinecraftExecutionPreview {
+        if (!EXECUTION_ID_PATTERN.matches(executionId)) fail("EXECUTION_ID_INVALID")
+        refreshCapabilities()
+        return operationLock.withLock {
+            withContext(Dispatchers.IO) {
+                val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
+                val capabilities = session.capabilities ?: fail("BRIDGE_CAPABILITIES_UNAVAILABLE")
+                if (!capabilities.executionCompatible) fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
+                if (record.plan.status != BuildStatus.READY || record.plan.metadata.schemaVersion != BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION ||
+                    record.plan.metadata.intent == null || record.plan.operations.isEmpty() ||
+                    record.plan.operations.size > capabilities.maximumValidatedOperations) {
+                    fail("BUILD_PLAN_NOT_EXECUTABLE")
+                }
+                val payload = executionRequestPayload(record, executionId, capabilities)
+                val body = createEnvelope("execution.prepare.request", payload)
+                if (body.bytes.size > capabilities.maximumRequestBytes) {
+                    BridgeCrypto.zero(body.bytes)
+                    fail("LIMIT_EXCEEDED")
+                }
+                try {
+                    val response = postAuthenticated(session, PREPARE_PATH, body)
+                    when (response.messageType) {
+                        "execution.preflight.ready" -> {
+                            requireResponse(response, body.requestId, "execution.preflight.ready")
+                            readExecutionPreview(response.payload, record, executionId, capabilities)
+                        }
+                        "execution.preflight.rejected" -> {
+                            requireResponse(response, body.requestId, "execution.preflight.rejected")
+                            throw readRejected(response.payload, executionId)
+                        }
+                        "execution.status.response" -> {
+                            requireResponse(response, body.requestId, "execution.status.response")
+                            fail("EXECUTION_ALREADY_EXISTS")
+                        }
+                        else -> fail("BRIDGE_RESPONSE_MISMATCH")
+                    }
+                } finally {
+                    BridgeCrypto.zero(body.bytes)
+                }
+            }
+        }
+    }
+
+    override suspend fun startExecution(preview: MinecraftExecutionPreview): MinecraftExecutionSnapshot {
+        if (!EXECUTION_ID_PATTERN.matches(preview.executionId)) fail("EXECUTION_ID_INVALID")
+        refreshCapabilities()
+        return operationLock.withLock {
+            withContext(Dispatchers.IO) {
+                val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
+                val capabilities = session.capabilities ?: fail("BRIDGE_CAPABILITIES_UNAVAILABLE")
+                if (!capabilities.executionCompatible) fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
+                if (preview.dimensionId != capabilities.dimensionId || preview.worldSessionId != capabilities.worldSessionId) {
+                    fail("WORLD_SESSION_CHANGED")
+                }
+                if (preview.expiresAtEpochMillis <= System.currentTimeMillis()) fail("PREFLIGHT_EXPIRED")
+                val payload = JsonObject().apply {
+                    addProperty("executionId", preview.executionId)
+                    addProperty("preflightToken", preview.preflightToken)
+                }
+                val body = createEnvelope("execution.start.request", payload)
+                try {
+                    val response = postAuthenticated(session, START_PATH, body)
+                    when (response.messageType) {
+                        "execution.accepted" -> {
+                            requireResponse(response, body.requestId, "execution.accepted")
+                            readExecutionSnapshot(response.payload, preview.executionId, capabilities)
+                                .also { snapshot ->
+                                    if (snapshot.planRecordId != preview.planRecordId || snapshot.planVersion != preview.planVersion ||
+                                        snapshot.totalOperations != preview.operationCount || snapshot.dimensionId != preview.dimensionId ||
+                                        snapshot.worldSessionId != preview.worldSessionId || snapshot.resolvedOrigin != preview.resolvedOrigin) {
+                                        fail("BRIDGE_RESPONSE_MISMATCH")
+                                    }
+                                }
+                        }
+                        "execution.start.rejected" -> {
+                            requireResponse(response, body.requestId, "execution.start.rejected")
+                            throw readRejected(response.payload, preview.executionId)
+                        }
+                        else -> fail("BRIDGE_RESPONSE_MISMATCH")
+                    }
+                } finally {
+                    BridgeCrypto.zero(body.bytes)
+                }
+            }
+        }
+    }
+
+    override suspend fun queryExecution(executionId: String): MinecraftExecutionQueryResult = operationLock.withLock {
+        withContext(Dispatchers.IO) {
+            val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
+            if (!EXECUTION_ID_PATTERN.matches(executionId)) fail("EXECUTION_ID_INVALID")
+            val body = createEnvelope("execution.status.request", JsonObject().apply { addProperty("executionId", executionId) })
+            try {
+                val response = postAuthenticated(session, STATUS_PATH, body)
+                when (response.messageType) {
+                    "execution.status.response" -> {
+                        requireResponse(response, body.requestId, "execution.status.response")
+                        MinecraftExecutionQueryResult.Found(
+                            readExecutionSnapshot(response.payload, executionId, session.capabilities),
+                        )
+                    }
+                    "execution.status.not_found" -> {
+                        requireResponse(response, body.requestId, "execution.status.not_found")
+                        BridgeProtocolCodec.requireExactKeys(response.payload, "executionId", "reasonCode")
+                        if (BridgeProtocolCodec.requiredString(response.payload, "executionId", 36) != executionId ||
+                            BridgeProtocolCodec.requiredString(response.payload, "reasonCode", 64) != "EXECUTION_NOT_FOUND") {
+                            fail("BRIDGE_RESPONSE_MISMATCH")
+                        }
+                        MinecraftExecutionQueryResult.NotFound
+                    }
+                    else -> fail("BRIDGE_RESPONSE_MISMATCH")
+                }
+            } finally {
+                BridgeCrypto.zero(body.bytes)
+            }
+        }
+    }
+
+    override suspend fun cancelExecution(executionId: String): MinecraftCancellationResult {
+        if (!EXECUTION_ID_PATTERN.matches(executionId)) fail("EXECUTION_ID_INVALID")
+        refreshCapabilities()
+        return operationLock.withLock {
+            withContext(Dispatchers.IO) {
+                val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
+                val capabilities = session.capabilities ?: fail("BRIDGE_CAPABILITIES_UNAVAILABLE")
+                if (!capabilities.executionCompatible || !capabilities.cancellation) fail("CANCELLATION_UNAVAILABLE")
+                val body = createEnvelope("execution.cancel.request", JsonObject().apply { addProperty("executionId", executionId) })
+                try {
+                    val response = postAuthenticated(session, CANCEL_PATH, body)
+                    requireResponse(response, body.requestId, "execution.cancellation.result")
+                    BridgeProtocolCodec.requireExactKeys(response.payload, "executionId", "outcome", "state", "reasonCode")
+                    if (BridgeProtocolCodec.requiredString(response.payload, "executionId", 36) != executionId) fail("BRIDGE_RESPONSE_MISMATCH")
+                    val outcome = BridgeProtocolCodec.requiredString(response.payload, "outcome", 40)
+                    if (outcome !in setOf("CANCELLATION_ACCEPTED", "CANCELLATION_REJECTED", "EXECUTION_ALREADY_FINISHED", "EXECUTION_NOT_FOUND")) {
+                        fail("BRIDGE_RESPONSE_INVALID")
+                    }
+                    val state = BridgeProtocolCodec.nullableString(response.payload, "state", 16)
+                    MinecraftCancellationResult(outcome, state?.let(::parseExecutionPhase),
+                        BridgeProtocolCodec.nullableString(response.payload, "reasonCode", 64))
+                } finally {
+                    BridgeCrypto.zero(body.bytes)
+                }
+            }
+        }
+    }
+
     private fun authenticateAndReadCapabilities(endpoint: BridgeEndpoint, profile: TrustedMinecraftBridge): ActiveSession {
         val clientId = profile.clientId
         val challengePayload = JsonObject().apply { addProperty("clientId", clientId) }
@@ -296,7 +481,7 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
                 if (sessionExpires > sessionNow + BridgeProtocol.SESSION_MAX_AGE_MILLIS + BridgeProtocol.MAX_CLOCK_SKEW_MILLIS) {
                     fail("AUTH_SESSION_INVALID")
                 }
-                val active = ActiveSession(endpoint, profile, sessionId, sessionExpires)
+                val active = ActiveSession(endpoint, profile, sessionId, sessionExpires, authenticatedAtEpochMillis = issuedAt)
                 val requestBody = createEnvelope("capabilities.request", JsonObject())
                 try {
                     val capabilitiesResponse = postAuthenticated(active, CAPABILITIES_PATH, requestBody)
@@ -351,10 +536,14 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         val maxRequestBytes = BridgeProtocolCodec.requiredInt(payload, "maximumRequestBytes")
         val dimensionId = BridgeProtocolCodec.nullableString(payload, "dimensionId", 130)
         val worldSessionId = BridgeProtocolCodec.nullableString(payload, "worldSessionId", 128)
+        val validDimension = dimensionId == null || dimensionId.matches(Regex("[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,64}"))
+        val validWorldSession = worldSessionId == null || worldSessionId.matches(Regex("[A-Za-z0-9_-]{1,128}"))
         if (protocolVersion != BridgeProtocol.VERSION || !bridgeId.matches(BRIDGE_ID_PATTERN) || fingerprint.isEmpty() ||
-            bridgeVersion.isBlank() || minecraftVersion != "1.20.1" || loaderName != "Fabric" || loaderVersion.isBlank() ||
-            worldAccess || constructionExecute || cancellation || maxOperations !in 1..BridgeProtocol.MAX_OPERATIONS ||
-            maxRequestBytes !in 1024..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES || dimensionId != null || worldSessionId != null) {
+            bridgeVersion != SUPPORTED_BRIDGE_VERSION || minecraftVersion != "1.20.1" || loaderName != "Fabric" ||
+            loaderVersion != "0.16.10" || maxOperations !in 1..BridgeProtocol.MAX_OPERATIONS ||
+            maxRequestBytes !in 1024..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES || !validDimension || !validWorldSession ||
+            (constructionExecute && (!worldAccess || !cancellation || dimensionId == null || worldSessionId == null)) ||
+            (cancellation && !constructionExecute)) {
             fail("BRIDGE_CAPABILITIES_UNSUPPORTED")
         }
         val versionsElement = payload.get("supportedBuildPlanSchemaVersions")
@@ -376,6 +565,7 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
             fail("BRIDGE_IDENTITY_CHANGED")
         }
         return BridgeCapabilitiesSnapshot(
+            protocolVersion = protocolVersion,
             bridgeId = bridgeId,
             identityFingerprint = BridgeCrypto.formatFingerprint(fingerprint),
             bridgeVersion = bridgeVersion,
@@ -388,7 +578,232 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
             maximumValidatedOperations = maxOperations,
             maximumRequestBytes = maxRequestBytes,
             supportedBuildPlanSchemaVersions = versions,
+            dimensionId = dimensionId,
+            worldSessionId = worldSessionId,
         )
+    }
+
+    private fun executionRequestPayload(
+        record: LocalBuildRecord,
+        executionId: String,
+        capabilities: BridgeCapabilitiesSnapshot,
+    ): JsonObject {
+        val plan = record.plan
+        if (plan.metadata.schemaVersion != BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION || plan.status != BuildStatus.READY ||
+            plan.metadata.intent == null || plan.components.isEmpty() || plan.operations.isEmpty()) {
+            fail("BUILD_PLAN_NOT_EXECUTABLE")
+        }
+        return JsonObject().apply {
+            addProperty("executionId", executionId)
+            addProperty("buildId", record.buildId)
+            addProperty("planRecordId", record.recordId)
+            addProperty("planVersion", record.version)
+            addProperty("buildPlanSchemaVersion", plan.metadata.schemaVersion)
+            add("buildPlan", buildPlanJson(plan))
+            add("origin", JsonObject().apply {
+                addProperty("kind", "BRIDGE_SELECTED_SAFE")
+                addProperty("dimensionId", capabilities.dimensionId)
+                addProperty("worldSessionId", capabilities.worldSessionId)
+                add("position", JsonNull.INSTANCE)
+            })
+            add("limits", JsonObject().apply {
+                addProperty("maxOperations", minOf(BridgeProtocol.MAX_OPERATIONS, capabilities.maximumValidatedOperations))
+                addProperty("maxRequestBytes", minOf(BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES, capabilities.maximumRequestBytes))
+            })
+        }
+    }
+
+    private fun buildPlanJson(plan: BuildPlan): JsonObject {
+        val intent = plan.metadata.intent ?: fail("BUILD_PLAN_NOT_EXECUTABLE")
+        return JsonObject().apply {
+            addProperty("planId", plan.planId)
+            add("metadata", JsonObject().apply {
+                addProperty("schemaVersion", plan.metadata.schemaVersion)
+                addProperty("sourceRequestId", plan.metadata.sourceRequestId)
+                addProperty("providerId", plan.metadata.providerId)
+                addProperty("modelId", plan.metadata.modelId)
+                addProperty("title", plan.metadata.title)
+                addProperty("summary", plan.metadata.summary)
+                addProperty("generatedAtEpochMillis", plan.metadata.generatedAtEpochMillis)
+                add("dimensions", JsonObject().apply {
+                    addProperty("width", plan.metadata.dimensions.width)
+                    addProperty("height", plan.metadata.dimensions.height)
+                    addProperty("depth", plan.metadata.dimensions.depth)
+                })
+                add("intent", JsonObject().apply {
+                    addProperty("structureType", intent.structureType)
+                    addNullable("style", intent.style)
+                    addNullable("approximateScale", intent.approximateScale)
+                    if (intent.floorCount == null) add("floorCount", JsonNull.INSTANCE) else addProperty("floorCount", intent.floorCount)
+                    add("rooms", stringArray(intent.rooms))
+                    add("specialFeatures", stringArray(intent.specialFeatures))
+                    add("materials", stringArray(intent.materials))
+                    addNullable("environment", intent.environment)
+                    add("constraints", stringArray(intent.constraints))
+                })
+            })
+            addProperty("originStrategy", plan.originStrategy.name)
+            add("components", JsonArray().apply {
+                plan.components.forEach { component ->
+                    val bounds = component.bounds ?: fail("BUILD_PLAN_NOT_EXECUTABLE")
+                    add(JsonObject().apply {
+                        addProperty("componentId", component.componentId)
+                        addProperty("name", component.name)
+                        addProperty("purpose", component.purpose)
+                        add("bounds", boundsJson(bounds))
+                        addProperty("type", component.type.name)
+                        addNullable("parentComponentId", component.parentComponentId)
+                        addProperty("constructionOrder", component.constructionOrder)
+                    })
+                }
+            })
+            add("operations", JsonArray().apply {
+                plan.operations.forEach { operation ->
+                    add(operationJson(operation))
+                }
+            })
+            addProperty("status", plan.status.name)
+        }
+    }
+
+    private fun boundsJson(bounds: BlockBounds): JsonObject = JsonObject().apply {
+        add("origin", positionJson(bounds.origin))
+        add("dimensions", JsonObject().apply {
+            addProperty("width", bounds.dimensions.width)
+            addProperty("height", bounds.dimensions.height)
+            addProperty("depth", bounds.dimensions.depth)
+        })
+    }
+
+    private fun operationJson(operation: BuildPlanOperation): JsonObject = JsonObject().apply {
+        addProperty("sequence", operation.sequence)
+        addProperty("kind", operation.kind.name)
+        addProperty("blockId", operation.blockId)
+        add("position", positionJson(operation.position))
+        add("blockState", JsonObject().apply {
+            operation.blockState.toSortedMap().forEach { (key, value) -> addProperty(key, value) }
+        })
+        addNullable("componentId", operation.componentId)
+    }
+
+    private fun positionJson(position: BlockPosition): JsonObject = JsonObject().apply {
+        addProperty("x", position.x)
+        addProperty("y", position.y)
+        addProperty("z", position.z)
+    }
+
+    private fun stringArray(values: List<String>): JsonArray = JsonArray().apply {
+        values.forEach { add(it) }
+    }
+
+    private fun JsonObject.addNullable(name: String, value: String?) {
+        if (value == null) add(name, JsonNull.INSTANCE) else addProperty(name, value)
+    }
+
+    private fun readExecutionPreview(
+        payload: JsonObject,
+        record: LocalBuildRecord,
+        expectedExecutionId: String,
+        capabilities: BridgeCapabilitiesSnapshot,
+    ): MinecraftExecutionPreview {
+        BridgeProtocolCodec.requireExactKeys(payload, "executionId", "planRecordId", "planVersion", "planTitle",
+            "dimensionId", "worldSessionId", "resolvedOrigin", "originStrategy", "operationCount", "createdAtEpochMillis",
+            "eventSequence", "expiresAtEpochMillis", "preflightToken")
+        val executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36)
+        val planRecordId = BridgeProtocolCodec.requiredString(payload, "planRecordId", 128)
+        val planVersion = BridgeProtocolCodec.requiredInt(payload, "planVersion")
+        val title = BridgeProtocolCodec.requiredString(payload, "planTitle", 100)
+        val dimensionId = BridgeProtocolCodec.requiredString(payload, "dimensionId", 130)
+        val worldSessionId = BridgeProtocolCodec.requiredString(payload, "worldSessionId", 128)
+        val originElement = payload.get("resolvedOrigin")
+        if (originElement == null || !originElement.isJsonObject) fail("BRIDGE_RESPONSE_INVALID")
+        val origin = readPosition(originElement.asJsonObject)
+        val strategy = BridgeProtocolCodec.requiredString(payload, "originStrategy", 32)
+        val operations = BridgeProtocolCodec.requiredInt(payload, "operationCount")
+        val createdAt = BridgeProtocolCodec.requiredLong(payload, "createdAtEpochMillis")
+        val eventSequence = BridgeProtocolCodec.requiredLong(payload, "eventSequence")
+        val expiry = BridgeProtocolCodec.requiredLong(payload, "expiresAtEpochMillis")
+        val token = BridgeProtocolCodec.requiredString(payload, "preflightToken", 64)
+        val now = System.currentTimeMillis()
+        if (executionId != expectedExecutionId || planRecordId != record.recordId || planVersion != record.version ||
+            title != record.plan.metadata.title || dimensionId != capabilities.dimensionId ||
+            worldSessionId != capabilities.worldSessionId || operations != record.plan.operations.size || operations < 1 ||
+            createdAt <= 0 || eventSequence < 1 || strategy != "SERVER_SELECTED_ORIGIN" ||
+            !token.matches(Regex("[A-Za-z0-9_-]{43}")) || expiry <= now ||
+            expiry > now + 120_000L + BridgeProtocol.MAX_CLOCK_SKEW_MILLIS || !validWorldPosition(origin)) {
+            fail("BRIDGE_RESPONSE_INVALID")
+        }
+        return MinecraftExecutionPreview(executionId, token, planRecordId, planVersion, title, dimensionId,
+            worldSessionId, origin, strategy, operations, createdAt, eventSequence, expiry)
+    }
+
+    private fun readExecutionSnapshot(
+        payload: JsonObject,
+        expectedExecutionId: String,
+        capabilities: BridgeCapabilitiesSnapshot?,
+    ): MinecraftExecutionSnapshot {
+        BridgeProtocolCodec.requireExactKeys(payload, "executionId", "buildId", "planRecordId", "planVersion", "state",
+            "completedOperations", "totalOperations", "eventSequence", "createdAtEpochMillis", "updatedAtEpochMillis",
+            "dimensionId", "worldSessionId", "resolvedOrigin", "reasonCode", "failedOperationIndex")
+        val executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36)
+        val buildId = BridgeProtocolCodec.requiredString(payload, "buildId", 80)
+        val planRecordId = BridgeProtocolCodec.requiredString(payload, "planRecordId", 128)
+        val planVersion = BridgeProtocolCodec.requiredInt(payload, "planVersion")
+        val phase = parseExecutionPhase(BridgeProtocolCodec.requiredString(payload, "state", 16))
+        val completed = BridgeProtocolCodec.requiredInt(payload, "completedOperations")
+        val total = BridgeProtocolCodec.requiredInt(payload, "totalOperations")
+        val eventSequence = BridgeProtocolCodec.requiredLong(payload, "eventSequence")
+        val created = BridgeProtocolCodec.requiredLong(payload, "createdAtEpochMillis")
+        val updated = BridgeProtocolCodec.requiredLong(payload, "updatedAtEpochMillis")
+        val dimension = BridgeProtocolCodec.requiredString(payload, "dimensionId", 130)
+        val worldSession = BridgeProtocolCodec.requiredString(payload, "worldSessionId", 128)
+        val originElement = payload.get("resolvedOrigin")
+        if (originElement == null || !originElement.isJsonObject) fail("BRIDGE_RESPONSE_INVALID")
+        val origin = readPosition(originElement.asJsonObject)
+        val reason = BridgeProtocolCodec.nullableString(payload, "reasonCode", 64)
+        val failedElement = payload.get("failedOperationIndex") ?: fail("BRIDGE_RESPONSE_INVALID")
+        val failedIndex = if (failedElement.isJsonNull) null else BridgeProtocolCodec.requiredInt(
+            JsonObject().apply { add("value", failedElement) }, "value",
+        )
+        val maximumOperations = capabilities?.maximumValidatedOperations ?: BridgeProtocol.MAX_OPERATIONS
+        if (executionId != expectedExecutionId || !EXECUTION_ID_PATTERN.matches(executionId) ||
+            !BUILD_ID_PATTERN.matches(buildId) || !RECORD_ID_PATTERN.matches(planRecordId) || planVersion < 1 ||
+            completed !in 0..total || total !in 1..maximumOperations || eventSequence < 1 || created <= 0L || updated < created ||
+            !dimension.matches(Regex("[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,64}")) ||
+            !worldSession.matches(Regex("[A-Za-z0-9_-]{1,128}")) || !validWorldPosition(origin) ||
+            (phase == MinecraftExecutionPhase.COMPLETED && completed != total) ||
+            (phase == MinecraftExecutionPhase.FAILED && reason == null) ||
+            (reason != null && !ERROR_CODE_PATTERN.matches(reason)) ||
+            (failedIndex != null && failedIndex !in 0 until total)) {
+            fail("BRIDGE_RESPONSE_INVALID")
+        }
+        return MinecraftExecutionSnapshot(executionId, buildId, planRecordId, planVersion, phase, completed, total,
+            eventSequence, created, updated, dimension, worldSession, origin, reason, failedIndex)
+    }
+
+    private fun readPosition(payload: JsonObject): BlockPosition {
+        BridgeProtocolCodec.requireExactKeys(payload, "x", "y", "z")
+        return BlockPosition(BridgeProtocolCodec.requiredInt(payload, "x"),
+            BridgeProtocolCodec.requiredInt(payload, "y"), BridgeProtocolCodec.requiredInt(payload, "z"))
+    }
+
+    private fun validWorldPosition(position: BlockPosition): Boolean =
+        position.x in -30_000_000..30_000_000 && position.z in -30_000_000..30_000_000 &&
+            position.y in -2048..2048
+
+    private fun parseExecutionPhase(value: String): MinecraftExecutionPhase = try {
+        MinecraftExecutionPhase.valueOf(value)
+    } catch (_: IllegalArgumentException) {
+        fail("BRIDGE_RESPONSE_INVALID")
+    }
+
+    private fun readRejected(payload: JsonObject, expectedExecutionId: String): MinecraftBridgeFailure {
+        BridgeProtocolCodec.requireExactKeys(payload, "requestId", "reasonCode", "safeMessage")
+        if (BridgeProtocolCodec.requiredString(payload, "requestId", 64) != expectedExecutionId) fail("BRIDGE_RESPONSE_MISMATCH")
+        val reason = BridgeProtocolCodec.requiredString(payload, "reasonCode", 64)
+        if (!ERROR_CODE_PATTERN.matches(reason)) fail("BRIDGE_RESPONSE_INVALID")
+        BridgeProtocolCodec.requiredString(payload, "safeMessage", 256)
+        return MinecraftBridgeFailure(reason)
     }
 
     private fun verifyProfileIdentity(profile: TrustedMinecraftBridge, info: BridgeCapabilitiesSnapshot) {
@@ -497,8 +912,9 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
     private fun publishConnected() {
         val session = activeSession ?: return
         val capabilities = session.capabilities ?: return
-        val authenticatedAt = System.currentTimeMillis()
-        mutableConnectionState.value = BridgeConnectionState.Connected(session.profile, capabilities, authenticatedAt)
+        mutableConnectionState.value = BridgeConnectionState.Connected(
+            session.profile, capabilities, session.authenticatedAtEpochMillis,
+        )
         expiryJob?.cancel()
         expiryJob = sessionScope.launch {
             delay(BridgeProtocol.SESSION_IDLE_TIMEOUT_MILLIS - CLIENT_IDLE_SAFETY_MARGIN_MILLIS)
@@ -536,6 +952,7 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         val profile: TrustedMinecraftBridge,
         val sessionId: String,
         val expiresAtEpochMillis: Long,
+        val authenticatedAtEpochMillis: Long,
         var nextSequence: Long = 1L,
         val capabilities: BridgeCapabilitiesSnapshot? = null,
     )
@@ -658,6 +1075,14 @@ class AndroidMinecraftBridgePairingRepository(context: Context) : MinecraftBridg
         const val CAPABILITIES_PATH = "/v1/capabilities"
         const val REVOKE_PATH = "/v1/pair/revoke"
         const val EXECUTION_PATH = "/v1/executions"
+        const val PREPARE_PATH = "/v1/executions/prepare"
+        const val START_PATH = "/v1/executions/start"
+        const val STATUS_PATH = "/v1/executions/status"
+        const val CANCEL_PATH = "/v1/executions/cancel"
+        const val SUPPORTED_BRIDGE_VERSION = "1.1.0"
+        val EXECUTION_ID_PATTERN = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
+        val BUILD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,80}")
+        val RECORD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,128}")
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val BRIDGE_ID_PATTERN = Regex("bridge-[0-9a-f]{32}")
         val ERROR_CODE_PATTERN = Regex("[A-Z][A-Z0-9_]{0,63}")

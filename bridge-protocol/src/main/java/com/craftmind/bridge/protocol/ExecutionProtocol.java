@@ -1,6 +1,6 @@
 package com.craftmind.bridge.protocol;
 
-/** Typed future request/acknowledgement/progress/cancellation vocabulary. No producer executes it in Phase 4. */
+/** Typed preflight, acknowledgement, status and cancellation vocabulary for real bridge execution. */
 public final class ExecutionProtocol {
     private ExecutionProtocol() { }
 
@@ -16,19 +16,66 @@ public final class ExecutionProtocol {
         public String safeMessage;
     }
 
+    public static final class PreflightReady {
+        public String executionId;
+        public String planRecordId;
+        public int planVersion;
+        public String planTitle;
+        public String dimensionId;
+        public String worldSessionId;
+        public BuildPlanDocument.Position resolvedOrigin;
+        public String originStrategy;
+        public int operationCount;
+        public long createdAtEpochMillis;
+        public long eventSequence;
+        public long expiresAtEpochMillis;
+        /** Short-lived opaque confirmation token; never persisted or written to logs. */
+        public String preflightToken;
+    }
+
+    public static final class StartExecutionRequest {
+        public String executionId;
+        public String preflightToken;
+    }
+
+    public static final class StatusRequest {
+        public String executionId;
+    }
+
+    public static final class ExecutionSnapshot {
+        public String executionId;
+        public String buildId;
+        public String planRecordId;
+        public int planVersion;
+        public String state;
+        public int completedOperations;
+        public int totalOperations;
+        public long eventSequence;
+        public long createdAtEpochMillis;
+        public long updatedAtEpochMillis;
+        public String dimensionId;
+        public String worldSessionId;
+        public BuildPlanDocument.Position resolvedOrigin;
+        public String reasonCode;
+        /** Zero-based operation index, present only if one exact operation failed. */
+        public Integer failedOperationIndex;
+    }
+
     public static final class CancelExecutionRequest {
-        public String executionRequestId;
+        public String executionId;
     }
 
     public static final class CancellationResult {
-        public String executionRequestId;
-        /** CANCELLATION_ACCEPTED, CANCELLATION_REJECTED, or EXECUTION_ALREADY_FINISHED. */
+        public String executionId;
+        /** CANCELLATION_ACCEPTED, CANCELLATION_REJECTED, EXECUTION_ALREADY_FINISHED, or EXECUTION_NOT_FOUND. */
         public String outcome;
+        public String state;
         public String reasonCode;
     }
 
+    /** Poll responses are snapshots from the server-side placement coordinator, never client estimates. */
     public static final class ProgressEvent {
-        public String executionRequestId;
+        public String executionId;
         public long eventSequence;
         /** EXECUTION_STARTED, PROGRESS_UPDATED, EXECUTION_COMPLETED, EXECUTION_FAILED, EXECUTION_CANCELLED. */
         public String eventType;
@@ -36,5 +83,6 @@ public final class ExecutionProtocol {
         public int totalOperations;
         public long observedAtEpochMillis;
         public String reasonCode;
+        public Integer failedOperationIndex;
     }
 }

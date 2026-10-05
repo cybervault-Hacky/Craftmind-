@@ -23,6 +23,7 @@ sealed interface BridgePairingEvent {
     data class PairingCodeChanged(val value: String) : BridgePairingEvent
     data object Pair : BridgePairingEvent
     data object Connect : BridgePairingEvent
+    data object RefreshCapabilities : BridgePairingEvent
     data object Disconnect : BridgePairingEvent
     data object RequestRevoke : BridgePairingEvent
     data object ConfirmRevoke : BridgePairingEvent

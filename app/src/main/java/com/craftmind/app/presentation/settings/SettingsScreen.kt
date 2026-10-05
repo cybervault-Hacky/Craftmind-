@@ -102,7 +102,7 @@ fun SettingsScreen(
 
         SettingsCard(
             title = "Minecraft bridge",
-            subtitle = "Pair this Android device with a private-LAN Fabric server. Pairing verifies identity; it does not send a BuildPlan or place blocks.",
+            subtitle = "Pair this Android device with a private-LAN Fabric server. Pairing verifies identity; a BuildPlan can be sent only from plan review after preflight and a separate final confirmation.",
         ) {
             MinecraftBridgeSettingsContent(state = bridgeState, onEvent = onBridgeEvent)
         }
@@ -113,14 +113,14 @@ fun SettingsScreen(
         ) {
             Text("Describe it. Review it. Refine it.", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Phase 4 · secure bridge pairing foundation; Minecraft construction disabled",
+                text = "Phase 5 · secure, preflighted Minecraft construction",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         Text(
-            text = "AI requests go directly to the selected provider over HTTPS; provider keys never enter the Minecraft bridge. The bridge uses pinned private-LAN HTTPS and an Android Keystore device key. Local build history is unchanged. No BuildPlan is sent, and Minecraft construction remains disabled.",
+            text = "AI requests go directly to the selected provider over HTTPS; provider keys never enter the Minecraft bridge. The bridge uses pinned private-LAN HTTPS and an Android Keystore device key. Accepted plan versions remain immutable; separate execution records report only bridge-reported status. Block placement requires server preflight and a separate final confirmation, and cannot be rolled back by CraftMind.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),

@@ -43,9 +43,18 @@ public final class BuildPlanContractValidator {
             BlockSupport blockSupport) {
         try {
             BridgeProtocolCodec.requireExactKeys(payload,
-                    "buildId", "buildPlanSchemaVersion", "buildPlan", "origin", "limits");
+                    "executionId", "buildId", "planRecordId", "planVersion", "buildPlanSchemaVersion",
+                    "buildPlan", "origin", "limits");
+            String executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36);
+            if (!executionId.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")) {
+                return BridgeProtocol.ErrorCode.EXECUTION_ID_INVALID;
+            }
             String buildId = BridgeProtocolCodec.requiredString(payload, "buildId", BridgeProtocol.MAX_BUILD_ID_LENGTH);
-            if (!BUILD_ID.matcher(buildId).matches()) return BridgeProtocol.ErrorCode.INVALID_BUILD_REQUEST;
+            String planRecordId = BridgeProtocolCodec.requiredString(payload, "planRecordId", BridgeProtocol.MAX_PLAN_RECORD_ID_LENGTH);
+            int planVersion = BridgeProtocolCodec.requiredInt(payload, "planVersion");
+            if (!BUILD_ID.matcher(buildId).matches() || !BUILD_ID.matcher(planRecordId).matches() || planVersion < 1 || planVersion > 100_000) {
+                return BridgeProtocol.ErrorCode.INVALID_BUILD_REQUEST;
+            }
             int schemaVersion = BridgeProtocolCodec.requiredInt(payload, "buildPlanSchemaVersion");
             if (schemaVersion != BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION) {
                 return BridgeProtocol.ErrorCode.UNSUPPORTED_BUILD_PLAN_SCHEMA;

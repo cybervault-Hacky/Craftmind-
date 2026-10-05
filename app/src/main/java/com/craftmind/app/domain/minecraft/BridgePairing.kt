@@ -1,5 +1,6 @@
 package com.craftmind.app.domain.minecraft
 
+import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -14,6 +15,7 @@ data class TrustedMinecraftBridge(
 )
 
 data class BridgeCapabilitiesSnapshot(
+    val protocolVersion: Int,
     val bridgeId: String,
     val identityFingerprint: String,
     val bridgeVersion: String,
@@ -26,7 +28,15 @@ data class BridgeCapabilitiesSnapshot(
     val maximumValidatedOperations: Int,
     val maximumRequestBytes: Int,
     val supportedBuildPlanSchemaVersions: List<Int>,
-)
+    val dimensionId: String? = null,
+    val worldSessionId: String? = null,
+) {
+    val executionCompatible: Boolean
+        get() = protocolVersion == 1 && bridgeVersion == "1.1.0" && minecraftVersion == "1.20.1" && loaderName == "Fabric" &&
+            loaderVersion == "0.16.10" && worldAccess && constructionExecute && cancellation &&
+            dimensionId != null && worldSessionId != null && 2 in supportedBuildPlanSchemaVersions &&
+            maximumValidatedOperations in 1..4096 && maximumRequestBytes in 1024..1_048_576
+}
 
 sealed interface BridgeConnectionState {
     data object Disconnected : BridgeConnectionState
@@ -57,6 +67,21 @@ interface MinecraftBridgePairingRepository {
 
     /** Closes the current in-memory bridge session when reachable; local state is cleared either way. */
     suspend fun disconnect()
+
+    /** Refreshes capabilities over the current pinned, authenticated session. */
+    suspend fun refreshCapabilities()
+
+    /** Performs an independent bridge preflight for an immutable, locally saved BuildPlan version. */
+    suspend fun prepareExecution(record: LocalBuildRecord, executionId: String): MinecraftExecutionPreview
+
+    /** Confirms a server-issued preview. Retries with the same ID/token are idempotent. */
+    suspend fun startExecution(preview: MinecraftExecutionPreview): MinecraftExecutionSnapshot
+
+    /** Queries bridge truth; NotFound never implies that a block was placed or that a build failed. */
+    suspend fun queryExecution(executionId: String): MinecraftExecutionQueryResult
+
+    /** Requests cancellation of the named execution and returns the server's typed outcome. */
+    suspend fun cancelExecution(executionId: String): MinecraftCancellationResult
 
     /** Revokes this client identity at the trusted bridge and invalidates its active sessions. */
     suspend fun revoke()

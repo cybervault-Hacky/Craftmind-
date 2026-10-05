@@ -34,6 +34,7 @@ class BridgePairingViewModel(
             is BridgePairingEvent.PairingCodeChanged -> mutableState.update { it.copy(pairingCode = event.value.filter { char -> char in 'A'..'Z' || char in 'a'..'z' || char in '0'..'9' || char == '-' || char == '_' }.take(64), message = null) }
             BridgePairingEvent.Pair -> pair()
             BridgePairingEvent.Connect -> connect()
+            BridgePairingEvent.RefreshCapabilities -> refreshCapabilities()
             BridgePairingEvent.Disconnect -> disconnect()
             BridgePairingEvent.RequestRevoke -> mutableState.update { it.copy(showRevokeConfirmation = true) }
             BridgePairingEvent.ConfirmRevoke -> revoke()
@@ -58,7 +59,7 @@ class BridgePairingViewModel(
             try {
                 bridge.pair(current.host.trim(), port, current.tlsFingerprint.trim(), code)
                 mutableState.update {
-                    it.copy(isWorking = false, message = "Device paired. The bridge identity and capabilities were verified; construction remains disabled.")
+                    it.copy(isWorking = false, message = "Device paired. The bridge identity and authenticated capabilities were verified.")
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -74,7 +75,30 @@ class BridgePairingViewModel(
             try {
                 bridge.connect()
                 mutableState.update {
-                    it.copy(isWorking = false, message = "Secure bridge session authenticated. Construction remains disabled.")
+                    it.copy(isWorking = false, message = "Secure bridge session authenticated. Capability status is reported by the pinned server.")
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                mutableState.update { it.copy(isWorking = false, message = describe(error)) }
+            }
+        }
+    }
+
+    private fun refreshCapabilities() {
+        if (mutableState.value.connection !is BridgeConnectionState.Connected) return
+        mutableState.update { it.copy(isWorking = true, message = null) }
+        viewModelScope.launch {
+            try {
+                bridge.refreshCapabilities()
+                val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
+                mutableState.update {
+                    it.copy(
+                        isWorking = false,
+                        message = if (connected?.capabilities?.executionCompatible == true)
+                            "Authenticated bridge reports construction available for the current operator-selected origin."
+                        else "Capabilities refreshed. Construction is disabled or incompatible; check server opt-in, compatibility, world availability, and the operator-selected origin.",
+                    )
                 }
             } catch (error: CancellationException) {
                 throw error

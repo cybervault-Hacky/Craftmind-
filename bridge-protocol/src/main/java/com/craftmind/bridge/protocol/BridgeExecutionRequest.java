@@ -1,8 +1,13 @@
 package com.craftmind.bridge.protocol;
 
-/** Authenticated, validation-only transport contract. This type cannot contain provider credentials or commands. */
+/** Authenticated BuildPlan-v2 construction request. It contains no provider credentials or commands. */
 public final class BridgeExecutionRequest {
+    /** Stable UUID idempotency key, retained across client retries and status queries. */
+    public String executionId;
     public String buildId;
+    /** Immutable local plan-history identity; execution data is stored separately from this version. */
+    public String planRecordId;
+    public int planVersion;
     public int buildPlanSchemaVersion;
     public BuildPlanDocument buildPlan;
     public OriginSelection origin;

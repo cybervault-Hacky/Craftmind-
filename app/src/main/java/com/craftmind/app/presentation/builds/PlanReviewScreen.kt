@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -22,7 +23,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -38,6 +41,11 @@ import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.minecraft.BridgeConnectionState
+import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
+import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
+import com.craftmind.app.presentation.settings.BridgePairingState
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -52,6 +60,9 @@ fun PlanReviewScreen(
     versions: List<LocalBuildRecord>,
     refinementState: BuildRefinementState,
     onRefinementEvent: (BuildRefinementEvent) -> Unit,
+    bridgeState: BridgePairingState = BridgePairingState(),
+    executionState: BuildExecutionState = BuildExecutionState(),
+    onExecutionEvent: (BuildExecutionEvent) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     var refinementDraft by remember(record?.recordId) { mutableStateOf("") }
@@ -64,9 +75,25 @@ fun PlanReviewScreen(
     val ready = matchingState as? BuildRefinementState.ReadyForReview
     val busy = matchingState is BuildRefinementState.ValidatingRequest || matchingState is BuildRefinementState.Generating ||
         matchingState is BuildRefinementState.Accepting || matchingState is BuildRefinementState.Reverting
+    val executionLocked = record?.let { selected ->
+        val flowLocked = when (val flow = executionState.flow) {
+            is BuildExecutionFlow.Preparing -> flow.planRecordId == selected.recordId
+            is BuildExecutionFlow.PreviewReady -> flow.planRecordId == selected.recordId
+            is BuildExecutionFlow.Starting -> flow.planRecordId == selected.recordId
+            is BuildExecutionFlow.Tracking -> flow.record.planRecordId == selected.recordId &&
+                flow.record.phase in setOf(MinecraftExecutionPhase.PREPARED, MinecraftExecutionPhase.QUEUED, MinecraftExecutionPhase.RUNNING)
+            is BuildExecutionFlow.Failed, BuildExecutionFlow.Idle -> false
+        }
+        flowLocked || executionState.records.any {
+            it.planRecordId == selected.recordId && it.phase in setOf(
+                MinecraftExecutionPhase.PREPARED, MinecraftExecutionPhase.QUEUED, MinecraftExecutionPhase.RUNNING,
+            )
+        }
+    } ?: false
     val displayedPlan = ready?.candidate?.plan ?: plan
     val dismissReview = {
         if (matchingState is BuildRefinementState.Generating) onRefinementEvent(BuildRefinementEvent.Cancel)
+        if (executionState.flow is BuildExecutionFlow.PreviewReady) onExecutionEvent(BuildExecutionEvent.DismissPreview)
         onDismiss()
     }
 
@@ -85,7 +112,7 @@ fun PlanReviewScreen(
             ) {
                 Text("Plan review", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "AI-generated and validated · review only · not executed in Minecraft",
+                    "AI-generated and validated · construction requires independent server preflight and final confirmation",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -178,11 +205,21 @@ fun PlanReviewScreen(
                         }
                     }
 
+                    ConstructionExecutionCard(
+                        record = record,
+                        plan = displayedPlan,
+                        currentRecord = currentRecord,
+                        candidateReview = ready != null,
+                        bridgeState = bridgeState,
+                        executionState = executionState,
+                        onEvent = onExecutionEvent,
+                    )
+
                     if (record != null) {
                         RefinementCard(
                             record = record,
                             isCurrent = currentRecord != null,
-                            isBusy = busy,
+                            isBusy = busy || executionLocked,
                             draft = refinementDraft,
                             onDraftChanged = { refinementDraft = it.take(BuildPlanLimits.MAX_EDIT_INSTRUCTION_LENGTH) },
                             onRefine = {
@@ -208,6 +245,264 @@ fun PlanReviewScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ConstructionExecutionCard(
+    record: LocalBuildRecord?,
+    plan: BuildPlan,
+    currentRecord: LocalBuildRecord?,
+    candidateReview: Boolean,
+    bridgeState: BridgePairingState,
+    executionState: BuildExecutionState,
+    onEvent: (BuildExecutionEvent) -> Unit,
+) {
+    val flow = executionState.flow
+    val matchingFlow = when (flow) {
+        is BuildExecutionFlow.Preparing -> flow.takeIf { it.planRecordId == record?.recordId }
+        is BuildExecutionFlow.PreviewReady -> flow.takeIf { it.planRecordId == record?.recordId }
+        is BuildExecutionFlow.Starting -> flow.takeIf { it.planRecordId == record?.recordId }
+        is BuildExecutionFlow.Tracking -> flow.takeIf { it.record.planRecordId == record?.recordId }
+        is BuildExecutionFlow.Failed -> flow.takeIf { it.planRecord?.recordId == record?.recordId }
+        BuildExecutionFlow.Idle -> null
+    }
+    val preview = (matchingFlow as? BuildExecutionFlow.PreviewReady)?.preview
+    var now by remember(preview?.executionId) { mutableLongStateOf(System.currentTimeMillis()) }
+    var showFinalConfirmation by remember(preview?.executionId) { mutableStateOf(false) }
+    LaunchedEffect(preview?.executionId, preview?.expiresAtEpochMillis) {
+        val expiry = preview?.expiresAtEpochMillis ?: return@LaunchedEffect
+        while (now < expiry) {
+            delay(1_000L)
+            now = System.currentTimeMillis()
+        }
+    }
+
+    val connection = bridgeState.connection as? BridgeConnectionState.Connected
+    val compatibleBridge = connection?.takeIf {
+        it.capabilities.executionCompatible && it.bridge.bridgeId == it.capabilities.bridgeId
+    }
+    val constructionEnabled = compatibleBridge != null
+    val eligibleSavedVersion = record != null && !candidateReview && currentRecord?.recordId == record.recordId &&
+        record.plan.status == com.craftmind.app.domain.buildplan.BuildStatus.READY &&
+        record.plan.metadata.schemaVersion == 2
+    val savedExecution = record?.let { selected ->
+        executionState.records.filter { it.planRecordId == selected.recordId }.maxByOrNull { it.updatedAtEpochMillis }
+    }
+    val activeRecord = (matchingFlow as? BuildExecutionFlow.Tracking)?.record ?: savedExecution
+    val activeExecution = executionState.records.any { execution ->
+        execution.phase in setOf(MinecraftExecutionPhase.PREPARED, MinecraftExecutionPhase.QUEUED, MinecraftExecutionPhase.RUNNING) &&
+            (compatibleBridge == null || execution.bridgeId == compatibleBridge.bridge.bridgeId)
+    }
+    val canStartPreflight = eligibleSavedVersion && constructionEnabled && !activeExecution &&
+        !executionState.isLoading && !executionState.loadFailed &&
+        matchingFlow !is BuildExecutionFlow.Preparing && matchingFlow !is BuildExecutionFlow.Starting &&
+        matchingFlow !is BuildExecutionFlow.PreviewReady
+
+    ReviewCard("Minecraft construction · explicit confirmation required") {
+        Text(
+            "This sends only the saved, validated BuildPlan v2 to the paired Fabric bridge. Preflight places zero blocks. Placement begins only after the separate final confirmation below.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (candidateReview) {
+            Text("Accept this candidate as a new immutable version before preparing it for construction.", style = MaterialTheme.typography.bodySmall)
+        } else if (record == null) {
+            Text("This plan was not saved to local history, so it cannot be sent for construction.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        } else if (record.plan.metadata.schemaVersion != 2 || record.plan.status != com.craftmind.app.domain.buildplan.BuildStatus.READY) {
+            Text("Only a validated BuildPlan v2 in READY state can be prepared.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        } else if (currentRecord == null) {
+            Text("Only the latest accepted immutable version can be constructed. History is loading or this version is stale.", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+        }
+
+        if (!constructionEnabled) {
+            Text(
+                "Disabled: connect and authenticate to a compatible bridge with construction.execute = true, matching Minecraft/Fabric/protocol, a selected operator origin, and cancellation support.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
+        if (executionState.loadFailed) {
+            Text("Local execution history could not be read. Construction is disabled until storage is available.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+
+        when (val current = matchingFlow) {
+            is BuildExecutionFlow.Preparing -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Bridge preflight is checking the world and every placement. No blocks are placed during this step.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            is BuildExecutionFlow.PreviewReady -> {
+                val remainingSeconds = ((current.preview.expiresAtEpochMillis - now).coerceAtLeast(0L) / 1_000L)
+                val world = bridgeWorldLabel(
+                    bridgeState,
+                    compatibleBridge?.bridge?.bridgeId ?: savedExecution?.bridgeId.orEmpty(),
+                    current.preview.worldSessionId,
+                )
+                Text("Resolved world: $world", style = MaterialTheme.typography.bodySmall)
+                Text("Dimension: ${current.preview.dimensionId}", style = MaterialTheme.typography.bodySmall)
+                Text("Operator-selected origin: ${current.preview.resolvedOrigin.label()} · server-resolved", style = MaterialTheme.typography.bodySmall)
+                Text("BuildPlan origin strategy: ${plan.originStrategy.name}", style = MaterialTheme.typography.bodySmall)
+                Text("Immutable plan: ${current.preview.planTitle} · version ${current.preview.planVersion} · ${current.preview.operationCount} placements", style = MaterialTheme.typography.bodySmall)
+                Text("Preflight token expires in about ${remainingSeconds}s. Starting is never automatic.", style = MaterialTheme.typography.bodySmall)
+                current.errorCode?.let { Text("Local execution status could not be persisted ($it). Do not continue until local storage is available.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { showFinalConfirmation = true },
+                        enabled = constructionEnabled && eligibleSavedVersion && !executionState.isLoading &&
+                            !executionState.loadFailed && current.errorCode == null && remainingSeconds > 0,
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("Review final confirmation") }
+                    OutlinedButton(
+                        onClick = { onEvent(BuildExecutionEvent.DismissPreview) },
+                        enabled = constructionEnabled,
+                    ) { Text("Cancel preview") }
+                }
+                if (showFinalConfirmation) {
+                    val summary = "World: $world\nDimension: ${current.preview.dimensionId}\nOrigin: ${current.preview.resolvedOrigin.label()}\nPlan: ${current.preview.planTitle} · version ${current.preview.planVersion}\nOperations: ${current.preview.operationCount}\nStrategy: ${plan.originStrategy.name}"
+                    AlertDialog(
+                        onDismissRequest = { showFinalConfirmation = false },
+                        title = { Text("Authorize block placement?") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(summary, style = MaterialTheme.typography.bodySmall)
+                                Text("The authenticated server will begin placing blocks in bounded batches. Failed or cancelled work can leave partial changes; CraftMind does not provide rollback.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    showFinalConfirmation = false
+                                    onEvent(BuildExecutionEvent.Confirm)
+                                },
+                                enabled = constructionEnabled && eligibleSavedVersion && !executionState.isLoading &&
+                                    !executionState.loadFailed && remainingSeconds > 0 && current.errorCode == null,
+                            ) { Text("Confirm and start construction") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showFinalConfirmation = false }) { Text("Not now") }
+                        },
+                    )
+                }
+            }
+            is BuildExecutionFlow.Starting -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Sending the explicit confirmation to the bridge. Waiting for its execution record; no progress is assumed.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            is BuildExecutionFlow.Tracking -> ExecutionStatus(
+                record = current.record,
+                refreshing = current.refreshing,
+                connectionReasonCode = current.connectionReasonCode,
+                bridgeRecordMissing = current.bridgeRecordMissing,
+                cancellationRequested = current.cancellationRequested,
+                constructionEnabled = constructionEnabled,
+                onRefresh = { onEvent(BuildExecutionEvent.RefreshStatus(current.record.executionId)) },
+                onCancel = { onEvent(BuildExecutionEvent.Cancel(current.record.executionId)) },
+            )
+            is BuildExecutionFlow.Failed -> {
+                Text("Bridge operation did not reach a usable preview: ${current.reasonCode}. No successful placement is claimed.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                if (current.retryPrepare && constructionEnabled && eligibleSavedVersion) {
+                    OutlinedButton(onClick = { onEvent(BuildExecutionEvent.RetryPrepare) }) { Text("Run a new preflight") }
+                }
+                activeRecord?.let { record ->
+                    ExecutionStatus(
+                        record = record,
+                        refreshing = false,
+                        connectionReasonCode = null,
+                        bridgeRecordMissing = false,
+                        cancellationRequested = false,
+                        constructionEnabled = constructionEnabled,
+                        onRefresh = { onEvent(BuildExecutionEvent.RefreshStatus(record.executionId)) },
+                        onCancel = { onEvent(BuildExecutionEvent.Cancel(record.executionId)) },
+                    )
+                }
+            }
+            BuildExecutionFlow.Idle, null -> {
+                activeRecord?.let { record ->
+                    ExecutionStatus(
+                        record = record,
+                        refreshing = false,
+                        connectionReasonCode = null,
+                        bridgeRecordMissing = false,
+                        cancellationRequested = false,
+                        constructionEnabled = constructionEnabled,
+                        onRefresh = { onEvent(BuildExecutionEvent.RefreshStatus(record.executionId)) },
+                        onCancel = { onEvent(BuildExecutionEvent.Cancel(record.executionId)) },
+                    )
+                }
+            }
+        }
+
+        val activeRecordIsTerminal = activeRecord?.phase in setOf(
+            MinecraftExecutionPhase.COMPLETED, MinecraftExecutionPhase.FAILED, MinecraftExecutionPhase.CANCELLED,
+        )
+        val matchingTrackingIsTerminal = (matchingFlow as? BuildExecutionFlow.Tracking)?.record?.phase in setOf(
+            MinecraftExecutionPhase.COMPLETED, MinecraftExecutionPhase.FAILED, MinecraftExecutionPhase.CANCELLED,
+        )
+        if (matchingFlow !is BuildExecutionFlow.Preparing && matchingFlow !is BuildExecutionFlow.PreviewReady &&
+            matchingFlow !is BuildExecutionFlow.Starting &&
+            (matchingFlow !is BuildExecutionFlow.Tracking || matchingTrackingIsTerminal) &&
+            (matchingFlow !is BuildExecutionFlow.Failed || !matchingFlow.retryPrepare) &&
+            (activeRecord == null || activeRecordIsTerminal)
+        ) {
+            Button(
+                onClick = { record?.let { onEvent(BuildExecutionEvent.Prepare(it)) } },
+                enabled = canStartPreflight,
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Preflight with Minecraft bridge") }
+        }
+    }
+}
+
+@Composable
+private fun ExecutionStatus(
+    record: LocalBuildExecutionRecord,
+    refreshing: Boolean,
+    connectionReasonCode: String?,
+    bridgeRecordMissing: Boolean,
+    cancellationRequested: Boolean,
+    constructionEnabled: Boolean,
+    onRefresh: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Text("Bridge execution: ${record.phase.name}", style = MaterialTheme.typography.titleSmall)
+    Text("Bridge-reported operation count: ${record.completedOperations} / ${record.totalOperations} · event ${record.eventSequence}", style = MaterialTheme.typography.bodySmall)
+    Text("Resolved world: ${record.dimensionId} · session ${record.worldSessionId} · origin ${record.resolvedOrigin.label()}", style = MaterialTheme.typography.bodySmall)
+    Text("Bridge record updated: ${formatTime(record.updatedAtEpochMillis)}", style = MaterialTheme.typography.bodySmall)
+    when (record.phase) {
+        MinecraftExecutionPhase.PREPARED -> Text("Preflight only: no blocks have been placed. After app restart the short-lived confirmation token is not resumed automatically.", style = MaterialTheme.typography.bodySmall)
+        MinecraftExecutionPhase.QUEUED -> Text("The bridge accepted the explicit start and queued this build. Counts below come from bridge status.", style = MaterialTheme.typography.bodySmall)
+        MinecraftExecutionPhase.RUNNING -> Text("The Minecraft server is processing bounded batches. Progress below is bridge-reported; disconnecting will not auto-resume or duplicate work.", style = MaterialTheme.typography.bodySmall)
+        MinecraftExecutionPhase.COMPLETED -> Text("The bridge reported completion. CraftMind has no independent visual verification.", style = MaterialTheme.typography.bodySmall)
+        MinecraftExecutionPhase.FAILED -> Text("The bridge reported failure. Partial world changes may remain; no rollback is available.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        MinecraftExecutionPhase.CANCELLED -> Text("The bridge reported cancellation. Completed blocks remain; no rollback is available.", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+    }
+    record.reasonCode?.let { reason ->
+        Text("Bridge reason: $reason${record.failedOperationIndex?.let { index -> " · operation ${index + 1}" }.orEmpty()}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        if (reason == "SERVER_RESTARTED") {
+            Text("This is the last persisted bridge checkpoint. A server crash may have happened between a world write and its saved count, so the actual world can differ. Inspect the world in game before any new build; CraftMind will not resume or roll back.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    if (connectionReasonCode != null) Text("Latest bridge action/status issue: $connectionReasonCode. The saved state is only the last bridge report.", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+    if (bridgeRecordMissing) Text("The authenticated bridge returned no record for this execution ID. Local history is retained; CraftMind will not restart or mark it complete.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    if (cancellationRequested) Text("Cancellation was requested; wait for a bridge-reported terminal status.", style = MaterialTheme.typography.bodySmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onRefresh, enabled = constructionEnabled && !refreshing) {
+            if (refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            else Text("Refresh bridge status")
+        }
+        if (record.phase in setOf(MinecraftExecutionPhase.PREPARED, MinecraftExecutionPhase.QUEUED, MinecraftExecutionPhase.RUNNING)) {
+            TextButton(onClick = onCancel, enabled = constructionEnabled) { Text("Request cancellation") }
+        }
+    }
+}
+
+private fun bridgeWorldLabel(bridgeState: BridgePairingState, bridgeId: String, worldSessionId: String): String {
+    val profile = bridgeState.profile?.takeIf { it.bridgeId == bridgeId }
+    val base = profile?.let { "${it.displayName} · ${it.host}:${it.port}" } ?: "bridge $bridgeId"
+    return "$base · world session $worldSessionId"
 }
 
 @Composable

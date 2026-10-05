@@ -6,7 +6,6 @@ import com.craftmind.bridge.protocol.BridgeEnvelope;
 import com.craftmind.bridge.protocol.BridgeProtocol;
 import com.craftmind.bridge.protocol.BridgeProtocolCodec;
 import com.craftmind.bridge.protocol.BridgeProtocolException;
-import com.craftmind.bridge.protocol.BuildPlanContractValidator;
 import com.craftmind.bridge.protocol.ExecutionProtocol;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -29,10 +28,11 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Private-LAN HTTPS endpoint. The only build route validates and rejects; it never queues or executes. */
+/** Private-LAN HTTPS endpoint for authenticated pairing, full execution preflight, explicit start, status, and cancel. */
 public final class BridgeHttpServer implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger("CraftMindBridge");
     private static final String INFO_PATH = "/v1/bridge/info";
@@ -43,13 +43,17 @@ public final class BridgeHttpServer implements AutoCloseable {
     private static final String CAPABILITIES_PATH = "/v1/capabilities";
     private static final String REVOKE_PATH = "/v1/pair/revoke";
     private static final String EXECUTION_PATH = "/v1/executions";
+    private static final String PREPARE_PATH = "/v1/executions/prepare";
+    private static final String START_PATH = "/v1/executions/start";
+    private static final String STATUS_PATH = "/v1/executions/status";
     private static final String CANCEL_PATH = "/v1/executions/cancel";
     private static final long REQUEST_WATCHDOG_MILLIS = 15_000L;
     private final CraftMindBridgeConfig config;
     private final BridgeIdentity identity;
     private final BridgeAuthenticationService authentication;
-    private final BridgeCapabilities capabilities;
-    private final BuildPlanContractValidator.BlockSupport blockSupport;
+    private final Supplier<BridgeCapabilities> capabilitiesSupplier;
+    private final Supplier<BridgeCapabilities> publicCapabilitiesSupplier;
+    private final BridgeExecutionService executionService;
     private final BridgeRateLimiter rateLimiter = new BridgeRateLimiter();
     private final ScheduledExecutorService watchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(namedFactory("craftmind-bridge-watchdog"));
     private HttpsServer server;
@@ -59,13 +63,15 @@ public final class BridgeHttpServer implements AutoCloseable {
             CraftMindBridgeConfig config,
             BridgeIdentity identity,
             BridgeAuthenticationService authentication,
-            BridgeCapabilities capabilities,
-            BuildPlanContractValidator.BlockSupport blockSupport) {
+            Supplier<BridgeCapabilities> capabilitiesSupplier,
+            Supplier<BridgeCapabilities> publicCapabilitiesSupplier,
+            BridgeExecutionService executionService) {
         this.config = config;
         this.identity = identity;
         this.authentication = authentication;
-        this.capabilities = capabilities;
-        this.blockSupport = blockSupport;
+        this.capabilitiesSupplier = capabilitiesSupplier;
+        this.publicCapabilitiesSupplier = publicCapabilitiesSupplier;
+        this.executionService = executionService;
     }
 
     public synchronized void start() throws IOException {
@@ -93,7 +99,7 @@ public final class BridgeHttpServer implements AutoCloseable {
         newServer.setExecutor(executor);
         newServer.createContext("/", this::handle);
         newServer.start();
-        LOGGER.info("CraftMind Bridge v1 listening on configured private interface {}:{}; construction remains disabled.",
+        LOGGER.info("CraftMind Bridge protocol v1 listening on configured private interface {}:{}; construction is server-configured and capability-gated.",
                 config.bindAddress().getHostAddress(), config.port());
     }
 
@@ -113,7 +119,8 @@ public final class BridgeHttpServer implements AutoCloseable {
     public static boolean isAllowedPath(String path) {
         return INFO_PATH.equals(path) || PAIR_PATH.equals(path) || CHALLENGE_PATH.equals(path) ||
                 SESSION_PATH.equals(path) || DISCONNECT_PATH.equals(path) || CAPABILITIES_PATH.equals(path) || REVOKE_PATH.equals(path) ||
-                EXECUTION_PATH.equals(path) || CANCEL_PATH.equals(path);
+                EXECUTION_PATH.equals(path) || PREPARE_PATH.equals(path) || START_PATH.equals(path) ||
+                STATUS_PATH.equals(path) || CANCEL_PATH.equals(path);
     }
 
     private void handle(HttpExchange exchange) {
@@ -144,8 +151,8 @@ public final class BridgeHttpServer implements AutoCloseable {
                 sendError(exchange, 429, BridgeProtocol.ErrorCode.RATE_LIMITED, null);
                 return;
             }
-            int maximumBytes = EXECUTION_PATH.equals(path)
-                    ? BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES : BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES;
+            int maximumBytes = (EXECUTION_PATH.equals(path) || PREPARE_PATH.equals(path))
+                    ? config.executionLimits().maxRequestBytes() : BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES;
             body = readBounded(exchange, maximumBytes);
             BridgeEnvelope envelope = BridgeProtocolCodec.parseEnvelope(body, maximumBytes);
             requestIdForLog = envelope.requestId;
@@ -180,7 +187,7 @@ public final class BridgeHttpServer implements AutoCloseable {
         if (INFO_PATH.equals(path)) {
             requireMessage(envelope, "bridge.info.request");
             BridgeProtocolCodec.requireExactKeys(payload);
-            sendEnvelope(exchange, 200, "bridge.info.response", requestId, capabilities);
+            sendEnvelope(exchange, 200, "bridge.info.response", requestId, publicCapabilitiesSupplier.get());
             return;
         }
         if (PAIR_PATH.equals(path)) {
@@ -247,7 +254,7 @@ public final class BridgeHttpServer implements AutoCloseable {
         if (CAPABILITIES_PATH.equals(path)) {
             requireMessage(envelope, "capabilities.request");
             BridgeProtocolCodec.requireExactKeys(payload);
-            sendEnvelope(exchange, 200, "capabilities.response", requestId, capabilities);
+            sendEnvelope(exchange, 200, "capabilities.response", requestId, capabilitiesSupplier.get());
             return;
         }
         if (REVOKE_PATH.equals(path)) {
@@ -263,31 +270,120 @@ public final class BridgeHttpServer implements AutoCloseable {
             return;
         }
         if (EXECUTION_PATH.equals(path)) {
+            // The legacy one-phase request cannot carry a user-confirmed preflight token and is never executed.
             requireMessage(envelope, "execution.request");
-            BridgeProtocol.ErrorCode validation = BuildPlanContractValidator.validateExecutionPayload(
-                    payload, body.length, BridgeProtocol.MAX_OPERATIONS, BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES, blockSupport);
-            BridgeProtocol.ErrorCode reason = validation == null ? BridgeProtocol.ErrorCode.CONSTRUCTION_DISABLED : validation;
             ExecutionProtocol.RequestRejected rejected = new ExecutionProtocol.RequestRejected();
             rejected.requestId = requestId;
-            rejected.reasonCode = reason;
-            rejected.safeMessage = reason == BridgeProtocol.ErrorCode.CONSTRUCTION_DISABLED
-                    ? "Plan is valid for the protocol, but Minecraft construction is disabled in this bridge version."
-                    : "The bridge rejected the BuildPlan request during independent validation.";
+            rejected.reasonCode = BridgeProtocol.ErrorCode.UNSUPPORTED_ORIGIN;
+            rejected.safeMessage = "Use the authenticated preflight and explicit confirmation flow supported by this client.";
             sendEnvelope(exchange, 200, "execution.rejected", requestId, rejected);
+            return;
+        }
+        if (PREPARE_PATH.equals(path)) {
+            requireMessage(envelope, "execution.prepare.request");
+            String executionId = requestedExecutionId(payload, requestId);
+            if (executionService == null) {
+                sendPreflightRejected(exchange, requestId, executionId, BridgeProtocol.ErrorCode.CONSTRUCTION_DISABLED);
+                return;
+            }
+            ConstructionCoordinator.PrepareResult result = executionService.prepare(clientId, payload, body.length);
+            if (result.ready != null) {
+                sendEnvelope(exchange, 200, "execution.preflight.ready", requestId, result.ready);
+            } else if (result.existing != null) {
+                sendEnvelope(exchange, 200, "execution.status.response", requestId, result.existing);
+            } else {
+                sendPreflightRejected(exchange, requestId, executionId, parseErrorCode(result.reasonCode));
+            }
+            return;
+        }
+        if (START_PATH.equals(path)) {
+            requireMessage(envelope, "execution.start.request");
+            BridgeProtocolCodec.requireExactKeys(payload, "executionId", "preflightToken");
+            String executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36);
+            String preflightToken = BridgeProtocolCodec.requiredString(payload, "preflightToken", 64);
+            ConstructionCoordinator.StartResult result = executionService == null
+                    ? ConstructionCoordinator.StartResult.rejected(BridgeProtocol.ErrorCode.CONSTRUCTION_DISABLED.name())
+                    : executionService.start(clientId, executionId, preflightToken);
+            if (result.accepted) {
+                sendEnvelope(exchange, 200, "execution.accepted", requestId, result.snapshot);
+            } else {
+                sendStartRejected(exchange, requestId, executionId, parseErrorCode(result.reasonCode));
+            }
+            return;
+        }
+        if (STATUS_PATH.equals(path)) {
+            requireMessage(envelope, "execution.status.request");
+            BridgeProtocolCodec.requireExactKeys(payload, "executionId");
+            String executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36);
+            ExecutionProtocol.ExecutionSnapshot snapshot = executionService == null ? null
+                    : executionService.status(clientId, executionId);
+            if (snapshot == null) {
+                JsonObject result = new JsonObject();
+                result.addProperty("executionId", executionId);
+                result.addProperty("reasonCode", BridgeProtocol.ErrorCode.EXECUTION_NOT_FOUND.name());
+                sendEnvelope(exchange, 200, "execution.status.not_found", requestId, result);
+            } else {
+                sendEnvelope(exchange, 200, "execution.status.response", requestId, snapshot);
+            }
             return;
         }
         if (CANCEL_PATH.equals(path)) {
             requireMessage(envelope, "execution.cancel.request");
-            BridgeProtocolCodec.requireExactKeys(payload, "executionRequestId");
-            String executionRequestId = BridgeProtocolCodec.requiredString(payload, "executionRequestId", 64);
+            String executionId;
+            if (payload.has("executionId")) {
+                BridgeProtocolCodec.requireExactKeys(payload, "executionId");
+                executionId = BridgeProtocolCodec.requiredString(payload, "executionId", 36);
+            } else {
+                // Phase 4 clients used this name; accept it only as an idempotent cancellation alias.
+                BridgeProtocolCodec.requireExactKeys(payload, "executionRequestId");
+                executionId = BridgeProtocolCodec.requiredString(payload, "executionRequestId", 64);
+            }
+            ConstructionCoordinator.CancelResult cancelled = executionService == null
+                    ? ConstructionCoordinator.CancelResult.notFound() : executionService.cancel(clientId, executionId);
             ExecutionProtocol.CancellationResult result = new ExecutionProtocol.CancellationResult();
-            result.executionRequestId = executionRequestId;
-            result.outcome = "CANCELLATION_REJECTED";
-            result.reasonCode = BridgeProtocol.ErrorCode.CANCELLATION_UNAVAILABLE.name();
-            sendEnvelope(exchange, 200, "execution.cancellation.rejected", requestId, result);
+            result.executionId = executionId;
+            result.outcome = cancelled.outcome;
+            result.state = cancelled.state;
+            result.reasonCode = cancelled.reasonCode;
+            sendEnvelope(exchange, 200, "execution.cancellation.result", requestId, result);
             return;
         }
         writePlainError(exchange, 404);
+    }
+
+    private String requestedExecutionId(JsonObject payload, String fallback) {
+        try {
+            return BridgeProtocolCodec.requiredString(payload, "executionId", 36);
+        } catch (BridgeProtocolException error) {
+            return fallback;
+        }
+    }
+
+    private void sendPreflightRejected(HttpExchange exchange, String requestId, String executionId,
+                                       BridgeProtocol.ErrorCode reason) throws IOException {
+        ExecutionProtocol.RequestRejected rejected = new ExecutionProtocol.RequestRejected();
+        rejected.requestId = executionId;
+        rejected.reasonCode = reason;
+        rejected.safeMessage = safeMessage(reason);
+        sendEnvelope(exchange, 200, "execution.preflight.rejected", requestId, rejected);
+    }
+
+    private void sendStartRejected(HttpExchange exchange, String requestId, String executionId,
+                                   BridgeProtocol.ErrorCode reason) throws IOException {
+        ExecutionProtocol.RequestRejected rejected = new ExecutionProtocol.RequestRejected();
+        rejected.requestId = executionId;
+        rejected.reasonCode = reason;
+        rejected.safeMessage = safeMessage(reason);
+        sendEnvelope(exchange, 200, "execution.start.rejected", requestId, rejected);
+    }
+
+    private BridgeProtocol.ErrorCode parseErrorCode(String value) {
+        if (value == null) return BridgeProtocol.ErrorCode.INTERNAL_ERROR;
+        try {
+            return BridgeProtocol.ErrorCode.valueOf(value);
+        } catch (IllegalArgumentException error) {
+            return BridgeProtocol.ErrorCode.INTERNAL_ERROR;
+        }
     }
 
     private String authorize(HttpExchange exchange, String path, byte[] body, BridgeEnvelope envelope)
@@ -442,7 +538,26 @@ public final class BridgeHttpServer implements AutoCloseable {
             case ALREADY_PAIRED: return "This Android identity is already trusted by this bridge.";
             case REPLAY_REJECTED: return "The request was stale, duplicated, or out of sequence.";
             case RATE_LIMITED: return "Too many requests. Wait before trying again.";
-            case CONSTRUCTION_DISABLED: return "Minecraft construction is not available in this bridge version.";
+            case CONSTRUCTION_DISABLED: return "Construction is disabled by the operator or unsupported by this server setup.";
+            case ACTIVE_EXECUTION_EXISTS: return "Another build or unexpired preflight is active. Query it or wait for it to finish.";
+            case EXECUTION_ID_CONFLICT: return "This execution ID was already used for a different plan or trusted device.";
+            case EXECUTION_NOT_FOUND: return "No execution with that ID is available to this trusted device.";
+            case PREFLIGHT_EXPIRED: return "The preflight expired. Prepare the plan again and review a new preview.";
+            case PREFLIGHT_TOKEN_INVALID: return "The confirmation token is invalid or no longer active.";
+            case ORIGIN_UNAVAILABLE: return "An operator must select a build origin in game before construction.";
+            case ORIGIN_CHANGED: return "The in-game origin changed after preflight. Review a fresh preview.";
+            case WORLD_SESSION_MISMATCH: return "The world session changed. Reconnect and prepare again.";
+            case WORLD_UNAVAILABLE: return "The selected Minecraft world is not available.";
+            case WORLD_BOUNDS_REJECTED: return "At least one target is outside the world height or border.";
+            case CHUNK_NOT_LOADED: return "At least one target chunk is not loaded; the bridge will not load it automatically.";
+            case BLOCK_OCCUPIED: return "At least one target block is occupied; no blocks were overwritten during preflight.";
+            case ENTITY_IN_BUILD_AREA: return "Move all players and entities clear of the proposed build area, then preflight again.";
+            case SPAWN_PROTECTED: return "The proposed build overlaps vanilla spawn protection.";
+            case PROTECTED_REGION: return "A placement protection rule rejected the target.";
+            case EXECUTION_STORE_UNAVAILABLE: return "Execution status could not be persisted, so the bridge will not start construction.";
+            case SERVER_RESTARTED: return "The Minecraft server restarted; this execution was marked failed and was not resumed.";
+            case EXECUTION_TIMEOUT: return "The execution exceeded the configured time limit.";
+            case PLACEMENT_REJECTED: return "Minecraft rejected a block placement; earlier placements were not rolled back.";
             default: return "The request was rejected by the bridge.";
         }
     }

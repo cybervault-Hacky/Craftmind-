@@ -5,19 +5,31 @@ import com.craftmind.bridge.protocol.BridgeProtocol;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Owns the bridge lifecycle for one dedicated Fabric server process. */
+/** Owns the bridge lifecycle, the one per-server origin, and the server-thread construction service. */
 final class BridgeRuntime implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger("CraftMindBridge");
     private final CraftMindBridgeConfig config;
     private final BridgeIdentity identity;
     private final TrustedClientRepository clients;
     private final BridgeAuthenticationService authentication;
-    private BridgeHttpServer httpServer;
+    private final MinecraftBlockSupport blockSupport = new MinecraftBlockSupport();
+    private volatile BridgeHttpServer httpServer;
+    private volatile MinecraftServer minecraftServer;
+    private volatile String worldSessionId;
+    private volatile BridgeBuildOrigin buildOrigin;
+    private volatile BridgeExecutionService executionService;
+    private volatile boolean compatibleServerModSet;
 
     private BridgeRuntime(CraftMindBridgeConfig config, BridgeIdentity identity, TrustedClientRepository clients) {
         this.config = config;
@@ -38,16 +50,38 @@ final class BridgeRuntime implements AutoCloseable {
         return new BridgeRuntime(config, identity, clients);
     }
 
-    synchronized void start() {
+    synchronized void start(MinecraftServer server) {
         if (httpServer != null) return;
-        BridgeCapabilities capabilities = capabilities();
-        httpServer = new BridgeHttpServer(config, identity, authentication, capabilities, new MinecraftBlockSupport());
+        this.minecraftServer = server;
+        this.worldSessionId = UUID.randomUUID().toString();
+        this.buildOrigin = null;
+        this.compatibleServerModSet = ServerModSafetyPolicy.supports(
+                FabricLoader.getInstance().getAllMods().stream()
+                        .map(container -> container.getMetadata().getId())
+                        .collect(Collectors.toSet()));
+        try {
+            BridgeExecutionRecordStore recordStore = new BridgeExecutionRecordStore(config.dataDirectory());
+            ConstructionCoordinator coordinator = new ConstructionCoordinator(recordStore, config.executionLimits());
+            executionService = new BridgeExecutionService(config, blockSupport, coordinator,
+                    () -> {
+                        BridgeBuildOrigin current = buildOrigin;
+                        return current == null ? null : current.copy();
+                    }, compatibleServerModSet, server);
+        } catch (Exception error) {
+            executionService = null;
+            LOGGER.error("Construction status store unavailable code=EXECUTION_STORE_UNAVAILABLE; placement capability is disabled.");
+        }
+        httpServer = new BridgeHttpServer(config, identity, authentication,
+                this::capabilities, this::publicCapabilities, executionService);
         try {
             httpServer.start();
+            LOGGER.info("CraftMind Bridge server hooks ready; protocol 1, construction capability {}.",
+                    executionService != null && executionService.constructionAvailable() ? "available" : "disabled");
         } catch (Exception error) {
             httpServer.close();
             httpServer = null;
-            LOGGER.error("CraftMind Bridge listener unavailable code=LISTENER_START_FAILED; Minecraft actions remain disabled.");
+            executionService = null;
+            LOGGER.error("CraftMind Bridge listener unavailable code=LISTENER_START_FAILED; no network listener was opened.");
         }
     }
 
@@ -72,7 +106,43 @@ final class BridgeRuntime implements AutoCloseable {
     synchronized String fingerprint() { return identity.fingerprint(); }
     synchronized boolean isListening() { return httpServer != null; }
 
+    synchronized BridgeBuildOrigin selectOrigin(ServerWorld world, BlockPos playerFeetPosition) {
+        if (worldSessionId == null || world == null || playerFeetPosition == null) return null;
+        BridgeBuildOrigin selected = BridgeBuildOrigin.selected(world, playerFeetPosition, worldSessionId);
+        buildOrigin = selected;
+        return selected.copy();
+    }
+
+    synchronized void clearOrigin() {
+        buildOrigin = null;
+    }
+
+    synchronized BridgeBuildOrigin currentOrigin() {
+        BridgeBuildOrigin current = buildOrigin;
+        return current == null ? null : current.copy();
+    }
+
+    void endServerTick() {
+        BridgeExecutionService service = executionService;
+        if (service != null) service.tick();
+    }
+
+    void serverStopping() {
+        BridgeExecutionService service = executionService;
+        if (service != null) service.serverStopping();
+        executionService = null;
+        buildOrigin = null;
+        worldSessionId = null;
+        minecraftServer = null;
+    }
+
     @Override public synchronized void close() {
+        BridgeExecutionService service = executionService;
+        if (service != null) service.serverStopping();
+        executionService = null;
+        buildOrigin = null;
+        worldSessionId = null;
+        minecraftServer = null;
         if (httpServer != null) {
             httpServer.close();
             httpServer = null;
@@ -82,6 +152,34 @@ final class BridgeRuntime implements AutoCloseable {
     }
 
     private BridgeCapabilities capabilities() {
+        BridgeCapabilities result = baseCapabilities();
+        BridgeExecutionService service = executionService;
+        BridgeBuildOrigin origin = currentOrigin();
+        boolean worldAvailable = minecraftServer != null && service != null;
+        boolean execute = service != null && service.constructionAvailable();
+        result.worldAccess = worldAvailable;
+        result.constructionExecute = execute;
+        result.cancellation = execute;
+        result.maximumValidatedOperations = config.executionLimits().maxOperations();
+        result.maximumRequestBytes = config.executionLimits().maxRequestBytes();
+        result.dimensionId = origin == null ? null : origin.dimensionId;
+        result.worldSessionId = origin == null ? null : origin.worldSessionId;
+        return result;
+    }
+
+    private BridgeCapabilities publicCapabilities() {
+        BridgeCapabilities result = baseCapabilities();
+        result.worldAccess = false;
+        result.constructionExecute = false;
+        result.cancellation = false;
+        result.maximumValidatedOperations = config.executionLimits().maxOperations();
+        result.maximumRequestBytes = config.executionLimits().maxRequestBytes();
+        result.dimensionId = null;
+        result.worldSessionId = null;
+        return result;
+    }
+
+    private BridgeCapabilities baseCapabilities() {
         BridgeCapabilities result = new BridgeCapabilities();
         result.protocolVersion = BridgeProtocol.VERSION;
         result.bridgeId = identity.bridgeId();
@@ -90,15 +188,8 @@ final class BridgeRuntime implements AutoCloseable {
         result.minecraftVersion = "1.20.1";
         result.loaderName = "Fabric";
         result.loaderVersion = modVersion("fabricloader");
-        result.worldAccess = false;
-        result.constructionExecute = false;
-        result.cancellation = false;
-        result.maximumValidatedOperations = BridgeProtocol.MAX_OPERATIONS;
-        result.maximumRequestBytes = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES;
         result.supportedBuildPlanSchemaVersions = new ArrayList<>();
         result.supportedBuildPlanSchemaVersions.add(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION);
-        result.dimensionId = null;
-        result.worldSessionId = null;
         return result;
     }
 

@@ -109,10 +109,11 @@ internal fun MinecraftBridgeSettingsContent(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text("World access: ${if (capabilities.worldAccess) "reported on" else "off"}", style = MaterialTheme.typography.bodySmall)
-                Text("Build execution: ${if (capabilities.constructionExecute) "reported available" else "disabled"}", style = MaterialTheme.typography.bodySmall)
+                Text("Construction: ${if (capabilities.executionCompatible) "authenticated and available" else "disabled or incompatible"}", style = MaterialTheme.typography.bodySmall)
                 Text("Cancellation: ${if (capabilities.cancellation) "reported available" else "unavailable"}", style = MaterialTheme.typography.bodySmall)
+                Text("Current origin dimension: ${capabilities.dimensionId ?: "not selected"}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Capabilities come from the pinned-HTTPS response to a signed authenticated request. Session status clears locally before the bridge's five-minute idle expiry. This verifies identity and reports capabilities only; CraftMind does not transmit a plan or construct in Minecraft.",
+                    "Capabilities come from a pinned-HTTPS signed session. BuildPlan v2 is sent only through a separate server preflight and after a final user confirmation. Provider keys remain on this device. The server requires operator opt-in and /craftmind origin set.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -132,6 +133,13 @@ internal fun MinecraftBridgeSettingsContent(
                 enabled = !state.isWorking && connected != null,
                 modifier = Modifier.weight(1f),
             ) { Text("Disconnect") }
+        }
+        OutlinedButton(
+            onClick = { onEvent(BridgePairingEvent.RefreshCapabilities) },
+            enabled = !state.isWorking && connected != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Refresh authenticated capabilities")
         }
         OutlinedButton(
             onClick = { onEvent(BridgePairingEvent.RequestRevoke) },

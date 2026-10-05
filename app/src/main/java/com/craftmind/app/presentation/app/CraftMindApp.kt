@@ -36,6 +36,8 @@ import com.craftmind.app.domain.buildplan.BuildRequest
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.builds.BuildExecutionEvent
+import com.craftmind.app.presentation.builds.BuildExecutionState
 import com.craftmind.app.presentation.builds.BuildRefinementEvent
 import com.craftmind.app.presentation.builds.BuildRefinementState
 import com.craftmind.app.presentation.builds.BuildsScreen
@@ -79,6 +81,8 @@ fun CraftMindApp(
     buildsState: BuildsState,
     refinementState: BuildRefinementState,
     onRefinementEvent: (BuildRefinementEvent) -> Unit,
+    executionState: BuildExecutionState,
+    onExecutionEvent: (BuildExecutionEvent) -> Unit,
 ) {
     var selectedRoute by rememberSaveable { mutableStateOf(MainDestination.HOME.route) }
     var reviewContent by remember { mutableStateOf<PlanReviewContent?>(null) }
@@ -99,6 +103,9 @@ fun CraftMindApp(
     BackHandler(enabled = reviewContent != null || destination != MainDestination.HOME) {
         if (reviewContent != null) {
             if (refinementState is BuildRefinementState.Generating) onRefinementEvent(BuildRefinementEvent.Cancel)
+            if (executionState.flow is com.craftmind.app.presentation.builds.BuildExecutionFlow.PreviewReady) {
+                onExecutionEvent(BuildExecutionEvent.DismissPreview)
+            }
             reviewContent = null
             onRefinementEvent(BuildRefinementEvent.DismissResult)
         } else {
@@ -215,6 +222,9 @@ fun CraftMindApp(
             versions = history,
             refinementState = refinementState,
             onRefinementEvent = onRefinementEvent,
+            bridgeState = bridgePairingState,
+            executionState = executionState,
+            onExecutionEvent = onExecutionEvent,
             onDismiss = {
                 reviewContent = null
                 onRefinementEvent(BuildRefinementEvent.DismissResult)
