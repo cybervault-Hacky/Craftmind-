@@ -7,15 +7,18 @@ import java.util.Set;
 
 /** Stable protocol constants shared by the Android app and the Fabric server mod. */
 public final class BridgeProtocol {
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     public static final int BUILD_PLAN_SCHEMA_VERSION = 2;
     public static final int MAX_CONTROL_MESSAGE_BYTES = 64 * 1024;
     public static final int MAX_EXECUTION_REQUEST_BYTES = 1024 * 1024;
+    public static final int MIN_EXECUTION_REQUEST_BYTES = 1024;
     public static final int MAX_DIMENSION_WIDTH = 96;
     public static final int MAX_DIMENSION_HEIGHT = 64;
     public static final int MAX_DIMENSION_DEPTH = 96;
     public static final int MAX_COMPONENTS = 64;
     public static final int MAX_OPERATIONS = 4096;
+    public static final int MAX_OPERATIONS_PER_TICK = 64;
+    public static final int MAX_EXECUTION_SECONDS = 900;
     public static final int MAX_BLOCK_STATE_PROPERTIES = 8;
     public static final int MAX_REQUEST_ID_LENGTH = 64;
     public static final int MAX_BRIDGE_ID_LENGTH = 80;
@@ -50,6 +53,8 @@ public final class BridgeProtocol {
         INVALID_BUILD_REQUEST,
         UNSUPPORTED_BUILD_PLAN_SCHEMA,
         INVALID_BUILD_PLAN,
+        UNSUPPORTED_BLOCK,
+        UNSUPPORTED_BLOCK_STATE,
         BUILD_TOO_LARGE,
         UNSUPPORTED_ORIGIN,
         LIMIT_EXCEEDED,

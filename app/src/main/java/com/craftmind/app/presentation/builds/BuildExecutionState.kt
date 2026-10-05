@@ -26,6 +26,7 @@ sealed interface BuildExecutionFlow {
         val reasonCode: String,
         val retryPrepare: Boolean = false,
         val retrySameId: Boolean = false,
+        val detailMessage: String? = null,
     ) : BuildExecutionFlow
 }
 

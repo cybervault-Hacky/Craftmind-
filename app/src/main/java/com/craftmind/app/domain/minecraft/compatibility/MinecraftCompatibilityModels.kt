@@ -70,7 +70,7 @@ object MinecraftLoaderSerializer : KSerializer<MinecraftLoader> {
     override fun deserialize(decoder: Decoder): MinecraftLoader = MinecraftLoader.fromWire(decoder.decodeString())
 }
 
-/** Explicit abilities. Static adapter abilities and authenticated server-reported abilities are resolved separately. */
+/** Explicit ability vocabulary. Execution negotiation uses only values reported by the authenticated bridge. */
 @Serializable(with = MinecraftCapabilitySerializer::class)
 enum class MinecraftCapability(val wireValue: String, val displayName: String) {
     WORLD_ACCESS("WORLD_ACCESS", "World access"),
@@ -214,64 +214,66 @@ object MinecraftVersionSerializer : KSerializer<MinecraftVersion> {
 
 @Serializable
 data class MinecraftRuntimeDescriptor(
+    /** App version echoed by the authenticated capabilities request; it is not a server-reported runtime version. */
+    val appVersion: String? = null,
     val edition: MinecraftEdition = MinecraftEdition.UNKNOWN,
     val version: MinecraftVersion = MinecraftVersion.UNKNOWN,
+    val javaRuntimeMajor: Int? = null,
     val loader: MinecraftLoader = MinecraftLoader.UNKNOWN,
     val loaderVersion: String? = null,
+    /** Runtime-reported Fabric API version; null for loaders that do not use Fabric API. */
+    val fabricApiVersion: String? = null,
     val bridgeProtocolVersion: Int? = null,
     val bridgeVersion: String? = null,
-    /** Null when the bridge protocol does not report the server JVM. */
-    val javaRuntimeMajor: Int? = null,
-    /** Runtime-reported capabilities only; adapter-provided capabilities are added during resolution. */
+    /** Only capabilities reported by the authenticated Minecraft-side bridge. */
     val capabilities: Set<MinecraftCapability> = emptySet(),
     val supportedBuildPlanSchemaVersions: Set<Int> = emptySet(),
     val maximumValidatedOperations: Int? = null,
     val maximumRequestBytes: Int? = null,
+    val maximumOperationsPerTick: Int? = null,
+    val maximumExecutionSeconds: Int? = null,
     val worldAvailable: Boolean = false,
     val operatorOriginAvailable: Boolean = false,
 ) {
     companion object {
-        /** Maps protocol-v1 fields without changing the existing bridge wire schema. */
-        fun fromBridgeV1(
-            bridgeProtocolVersion: Int,
-            bridgeVersion: String,
+        /** Maps the authenticated protocol-v2 runtime report; no Java/API values are inferred by the app. */
+        fun fromBridgeV2(
+            appVersion: String?,
+            editionName: String,
             minecraftVersion: String,
+            javaRuntimeMajor: Int,
             loaderName: String,
             loaderVersion: String,
-            worldAccess: Boolean,
-            constructionExecute: Boolean,
-            cancellation: Boolean,
+            fabricApiVersion: String?,
+            bridgeProtocolVersion: Int,
+            bridgeVersion: String,
+            reportedCapabilities: Set<MinecraftCapability>,
+            supportedBuildPlanSchemaVersions: Set<Int>,
             maximumValidatedOperations: Int,
             maximumRequestBytes: Int,
-            supportedBuildPlanSchemaVersions: Set<Int>,
+            maximumOperationsPerTick: Int,
+            maximumExecutionSeconds: Int,
+            worldAvailable: Boolean,
             operatorOriginAvailable: Boolean,
-        ): MinecraftRuntimeDescriptor {
-            val loader = MinecraftLoader.fromWire(loaderName)
-            val capabilities = buildSet {
-                if (worldAccess) add(MinecraftCapability.WORLD_ACCESS)
-                if (constructionExecute) {
-                    add(MinecraftCapability.BUILD_EXECUTION)
-                    add(MinecraftCapability.BLOCK_PLACEMENT)
-                }
-                if (cancellation) add(MinecraftCapability.CANCELLATION)
-                if (operatorOriginAvailable) add(MinecraftCapability.ORIGIN_RESOLUTION)
-                if (2 in supportedBuildPlanSchemaVersions) add(MinecraftCapability.BUILD_PLAN_V2)
-            }
-            return MinecraftRuntimeDescriptor(
-                edition = loader.edition,
-                version = MinecraftVersion.parse(minecraftVersion),
-                loader = loader,
-                loaderVersion = loaderVersion,
-                bridgeProtocolVersion = bridgeProtocolVersion,
-                bridgeVersion = bridgeVersion,
-                capabilities = capabilities,
-                supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions,
-                maximumValidatedOperations = maximumValidatedOperations,
-                maximumRequestBytes = maximumRequestBytes,
-                worldAvailable = worldAccess,
-                operatorOriginAvailable = operatorOriginAvailable,
-            )
-        }
+        ): MinecraftRuntimeDescriptor = MinecraftRuntimeDescriptor(
+            appVersion = appVersion,
+            edition = MinecraftEdition.fromWire(editionName),
+            version = MinecraftVersion.parse(minecraftVersion),
+            javaRuntimeMajor = javaRuntimeMajor,
+            loader = MinecraftLoader.fromWire(loaderName),
+            loaderVersion = loaderVersion,
+            fabricApiVersion = fabricApiVersion,
+            bridgeProtocolVersion = bridgeProtocolVersion,
+            bridgeVersion = bridgeVersion,
+            capabilities = reportedCapabilities,
+            supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions,
+            maximumValidatedOperations = maximumValidatedOperations,
+            maximumRequestBytes = maximumRequestBytes,
+            maximumOperationsPerTick = maximumOperationsPerTick,
+            maximumExecutionSeconds = maximumExecutionSeconds,
+            worldAvailable = worldAvailable,
+            operatorOriginAvailable = operatorOriginAvailable,
+        )
     }
 }
 
@@ -282,37 +284,61 @@ data class MinecraftDimensionLimits(
     val depth: Int,
 )
 
-/** One exact adapter-owned profile; version fields are matched literally, never by range or nearest version. */
+@Serializable
+data class JavaRuntimeRequirement(
+    /** Preferred/certified runtime major recorded by this compatibility profile. */
+    val requiredMajor: Int,
+    val minimumSupportedMajor: Int,
+    val maximumSupportedMajor: Int,
+) {
+    init {
+        require(requiredMajor > 0 && minimumSupportedMajor > 0 && maximumSupportedMajor >= minimumSupportedMajor)
+        require(requiredMajor in minimumSupportedMajor..maximumSupportedMajor)
+    }
+
+    fun supports(actualMajor: Int): Boolean = actualMajor in minimumSupportedMajor..maximumSupportedMajor
+
+    internal fun overlaps(other: JavaRuntimeRequirement): Boolean =
+        minimumSupportedMajor <= other.maximumSupportedMajor && other.minimumSupportedMajor <= maximumSupportedMajor
+}
+
+/** One exact runtime identity; Java and API constraints are explicit rather than inferred from Minecraft version. */
 @Serializable
 data class SupportedMinecraftRuntimeDescriptor(
+    val adapterId: MinecraftAdapterId,
     val edition: MinecraftEdition,
     val version: MinecraftVersion,
     val loader: MinecraftLoader,
     val loaderVersion: String,
     val bridgeProtocolVersion: Int,
     val bridgeVersion: String,
-    /** Build/mod dependency requirement only when protocol metadata does not report this runtime library. */
-    val requiredPlatformApiVersion: String? = null,
+    val javaRuntimeRequirement: JavaRuntimeRequirement? = null,
+    val requiredFabricApiVersion: String? = null,
     val supportStatus: MinecraftCompatibilityStatus = MinecraftCompatibilityStatus.SUPPORTED,
-    val javaToolchainMajor: Int? = null,
     val maximumValidatedOperations: Int,
     val maximumRequestBytes: Int,
+    val maximumOperationsPerTick: Int,
+    val maximumExecutionSeconds: Int,
     val maximumDimensions: MinecraftDimensionLimits,
 ) {
+    fun matchesRuntimeIdentity(runtime: MinecraftRuntimeDescriptor): Boolean =
+        runtime.edition == edition && runtime.version == version && runtime.loader == loader &&
+            runtime.loaderVersion == loaderVersion && runtime.bridgeProtocolVersion == bridgeProtocolVersion &&
+            runtime.bridgeVersion == bridgeVersion
+
     fun matches(runtime: MinecraftRuntimeDescriptor): Boolean =
-        runtime.edition == edition &&
-            runtime.version == version &&
-            runtime.loader == loader &&
-            runtime.loaderVersion == loaderVersion &&
-            runtime.bridgeProtocolVersion == bridgeProtocolVersion &&
-            runtime.bridgeVersion == bridgeVersion &&
-            (runtime.javaRuntimeMajor == null || javaToolchainMajor == null || runtime.javaRuntimeMajor == javaToolchainMajor)
+        matchesRuntimeIdentity(runtime) &&
+            (javaRuntimeRequirement == null || runtime.javaRuntimeMajor?.let(javaRuntimeRequirement::supports) == true) &&
+            (requiredFabricApiVersion == null || runtime.fabricApiVersion == requiredFabricApiVersion)
 
     internal fun hasSameRuntimeIdentity(other: SupportedMinecraftRuntimeDescriptor): Boolean =
         edition == other.edition && version == other.version && loader == other.loader &&
             loaderVersion == other.loaderVersion && bridgeProtocolVersion == other.bridgeProtocolVersion &&
             bridgeVersion == other.bridgeVersion &&
-            (javaToolchainMajor == null || other.javaToolchainMajor == null || javaToolchainMajor == other.javaToolchainMajor)
+            (javaRuntimeRequirement == null || other.javaRuntimeRequirement == null ||
+                javaRuntimeRequirement.overlaps(other.javaRuntimeRequirement)) &&
+            (requiredFabricApiVersion == null || other.requiredFabricApiVersion == null ||
+                requiredFabricApiVersion == other.requiredFabricApiVersion)
 }
 
 @Serializable
@@ -321,6 +347,26 @@ enum class MinecraftCompatibilityStatus {
     EXPERIMENTAL,
     UNSUPPORTED,
     UNKNOWN,
+}
+
+/** Stable machine-readable diagnostics; localized/user-readable explanations stay alongside each result. */
+@Serializable
+enum class MinecraftCompatibilityReasonCode(val displayName: String) {
+    UNKNOWN_RUNTIME_DESCRIPTOR("Runtime details are incomplete or unrecognized"),
+    INVALID_RUNTIME_DESCRIPTOR("Runtime details are inconsistent or invalid"),
+    UNSUPPORTED_MINECRAFT_VERSION("Minecraft version is not registered"),
+    UNSUPPORTED_LOADER("Minecraft loader is not registered"),
+    UNSUPPORTED_LOADER_VERSION("Loader version is not registered"),
+    INCOMPATIBLE_JAVA_RUNTIME("Server Java runtime is outside the profile's supported range"),
+    FABRIC_API_MISMATCH("Fabric API version does not match the registered profile"),
+    BRIDGE_PROTOCOL_MISMATCH("CraftMind Bridge protocol version does not match"),
+    BRIDGE_VERSION_MISMATCH("CraftMind Bridge version is not registered"),
+    MISSING_CAPABILITY("The server did not report a required capability"),
+    UNSUPPORTED_BUILDPLAN_SCHEMA("BuildPlan schema is not supported by this profile"),
+    PLAN_LIMIT_EXCEEDED("BuildPlan exceeds a runtime or adapter limit"),
+    AMBIGUOUS_ADAPTER_PROFILE("More than one adapter claims this runtime"),
+    UNSUPPORTED_BLOCK("The Minecraft server does not support a requested block"),
+    UNSUPPORTED_BLOCK_STATE("The Minecraft server does not support a requested block state"),
 }
 
 @JvmInline
@@ -374,18 +420,22 @@ data class MinecraftCompatibilityLimits(
     val maximumValidatedOperations: Int?,
     val maximumRequestBytes: Int?,
     val maximumDimensions: MinecraftDimensionLimits?,
-    val javaToolchainMajor: Int?,
+    val javaRuntimeRequirement: JavaRuntimeRequirement?,
+    val maximumOperationsPerTick: Int?,
+    val maximumExecutionSeconds: Int?,
 )
 
 data class MinecraftCompatibilityResult(
     val status: MinecraftCompatibilityStatus,
     val adapterId: MinecraftAdapterId?,
+    /** Capabilities reported by the authenticated bridge only. */
     val capabilities: Set<MinecraftCapability>,
     val missingCapabilities: Set<MinecraftCapability>,
     val reasons: List<String>,
     val warnings: List<String>,
     val limits: MinecraftCompatibilityLimits,
     val planWithinLimits: Boolean = true,
+    val reasonCodes: Set<MinecraftCompatibilityReasonCode> = emptySet(),
 ) {
     /** EXPERIMENTAL, UNKNOWN, missing capabilities, or failed limits can never authorize construction. */
     val canExecute: Boolean

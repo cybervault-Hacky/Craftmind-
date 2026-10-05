@@ -75,7 +75,7 @@ final class BridgeRuntime implements AutoCloseable {
                 this::capabilities, this::publicCapabilities, executionService);
         try {
             httpServer.start();
-            LOGGER.info("CraftMind Bridge server hooks ready; protocol 1, construction capability {}.",
+            LOGGER.info("CraftMind Bridge server hooks ready; protocol {}, construction capability {}.", BridgeProtocol.VERSION,
                     executionService != null && executionService.constructionAvailable() ? "available" : "disabled");
         } catch (Exception error) {
             httpServer.close();
@@ -160,10 +160,10 @@ final class BridgeRuntime implements AutoCloseable {
         result.worldAccess = worldAvailable;
         result.constructionExecute = execute;
         result.cancellation = execute;
-        result.maximumValidatedOperations = config.executionLimits().maxOperations();
-        result.maximumRequestBytes = config.executionLimits().maxRequestBytes();
         result.dimensionId = origin == null ? null : origin.dimensionId;
         result.worldSessionId = origin == null ? null : origin.worldSessionId;
+        result.supportedCapabilities = supportedCapabilities(worldAvailable, execute,
+                origin != null && worldSessionId != null);
         return result;
     }
 
@@ -172,10 +172,9 @@ final class BridgeRuntime implements AutoCloseable {
         result.worldAccess = false;
         result.constructionExecute = false;
         result.cancellation = false;
-        result.maximumValidatedOperations = config.executionLimits().maxOperations();
-        result.maximumRequestBytes = config.executionLimits().maxRequestBytes();
         result.dimensionId = null;
         result.worldSessionId = null;
+        result.supportedCapabilities = supportedCapabilities(false, false, false);
         return result;
     }
 
@@ -185,12 +184,39 @@ final class BridgeRuntime implements AutoCloseable {
         result.bridgeId = identity.bridgeId();
         result.identityFingerprint = identity.fingerprint();
         result.bridgeVersion = modVersion();
-        result.minecraftVersion = "1.20.1";
+        result.edition = "java";
+        result.minecraftVersion = modVersion("minecraft");
+        result.javaRuntimeMajor = Runtime.version().feature();
         result.loaderName = "Fabric";
         result.loaderVersion = modVersion("fabricloader");
+        result.fabricApiVersion = optionalModVersion("fabric-api");
+        result.maximumValidatedOperations = config.executionLimits().maxOperations();
+        result.maximumRequestBytes = config.executionLimits().maxRequestBytes();
+        result.maximumOperationsPerTick = config.executionLimits().operationsPerTick();
+        result.maximumExecutionSeconds = config.executionLimits().maxExecutionSeconds();
         result.supportedBuildPlanSchemaVersions = new ArrayList<>();
         result.supportedBuildPlanSchemaVersions.add(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION);
         return result;
+    }
+
+    private List<String> supportedCapabilities(boolean worldAvailable, boolean execute, boolean originAvailable) {
+        List<String> capabilities = new ArrayList<>();
+        if (worldAvailable) {
+            capabilities.add("WORLD_ACCESS");
+            capabilities.add("WORLD_VALIDATION");
+        }
+        if (execute) {
+            capabilities.add("BUILD_EXECUTION");
+            capabilities.add("BLOCK_PLACEMENT");
+            capabilities.add("BLOCK_STATE_SUPPORT");
+            capabilities.add("STRUCTURE_BATCHING");
+            capabilities.add("PROGRESS_REPORTING");
+            capabilities.add("BUILD_STATUS");
+            capabilities.add("CANCELLATION");
+        }
+        if (originAvailable) capabilities.add("ORIGIN_RESOLUTION");
+        if (BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION == 2) capabilities.add("BUILD_PLAN_V2");
+        return capabilities;
     }
 
     private String modVersion() {
@@ -202,5 +228,12 @@ final class BridgeRuntime implements AutoCloseable {
                 .map(ModContainer::getMetadata)
                 .map(metadata -> metadata.getVersion().getFriendlyString())
                 .orElse("unknown");
+    }
+
+    private String optionalModVersion(String modId) {
+        return FabricLoader.getInstance().getModContainer(modId)
+                .map(ModContainer::getMetadata)
+                .map(metadata -> metadata.getVersion().getFriendlyString())
+                .orElse(null);
     }
 }

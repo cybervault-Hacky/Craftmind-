@@ -43,7 +43,12 @@ public class BuildPlanContractValidatorTest {
         payload = request();
         payload.getAsJsonObject("buildPlan").getAsJsonArray("operations").get(0).getAsJsonObject()
                 .addProperty("blockId", "minecraft:command_block");
-        assertEquals(BridgeProtocol.ErrorCode.INVALID_BUILD_PLAN, validate(payload));
+        assertEquals(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK, validate(payload));
+        BuildPlanContractValidator.BlockValidationFailure blockFailure =
+                BuildPlanContractValidator.findBlockValidationFailure(payload, VANILLA_TEST_BLOCKS);
+        assertEquals(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK, blockFailure.reasonCode);
+        assertEquals(0, blockFailure.operationIndex);
+        assertEquals("minecraft:command_block", blockFailure.blockId);
 
         payload = request();
         JsonArray operations = payload.getAsJsonObject("buildPlan").getAsJsonArray("operations");
@@ -73,7 +78,13 @@ public class BuildPlanContractValidatorTest {
         payload = request();
         payload.getAsJsonObject("buildPlan").getAsJsonArray("operations").get(0).getAsJsonObject()
                 .getAsJsonObject("blockState").addProperty("facing", "north");
-        assertEquals(BridgeProtocol.ErrorCode.INVALID_BUILD_PLAN, validate(payload));
+        assertEquals(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE, validate(payload));
+        BuildPlanContractValidator.BlockValidationFailure stateFailure =
+                BuildPlanContractValidator.findBlockValidationFailure(payload, VANILLA_TEST_BLOCKS);
+        assertEquals(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE, stateFailure.reasonCode);
+        assertEquals(0, stateFailure.operationIndex);
+        assertEquals("minecraft:stone", stateFailure.blockId);
+        assertEquals(java.util.List.of("facing"), stateFailure.unsupportedStateProperties);
 
         payload = request();
         payload.getAsJsonObject("limits").addProperty("maxOperations", BridgeProtocol.MAX_OPERATIONS + 1);

@@ -55,7 +55,14 @@ final class BridgeExecutionService {
         BridgeProtocol.ErrorCode validation = BuildPlanContractValidator.validateExecutionPayload(
                 payload, bodyBytes, config.executionLimits().maxOperations(),
                 config.executionLimits().maxRequestBytes(), blockSupport);
-        if (validation != null) return ConstructionCoordinator.PrepareResult.rejected(validation.name());
+        if (validation != null) {
+            BuildPlanContractValidator.BlockValidationFailure blockFailure =
+                    validation == BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK ||
+                            validation == BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE
+                            ? BuildPlanContractValidator.findBlockValidationFailure(payload, blockSupport)
+                            : null;
+            return ConstructionCoordinator.PrepareResult.rejected(validation.name(), blockFailure);
+        }
 
         final BridgeExecutionRequest request;
         try {

@@ -30,15 +30,36 @@ public class BridgeProtocolCodecTest {
     @Test
     public void rejectsMalformedDuplicateKeysUnknownEnvelopeFieldsAndUnsupportedVersion() throws Exception {
         assertCode(BridgeProtocol.ErrorCode.MALFORMED_ENVELOPE,
-                "{\"protocolVersion\":1,\"protocolVersion\":1,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{}}",
+                "{\"protocolVersion\":2,\"protocolVersion\":2,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{}}",
                 BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES);
         assertCode(BridgeProtocol.ErrorCode.MALFORMED_ENVELOPE,
-                "{\"protocolVersion\":1,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{},\"extra\":true}",
+                "{\"protocolVersion\":2,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{},\"extra\":true}",
+                BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES);
+        assertCode(BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL,
+                "{\"protocolVersion\":1,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{}}",
                 BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES);
         assertCode(BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL,
                 "{\"protocolVersion\":9,\"messageType\":\"bridge.info.request\",\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"timestampEpochMillis\":1,\"correlationId\":null,\"payload\":{}}",
                 BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES);
         assertCode(BridgeProtocol.ErrorCode.MALFORMED_ENVELOPE, "not-json", BridgeProtocol.MAX_CONTROL_MESSAGE_BYTES);
+    }
+
+    @Test
+    public void serializesStructuredBlockRejectionDetailsWithinTheVersionedContract() {
+        ExecutionProtocol.RequestRejected rejected = new ExecutionProtocol.RequestRejected();
+        rejected.requestId = "d809d98d-d65c-4ce4-9312-0d73db43b52f";
+        rejected.reasonCode = BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE;
+        rejected.safeMessage = "The requested block state is unavailable or disallowed by this server.";
+        rejected.failedOperationIndex = 7;
+        rejected.blockId = "minecraft:oak_stairs";
+        rejected.unsupportedStateProperties.add("facing");
+
+        JsonObject payload = BridgeProtocolCodec.payload(rejected);
+
+        assertEquals(7, payload.get("failedOperationIndex").getAsInt());
+        assertEquals("minecraft:oak_stairs", payload.get("blockId").getAsString());
+        assertEquals("facing", payload.getAsJsonArray("unsupportedStateProperties").get(0).getAsString());
+        assertNotNull(payload.get("safeMessage"));
     }
 
     @Test

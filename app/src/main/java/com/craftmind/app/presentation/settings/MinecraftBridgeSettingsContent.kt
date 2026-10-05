@@ -120,15 +120,15 @@ internal fun MinecraftBridgeSettingsContent(
             val compatibility = state.compatibility
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
-                    "${runtime.edition.displayName} · Minecraft ${runtime.version.displayIdentifier}",
+                    "CraftMind app ${runtime.appVersion ?: "not echoed"} · ${runtime.edition.displayName} · Minecraft ${runtime.version.displayIdentifier}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    "Loader: ${runtime.loader.displayName} ${runtime.loaderVersion ?: "unknown"} · bridge ${runtime.bridgeVersion ?: "unknown"} · protocol ${runtime.bridgeProtocolVersion ?: "unknown"}",
+                    "Loader: ${runtime.loader.displayName} ${runtime.loaderVersion ?: "unknown"} · Fabric API ${runtime.fabricApiVersion ?: "not reported"} · bridge ${runtime.bridgeVersion ?: "unknown"} · protocol ${runtime.bridgeProtocolVersion ?: "unknown"}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
-                    "Server JVM: ${runtime.javaRuntimeMajor?.let { "Java $it" } ?: "not reported"} · adapter toolchain target: ${compatibility?.limits?.javaToolchainMajor?.let { "Java $it" } ?: "not matched"}",
+                    "Server JVM reported by bridge: ${runtime.javaRuntimeMajor?.let { "Java $it" } ?: "not reported"} · registered profile requirement: ${compatibility?.limits?.javaRuntimeRequirement?.let { "Java ${it.requiredMajor} (supported ${it.minimumSupportedMajor}–${it.maximumSupportedMajor})" } ?: "not matched"}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
@@ -140,22 +140,21 @@ internal fun MinecraftBridgeSettingsContent(
                 )
                 Text("Adapter: ${compatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Runtime-reported capabilities: ${runtime.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
+                    "Capabilities reported by the authenticated bridge: ${runtime.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 compatibility?.let { result ->
-                    Text(
-                        "Adapter/runtime capabilities: ${result.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                     Text(
                         "Missing capabilities: ${result.missingCapabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "Available limits: ${result.limits.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${result.limits.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${result.limits.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth} blocks" } ?: "dimension limit unknown"}",
+                        "Available limits: ${result.limits.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${result.limits.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${result.limits.maximumOperationsPerTick?.let { "$it operations/tick" } ?: "per-tick limit unknown"} · ${result.limits.maximumExecutionSeconds?.let { "$it seconds" } ?: "execution timeout unknown"} · ${result.limits.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth} blocks" } ?: "dimension limit unknown"}",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    result.reasonCodes.sortedBy { it.name }.takeIf { it.isNotEmpty() }?.let { codes ->
+                        Text("Structured reasons: ${codes.joinToString { it.name }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                    }
                     result.warnings.forEach { warning ->
                         Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }

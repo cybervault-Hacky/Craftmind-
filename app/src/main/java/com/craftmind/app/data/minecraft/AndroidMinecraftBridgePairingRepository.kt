@@ -1,6 +1,7 @@
 package com.craftmind.app.data.minecraft
 
 import android.content.Context
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.buildplan.BlockBounds
 import com.craftmind.app.domain.buildplan.BlockPosition
 import com.craftmind.app.domain.buildplan.BuildPlan
@@ -10,6 +11,7 @@ import com.craftmind.app.domain.buildplan.BuildStatus
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.BridgeCapabilitiesSnapshot
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
+import com.craftmind.app.domain.minecraft.MinecraftBlockRejectionDetails
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
 import com.craftmind.app.domain.minecraft.MinecraftCancellationResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
@@ -19,6 +21,7 @@ import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.failureReasonCode
 import com.craftmind.bridge.protocol.BridgeCrypto
@@ -273,7 +276,7 @@ class AndroidMinecraftBridgePairingRepository(
                 withContext(Dispatchers.IO) {
                     val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
                     if (session.expiresAtEpochMillis <= System.currentTimeMillis()) fail("AUTH_SESSION_EXPIRED")
-                    val body = createEnvelope("capabilities.request", JsonObject())
+                    val body = createEnvelope("capabilities.request", capabilitiesRequestPayload())
                     try {
                         val response = postAuthenticated(session, CAPABILITIES_PATH, body)
                         requireResponse(response, body.requestId, "capabilities.response")
@@ -489,7 +492,7 @@ class AndroidMinecraftBridgePairingRepository(
                     fail("AUTH_SESSION_INVALID")
                 }
                 val active = ActiveSession(endpoint, profile, sessionId, sessionExpires, authenticatedAtEpochMillis = issuedAt)
-                val requestBody = createEnvelope("capabilities.request", JsonObject())
+                val requestBody = createEnvelope("capabilities.request", capabilitiesRequestPayload())
                 try {
                     val capabilitiesResponse = postAuthenticated(active, CAPABILITIES_PATH, requestBody)
                     requireResponse(capabilitiesResponse, requestBody.requestId, "capabilities.response")
@@ -519,76 +522,8 @@ class AndroidMinecraftBridgePairingRepository(
         }
     }
 
-    private fun readCapabilities(payload: JsonObject, expectedProfile: TrustedMinecraftBridge?): BridgeCapabilitiesSnapshot {
-        BridgeProtocolCodec.requireExactKeys(
-            payload,
-            "protocolVersion", "bridgeId", "identityFingerprint", "bridgeVersion", "minecraftVersion",
-            "loaderName", "loaderVersion", "worldAccess", "constructionExecute", "cancellation",
-            "maximumValidatedOperations", "maximumRequestBytes", "supportedBuildPlanSchemaVersions",
-            "dimensionId", "worldSessionId",
-        )
-        val protocolVersion = BridgeProtocolCodec.requiredInt(payload, "protocolVersion")
-        val bridgeId = BridgeProtocolCodec.requiredString(payload, "bridgeId", 80)
-        val fingerprint = BridgeCrypto.normalizeFingerprint(
-            BridgeProtocolCodec.requiredString(payload, "identityFingerprint", 95),
-        )
-        val bridgeVersion = BridgeProtocolCodec.requiredString(payload, "bridgeVersion", 64)
-        val minecraftVersion = BridgeProtocolCodec.requiredString(payload, "minecraftVersion", 48)
-        val loaderName = BridgeProtocolCodec.requiredString(payload, "loaderName", 32)
-        val loaderVersion = BridgeProtocolCodec.requiredString(payload, "loaderVersion", 64)
-        val worldAccess = BridgeProtocolCodec.requiredBoolean(payload, "worldAccess")
-        val constructionExecute = BridgeProtocolCodec.requiredBoolean(payload, "constructionExecute")
-        val cancellation = BridgeProtocolCodec.requiredBoolean(payload, "cancellation")
-        val maxOperations = BridgeProtocolCodec.requiredInt(payload, "maximumValidatedOperations")
-        val maxRequestBytes = BridgeProtocolCodec.requiredInt(payload, "maximumRequestBytes")
-        val dimensionId = BridgeProtocolCodec.nullableString(payload, "dimensionId", 130)
-        val worldSessionId = BridgeProtocolCodec.nullableString(payload, "worldSessionId", 128)
-        val validDimension = dimensionId == null || dimensionId.matches(Regex("[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,64}"))
-        val validWorldSession = worldSessionId == null || worldSessionId.matches(Regex("[A-Za-z0-9_-]{1,128}"))
-        val validRuntimeVersion = minecraftVersion.matches(MINECRAFT_VERSION_TOKEN_PATTERN)
-        val validLoaderName = loaderName.matches(LOADER_NAME_PATTERN)
-        val validLoaderVersion = loaderVersion.matches(VERSION_TOKEN_PATTERN)
-        val validBridgeVersion = bridgeVersion.matches(VERSION_TOKEN_PATTERN)
-        if (protocolVersion !in 1..64 || !bridgeId.matches(BRIDGE_ID_PATTERN) || fingerprint.isEmpty() ||
-            !validRuntimeVersion || !validLoaderName || !validLoaderVersion || !validBridgeVersion ||
-            maxOperations !in 0..BridgeProtocol.MAX_OPERATIONS ||
-            maxRequestBytes !in 0..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES || !validDimension || !validWorldSession) {
-            fail("BRIDGE_CAPABILITIES_INVALID")
-        }
-        val versionsElement = payload.get("supportedBuildPlanSchemaVersions")
-        if (versionsElement == null || !versionsElement.isJsonArray) fail("BRIDGE_CAPABILITIES_INVALID")
-        val versions = (versionsElement as JsonArray).map { item ->
-            if (!item.isJsonPrimitive || !item.asJsonPrimitive.isNumber) fail("BRIDGE_CAPABILITIES_INVALID")
-            try {
-                BridgeProtocolCodec.requiredInt(JsonObject().apply { add("version", item) }, "version")
-                    .also { if (it <= 0) fail("BRIDGE_CAPABILITIES_INVALID") }
-            } catch (_: BridgeProtocolException) {
-                fail("BRIDGE_CAPABILITIES_INVALID")
-            }
-        }
-        if (versions.size > 8) fail("BRIDGE_CAPABILITIES_INVALID")
-        if (expectedProfile != null && (bridgeId != expectedProfile.bridgeId ||
-                fingerprint != BridgeCrypto.normalizeFingerprint(expectedProfile.tlsFingerprint))) {
-            fail("BRIDGE_IDENTITY_CHANGED")
-        }
-        return BridgeCapabilitiesSnapshot(
-            protocolVersion = protocolVersion,
-            bridgeId = bridgeId,
-            identityFingerprint = BridgeCrypto.formatFingerprint(fingerprint),
-            bridgeVersion = bridgeVersion,
-            minecraftVersion = minecraftVersion,
-            loaderName = loaderName,
-            loaderVersion = loaderVersion,
-            worldAccess = worldAccess,
-            constructionExecute = constructionExecute,
-            cancellation = cancellation,
-            maximumValidatedOperations = maxOperations,
-            maximumRequestBytes = maxRequestBytes,
-            supportedBuildPlanSchemaVersions = versions,
-            dimensionId = dimensionId,
-            worldSessionId = worldSessionId,
-        )
-    }
+    private fun readCapabilities(payload: JsonObject, expectedProfile: TrustedMinecraftBridge?): BridgeCapabilitiesSnapshot =
+        BridgeCapabilitiesWireCodec.read(payload, expectedProfile)
 
     private fun executionRequestPayload(
         record: LocalBuildRecord,
@@ -805,12 +740,52 @@ class AndroidMinecraftBridgePairingRepository(
     }
 
     private fun readRejected(payload: JsonObject, expectedExecutionId: String): MinecraftBridgeFailure {
-        BridgeProtocolCodec.requireExactKeys(payload, "requestId", "reasonCode", "safeMessage")
+        BridgeProtocolCodec.requireExactKeys(
+            payload, "requestId", "reasonCode", "safeMessage", "failedOperationIndex", "blockId", "unsupportedStateProperties",
+        )
         if (BridgeProtocolCodec.requiredString(payload, "requestId", 64) != expectedExecutionId) fail("BRIDGE_RESPONSE_MISMATCH")
         val reason = BridgeProtocolCodec.requiredString(payload, "reasonCode", 64)
         if (!ERROR_CODE_PATTERN.matches(reason)) fail("BRIDGE_RESPONSE_INVALID")
-        BridgeProtocolCodec.requiredString(payload, "safeMessage", 256)
-        return MinecraftBridgeFailure(reason)
+        val safeMessage = BridgeProtocolCodec.requiredString(payload, "safeMessage", 256)
+        val failedOperationIndex = nullableBoundedInt(payload, "failedOperationIndex", 0, BridgeProtocol.MAX_OPERATIONS - 1)
+        val blockId = BridgeProtocolCodec.nullableString(payload, "blockId", 160)
+        val stateElement = payload.get("unsupportedStateProperties")
+        if (stateElement == null || !stateElement.isJsonArray || stateElement.asJsonArray.size() > BridgeProtocol.MAX_BLOCK_STATE_PROPERTIES) {
+            fail("BRIDGE_RESPONSE_INVALID")
+        }
+        val stateProperties = stateElement.asJsonArray.map { item ->
+            if (!item.isJsonPrimitive || !item.asJsonPrimitive.isString) fail("BRIDGE_RESPONSE_INVALID")
+            BridgeProtocolCodec.requiredString(JsonObject().apply { add("value", item) }, "value", 64)
+                .also { if (!STATE_PROPERTY_PATTERN.matches(it)) fail("BRIDGE_RESPONSE_INVALID") }
+        }
+        if (stateProperties.toSet().size != stateProperties.size) fail("BRIDGE_RESPONSE_INVALID")
+        val hasBlockDetails = failedOperationIndex != null || blockId != null || stateProperties.isNotEmpty()
+        val blockRejection = when (reason) {
+            "UNSUPPORTED_BLOCK", "UNSUPPORTED_BLOCK_STATE" -> {
+                if (failedOperationIndex == null || blockId == null || !BLOCK_IDENTIFIER_PATTERN.matches(blockId) ||
+                    (reason == "UNSUPPORTED_BLOCK" && stateProperties.isNotEmpty())) {
+                    fail("BRIDGE_RESPONSE_INVALID")
+                }
+                MinecraftBlockRejectionDetails(failedOperationIndex, blockId, stateProperties)
+            }
+            else -> {
+                if (hasBlockDetails) fail("BRIDGE_RESPONSE_INVALID")
+                null
+            }
+        }
+        return MinecraftBridgeFailure(reason, safeMessage, blockRejection)
+    }
+
+    private fun nullableBoundedInt(objectValue: JsonObject, key: String, minimum: Int, maximum: Int): Int? {
+        val element = objectValue.get(key) ?: fail("BRIDGE_RESPONSE_INVALID")
+        if (element.isJsonNull) return null
+        val value = try {
+            BridgeProtocolCodec.requiredInt(JsonObject().apply { add("value", element) }, "value")
+        } catch (_: BridgeProtocolException) {
+            fail("BRIDGE_RESPONSE_INVALID")
+        }
+        if (value !in minimum..maximum) fail("BRIDGE_RESPONSE_INVALID")
+        return value
     }
 
     private fun verifyProfileIdentity(profile: TrustedMinecraftBridge, info: BridgeCapabilitiesSnapshot) {
@@ -860,13 +835,17 @@ class AndroidMinecraftBridgePairingRepository(
         headers.forEach { (name, value) -> requestBuilder.header(name, value) }
         try {
             client.newCall(requestBuilder.build()).execute().use { response ->
+                if (response.code == 426) fail("BRIDGE_UPDATE_REQUIRED")
                 val responseBytes = response.body?.byteStream()?.let { it.readBounded(maximumResponseBytes) }
                     ?: fail("BRIDGE_EMPTY_RESPONSE")
                 try {
                     val envelope = try {
                         BridgeProtocolCodec.parseEnvelope(responseBytes, maximumResponseBytes)
                     } catch (error: BridgeProtocolException) {
-                        if (!response.isSuccessful) fail("BRIDGE_HTTP_${response.code}")
+                        if (!response.isSuccessful) {
+                            if (error.code == BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL) fail("BRIDGE_UPDATE_REQUIRED")
+                            fail("BRIDGE_HTTP_${response.code}")
+                        }
                         throw error
                     }
                     if (envelope.messageType == "protocol.error") {
@@ -874,6 +853,7 @@ class AndroidMinecraftBridgePairingRepository(
                             envelope.payload, "reasonCode", "safeMessage", "supportedProtocolVersions",
                         )
                         val code = BridgeProtocolCodec.requiredString(envelope.payload, "reasonCode", 64)
+                        if (code == BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL.name) fail("BRIDGE_UPDATE_REQUIRED")
                         fail(code.takeIf(ERROR_CODE_PATTERN::matches) ?: "BRIDGE_PROTOCOL_ERROR")
                     }
                     if (!response.isSuccessful) fail("BRIDGE_HTTP_${response.code}")
@@ -893,7 +873,8 @@ class AndroidMinecraftBridgePairingRepository(
         } catch (error: MinecraftBridgeFailure) {
             throw error
         } catch (error: BridgeProtocolException) {
-            throw MinecraftBridgeFailure(error.code.name)
+            val code = if (error.code == BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL) "BRIDGE_UPDATE_REQUIRED" else error.code.name
+            throw MinecraftBridgeFailure(code)
         } catch (error: Exception) {
             val code = when {
                 error.causes().any { it is SSLPeerUnverifiedException || it is CertificateException } -> "BRIDGE_IDENTITY_MISMATCH"
@@ -908,6 +889,10 @@ class AndroidMinecraftBridgePairingRepository(
         if (envelope.messageType != expectedType || envelope.correlationId != requestId) {
             fail("BRIDGE_RESPONSE_MISMATCH")
         }
+    }
+
+    private fun capabilitiesRequestPayload(): JsonObject = JsonObject().apply {
+        addProperty("clientAppVersion", BuildConfig.VERSION_NAME)
     }
 
     private fun createEnvelope(messageType: String, payload: JsonObject, timestamp: Long = System.currentTimeMillis()): EncodedEnvelope {
@@ -948,7 +933,9 @@ class AndroidMinecraftBridgePairingRepository(
 
     private fun Exception.asBridgeFailure(): MinecraftBridgeFailure = when (this) {
         is MinecraftBridgeFailure -> this
-        is BridgeProtocolException -> MinecraftBridgeFailure(code.name)
+        is BridgeProtocolException -> MinecraftBridgeFailure(
+            if (code == BridgeProtocol.ErrorCode.UNSUPPORTED_PROTOCOL) "BRIDGE_UPDATE_REQUIRED" else code.name,
+        )
         else -> MinecraftBridgeFailure(message?.takeIf(ERROR_CODE_PATTERN::matches) ?: "BRIDGE_OPERATION_FAILED")
     }
 
@@ -1090,10 +1077,8 @@ class AndroidMinecraftBridgePairingRepository(
         val BUILD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,80}")
         val RECORD_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,128}")
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-        val BRIDGE_ID_PATTERN = Regex("bridge-[0-9a-f]{32}")
-        val MINECRAFT_VERSION_TOKEN_PATTERN = Regex("[A-Za-z0-9._+/-]{1,48}")
-        val LOADER_NAME_PATTERN = Regex("[A-Za-z0-9 ._+-]{1,32}")
-        val VERSION_TOKEN_PATTERN = Regex("[A-Za-z0-9._+-]{1,64}")
         val ERROR_CODE_PATTERN = Regex("[A-Z][A-Z0-9_]{0,63}")
+        val BLOCK_IDENTIFIER_PATTERN = Regex("[a-z0-9_.-]{1,32}:[a-z0-9_./-]{1,127}")
+        val STATE_PROPERTY_PATTERN = Regex("[a-z0-9_]{1,64}")
     }
 }

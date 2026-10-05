@@ -6,12 +6,13 @@ import com.craftmind.app.domain.minecraft.MinecraftCancellationResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
 import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
+import com.craftmind.app.domain.buildplan.BuildPlanLimits
+import com.craftmind.bridge.protocol.BridgeProtocol
 
 /** Runtime-specific policy plus a thin mapping onto CraftMind's existing secure bridge contract. */
 interface MinecraftAdapter {
     val adapterId: MinecraftAdapterId
     val supportedRuntimeDescriptors: List<SupportedMinecraftRuntimeDescriptor>
-    val capabilities: Set<MinecraftCapability>
 
     /** Returns null unless this adapter exactly recognizes the runtime profile. */
     fun compatibilityCheck(
@@ -44,7 +45,12 @@ interface MinecraftAdapter {
 sealed interface MinecraftAdapterRegistrationResult {
     data object Registered : MinecraftAdapterRegistrationResult
     data class DuplicateAdapterId(val adapterId: MinecraftAdapterId) : MinecraftAdapterRegistrationResult
+    data class AdapterIdMismatch(val adapterId: MinecraftAdapterId, val profileAdapterId: MinecraftAdapterId) :
+        MinecraftAdapterRegistrationResult
+    data class EmptyRuntimeProfiles(val adapterId: MinecraftAdapterId) : MinecraftAdapterRegistrationResult
     data class DuplicateRuntimeProfile(val adapterId: MinecraftAdapterId, val existingAdapterId: MinecraftAdapterId) :
+        MinecraftAdapterRegistrationResult
+    data class InvalidRuntimeProfile(val adapterId: MinecraftAdapterId, val reason: String) :
         MinecraftAdapterRegistrationResult
 }
 
@@ -56,6 +62,21 @@ class MinecraftAdapterRegistry {
     fun register(adapter: MinecraftAdapter): MinecraftAdapterRegistrationResult {
         if (adapter.adapterId in adapters) {
             return MinecraftAdapterRegistrationResult.DuplicateAdapterId(adapter.adapterId)
+        }
+        if (adapter.supportedRuntimeDescriptors.isEmpty()) {
+            return MinecraftAdapterRegistrationResult.EmptyRuntimeProfiles(adapter.adapterId)
+        }
+        val invalidProfile = adapter.supportedRuntimeDescriptors.firstOrNull { it.adapterId != adapter.adapterId }
+        if (invalidProfile != null) {
+            return MinecraftAdapterRegistrationResult.AdapterIdMismatch(adapter.adapterId, invalidProfile.adapterId)
+        }
+        adapter.supportedRuntimeDescriptors.forEachIndexed { index, profile ->
+            invalidProfileReason(profile)?.let { reason ->
+                return MinecraftAdapterRegistrationResult.InvalidRuntimeProfile(adapter.adapterId, reason)
+            }
+            if (adapter.supportedRuntimeDescriptors.drop(index + 1).any(profile::hasSameRuntimeIdentity)) {
+                return MinecraftAdapterRegistrationResult.DuplicateRuntimeProfile(adapter.adapterId, adapter.adapterId)
+            }
         }
         val overlap = adapters.values.firstOrNull { existing ->
             existing.supportedRuntimeDescriptors.any { oldProfile ->
@@ -69,11 +90,45 @@ class MinecraftAdapterRegistry {
         return MinecraftAdapterRegistrationResult.Registered
     }
 
+    private fun invalidProfileReason(profile: SupportedMinecraftRuntimeDescriptor): String? = when {
+        profile.edition == MinecraftEdition.UNKNOWN || !profile.version.isKnown || profile.loader == MinecraftLoader.UNKNOWN ->
+            "edition, stable version, and loader must be explicit"
+        profile.loader.edition != profile.edition -> "edition and loader family are inconsistent"
+        profile.supportStatus !in setOf(MinecraftCompatibilityStatus.SUPPORTED, MinecraftCompatibilityStatus.EXPERIMENTAL) ->
+            "only implemented supported or explicitly experimental profiles may be registered"
+        !SAFE_VERSION.matches(profile.loaderVersion) || !SAFE_VERSION.matches(profile.bridgeVersion) ->
+            "loader and bridge versions must be bounded exact tokens"
+        profile.bridgeProtocolVersion != BridgeProtocol.VERSION -> "bridge protocol version is not supported by this app build"
+        profile.edition == MinecraftEdition.JAVA && profile.javaRuntimeRequirement == null ->
+            "Java runtime compatibility must be explicit"
+        profile.loader == MinecraftLoader.FABRIC && profile.requiredFabricApiVersion == null ->
+            "Fabric API compatibility must be explicit"
+        profile.requiredFabricApiVersion?.let { !SAFE_VERSION.matches(it) } == true ->
+            "Fabric API version must be a bounded exact token"
+        profile.maximumValidatedOperations !in 1..BridgeProtocol.MAX_OPERATIONS ->
+            "operation limit is outside the shared protocol bounds"
+        profile.maximumRequestBytes !in BridgeProtocol.MIN_EXECUTION_REQUEST_BYTES..BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES ->
+            "request limit is outside the shared protocol bounds"
+        profile.maximumOperationsPerTick !in 1..BridgeProtocol.MAX_OPERATIONS_PER_TICK ->
+            "per-tick limit is outside the shared protocol bounds"
+        profile.maximumExecutionSeconds !in 1..BridgeProtocol.MAX_EXECUTION_SECONDS ->
+            "execution timeout is outside the shared protocol bounds"
+        profile.maximumDimensions.width !in 1..BuildPlanLimits.MAX_BUILD_WIDTH ||
+            profile.maximumDimensions.height !in 1..BuildPlanLimits.MAX_BUILD_HEIGHT ||
+            profile.maximumDimensions.depth !in 1..BuildPlanLimits.MAX_BUILD_DEPTH ->
+            "dimension limits must remain within shared BuildPlan limits"
+        else -> null
+    }
+
     @Synchronized
     fun adapter(adapterId: MinecraftAdapterId?): MinecraftAdapter? = adapterId?.let(adapters::get)
 
     @Synchronized
     fun allAdapters(): List<MinecraftAdapter> = adapters.values.toList()
+
+    @Synchronized
+    fun allProfiles(): List<SupportedMinecraftRuntimeDescriptor> =
+        adapters.values.flatMap { it.supportedRuntimeDescriptors }
 
     @Synchronized
     internal fun compatibilityChecks(
@@ -82,9 +137,13 @@ class MinecraftAdapterRegistry {
     ): List<MinecraftCompatibilityResult> = adapters.values.mapNotNull { adapter ->
         adapter.compatibilityCheck(runtime, requirements)
     }
+
+    private companion object {
+        val SAFE_VERSION = Regex("[A-Za-z0-9._+-]{1,64}")
+    }
 }
 
-/** The only production adapter registered in Phase 9. Other editions/loaders remain explicit extension points. */
+/** The only production adapter currently registered. Other versions/loaders remain explicit, unsupported extension points. */
 object DefaultMinecraftCompatibility {
     internal val registry: MinecraftAdapterRegistry by lazy {
         MinecraftAdapterRegistry().apply {

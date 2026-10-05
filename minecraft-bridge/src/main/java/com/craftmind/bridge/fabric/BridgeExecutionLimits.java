@@ -9,9 +9,9 @@ public final class BridgeExecutionLimits {
     public static final int DEFAULT_MAX_OPERATIONS = BridgeProtocol.MAX_OPERATIONS;
     public static final int DEFAULT_MAX_REQUEST_BYTES = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES;
     public static final int DEFAULT_OPERATIONS_PER_TICK = 32;
-    public static final int MAX_OPERATIONS_PER_TICK = 64;
+    public static final int MAX_OPERATIONS_PER_TICK = BridgeProtocol.MAX_OPERATIONS_PER_TICK;
     public static final int DEFAULT_MAX_EXECUTION_SECONDS = 300;
-    public static final int MAX_EXECUTION_SECONDS = 900;
+    public static final int MAX_EXECUTION_SECONDS = BridgeProtocol.MAX_EXECUTION_SECONDS;
     public static final int MAX_PERSISTED_EXECUTIONS = 100;
     public static final int MAX_EXECUTION_STORE_BYTES = 256 * 1024;
     public static final long PREFLIGHT_LIFETIME_MILLIS = 120_000L;
@@ -25,7 +25,7 @@ public final class BridgeExecutionLimits {
 
     public BridgeExecutionLimits(int maxOperations, int maxRequestBytes, int operationsPerTick, int maxExecutionSeconds) {
         if (maxOperations < 1 || maxOperations > BridgeProtocol.MAX_OPERATIONS ||
-                maxRequestBytes < 1024 ||
+                maxRequestBytes < BridgeProtocol.MIN_EXECUTION_REQUEST_BYTES ||
                 maxRequestBytes > BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES ||
                 operationsPerTick < 1 || operationsPerTick > MAX_OPERATIONS_PER_TICK ||
                 maxExecutionSeconds < 1 || maxExecutionSeconds > MAX_EXECUTION_SECONDS) {

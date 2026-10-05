@@ -1,69 +1,68 @@
-# Universal Minecraft compatibility core
+# Multi-Version Java Edition Compatibility (Phase 10)
 
-## Scope and current status
+## Scope and support policy
 
-The compatibility core is a platform-independent domain layer used by the existing Android/bridge flow. It does not replace the AI BuildPlan pipeline, the secure bridge protocol, or the server-side construction coordinator. It chooses no runtime by proximity and performs no plan translation between editions or loaders.
+Phase 10 extends CraftMind's existing compatibility core and secure construction route. It does not replace the Android/Kotlin/Compose app, provider-backed AI, platform-neutral BuildPlan v2, BYOK storage, pairing, bridge execution, history/refinement, Phase 8 website, or release configuration.
 
-The production registry currently contains one adapter only:
+The central runtime-profile registry and adapter registry currently contain **one production profile only**:
 
-| Runtime field | Exact registered profile |
+| Field | Exact registered profile |
 | --- | --- |
-| Edition | Java Edition (inferred from the known Fabric loader family; protocol v1 has no edition field) |
+| Edition | Java Edition |
 | Minecraft | `1.20.1` |
+| Java runtime | Java `17` only (`17` required; supported range `17..17`) |
 | Loader | Fabric `0.16.10` |
-| Fabric API | `0.92.2+1.20.1` (existing mod dependency) |
-| CraftMind Bridge | `1.1.0` |
-| Bridge protocol | `1` |
+| Fabric API | `0.92.2+1.20.1` |
+| CraftMind Bridge | `1.2.0` |
+| Bridge protocol | `2` |
 | BuildPlan schema | `2` |
-| Java | Java 17 compile/toolchain target; protocol v1 does **not** report the running server JVM |
+| Shared limits | BuildPlan bounds plus the authenticated server's reported operation, request-byte, per-tick, and time limits |
 
-These are the registered/configured target values. `SUPPORTED` means the authenticated descriptor exactly matches a production adapter profile and the requested capabilities/limits are satisfied; it is not a claim that a successful Minecraft runtime or release build was exercised. Other Java versions, Bedrock, Legacy, Forge, NeoForge, Vanilla, snapshots, betas, and experimental profiles have no production adapter. The app may still pair with a bridge whose safe runtime metadata does not match, so it can report `UNSUPPORTED` or `UNKNOWN` without treating pairing as construction permission.
+The profile is a configured source-level target, not a claim of successful compilation, live server integration, Minecraft testing, or certification. The `SUPPORTED` resolver status means the bridge-reported identity exactly matches the registered profile; construction additionally requires all capabilities and plan/runtime limits, a successful independent live-server preflight, and separate explicit confirmation.
 
-## Domain types
+No production adapter is registered for other Minecraft or Java versions, Bedrock, Legacy, Forge, NeoForge, Vanilla, snapshots, betas, or experimental targets. Unknown, incomplete, unsupported, and ambiguous identities fail closed. There is no nearest-version fallback, Java-version inference, Fabric-through-another-loader route, BuildPlan substitution, or silent protocol downgrade.
 
-- `MinecraftEdition`: Java, Bedrock, Legacy, or Unknown.
-- `MinecraftVersion`: safe bounded identifier plus optional numeric components, qualifier, and channel (`RELEASE`, `PRE_RELEASE`, `SNAPSHOT`, `BETA`, `ALPHA`, `LEGACY`, `UNKNOWN`). It has no ordering operation. An adapter profile uses exact identifier equality; `1.20.2` is not treated as a compatible fallback for `1.20.1`.
-- `MinecraftLoader`: Fabric, Forge, NeoForge, Vanilla, Bedrock Native, or Unknown. Protocol-v1 edition inference recognizes only known JVM loader families; an unknown loader remains Unknown.
-- `MinecraftRuntimeDescriptor`: typed runtime/bridge fields, runtime-reported capability flags, schema versions, limits, and world/origin availability. It carries no provider credentials, pairing codes, private keys, or execution tokens.
-- `MinecraftCapability`: explicit capabilities such as build execution, block placement/state support, world validation/access, operator-origin resolution, bounded batching, progress/status, cancellation, BuildPlan v2, large builds, and multiple worlds. Only abilities implemented and substantiated by the adapter or authenticated bridge are made available; the current adapter does not claim large-build or multi-world support.
-- `BuildPlanRequirements`: derived from an existing BuildPlan in memory; schema and persisted BuildPlan shapes are unchanged. Every construction requires the base safe execution capabilities, and validated block-state support is additionally required only when the plan uses block-state properties. Operation count, dimensions, schema, and serialized byte limits are checked independently.
+## Runtime report and existing Bridge 1.1.0 installations
 
-Unknown enum/version inputs deserialize to safe `UNKNOWN` values. Bridge report parsing retains the existing exact protocol-v1 key set and identity checks, validates bounded identifiers and numeric limits, and no longer rejects a validly structured report merely because its runtime profile is not supported. A malformed identity, report structure, TLS pin, envelope, or authenticated session still fails closed.
+Authenticated protocol v2 distinguishes the CraftMind app version, bridge mod version, wire-protocol version, edition, Minecraft version, actual server Java feature version, loader/version, loaded Fabric API version, supported BuildPlan schemas, implemented capabilities, current world/origin availability, and bounded execution limits. The Android app sends its `BuildConfig.VERSION_NAME` in the signed capabilities request and requires the bridge to echo that exact value; this app-supplied value is not represented as a server runtime measurement. The Android app validates the exact bounded wire shape and internal consistency before resolution. It does not infer Java from Gradle toolchains or infer Fabric API from dependency declarations.
 
-## Resolver and registry contract
+A paired **CraftMind Bridge 1.1.0 / protocol 1** installation must be upgraded together with the Android app to the matching app plus Bridge `1.2.0` / protocol `2` before use. The Android client rejects the old envelope with an update-required error; it does not parse missing Java/Fabric API fields as defaults or attempt a v1 downgrade. The saved TLS pin, pairing record, device Keystore identity, and server trusted-client record are retained. After updating the app and existing server mod, reconnect using the same saved pairing; no new identity or competing bridge is required. Pairing and runtime compatibility remain separate concepts.
 
-`MinecraftAdapterRegistry` rejects duplicate adapter IDs and overlapping exact runtime profiles. `MinecraftCompatibilityResolver` evaluates only registered `supportedRuntimeDescriptors`; there is no default adapter, first-match fallback, semantic-version range, downgrade, or conversion.
+## Central types and resolver
 
-A compatibility result contains:
+- `MinecraftVersion` parses safe bounded release, prerelease, snapshot, beta, alpha, and legacy identifiers. It is not used for range ordering; profiles match exact version strings.
+- `MinecraftRuntimeDescriptor` carries only bridge-reported runtime and capability data. Missing or malformed Java/Fabric API/runtime fields remain unknown or invalid; no profile selection is allowed from incomplete data.
+- `JavaRuntimeRequirement` makes the profile's required and supported Java majors explicit.
+- `MinecraftRuntimeProfileRegistry` is the central list of production profile identities. `MinecraftAdapterRegistry` binds each profile to one adapter ID and rejects empty, invalid, mismatched, duplicate, or overlapping registrations. The resolver blocks ambiguous matches rather than choosing by registration order.
+- `MinecraftCompatibilityReasonCode` provides stable diagnostic categories for unsupported Minecraft/loader/bridge profiles, Java/API mismatch, missing capability, unsupported schema, limits, malformed/incomplete metadata, and ambiguous profiles. Human-readable reasons accompany those codes.
+- `BuildPlanRequirements` is derived from the saved BuildPlan. BuildPlan v2 remains platform-neutral; block-state support is additionally required only when requested states are present.
 
-- `SUPPORTED`, `EXPERIMENTAL`, `UNSUPPORTED`, or `UNKNOWN`;
-- the selected adapter ID, when exactly one adapter profile matches;
-- available and missing capabilities;
-- reasons and warnings;
-- effective operation/request/dimension limits and Java toolchain metadata;
-- whether this plan is within the selected limits and whether it can proceed.
+Capability negotiation uses **only capabilities reported by the authenticated bridge**. The adapter contributes no unreported dynamic capabilities. A bridge report that omits a required capability can still identify a known runtime profile, but the compatibility result cannot authorize construction. The server independently validates all requests against its current configuration and live Minecraft registries.
 
-A missing authenticated runtime capability can leave the runtime status `SUPPORTED` while making `canExecute` false. An experimental result can never authorize construction. A known Bedrock/Legacy/other Java runtime with no registered adapter is unsupported; incomplete or unrecognized metadata is unknown. Multiple adapter claims are treated as ambiguous and blocked.
+## Authoritative block and state validation
 
-## Adapter boundary and secure execution
+The existing server-side `BuildPlanContractValidator.BlockSupport` remains the extension seam for block/state support, and production preflight continues to use the live server registry. Syntactically malformed IDs, state objects, values, or oversized lists remain invalid-plan errors. Well-formed but unavailable/disallowed block IDs return `UNSUPPORTED_BLOCK`; well-formed but unavailable/disallowed state selections return `UNSUPPORTED_BLOCK_STATE`.
 
-`MinecraftAdapter` defines adapter identity, exact supported runtime descriptors, adapter capabilities, a runtime compatibility check, preflight, execute, cancel, and status operations. `JavaFabric1201Adapter` is the only production implementation. Its four operations delegate to `MinecraftBridgePairingRepository`; it adds no network route, protocol message, command execution, placement implementation, or alternate transport.
+When the validator can identify a failing placement, the authenticated rejection includes the zero-based operation index, exact block ID, and up to the shared state-property bound of property names. The app validates those details and presents a one-based operation number and an actionable explanation. The extension can report unsupported property names, but it cannot substitute a block or state, edit the accepted BuildPlan, or bypass live server validation. Unsupported content rejects preflight before placement; no block is skipped or repaired.
 
-The existing bridge remains responsible for TLS pin verification, one-time pairing, Keystore-held P-256 proof-of-possession, signed/replay-protected sessions, strict private IPv4 policy, server-issued preflight tokens, independent BuildPlan validation, world checks, bounded placement, cancellation, and bridge-reported status. Protocol and BuildPlan schema numbers remain unchanged. Provider keys stay in their existing Android Keystore-backed path and are excluded from descriptors and bridge payloads.
+Malformed/oversized request bodies, JSON token/depth bounds, operation/state-property bounds, strict exact-key payloads, TLS identity checks, authenticated sessions, replay protection, BuildPlan limits, and existing execution confirmation remain enforced. Unsupported details are diagnostic only and do not weaken validation.
 
-Construction requires all of the following, in order:
+## UI and execution gate
 
-1. A trusted, pinned bridge session authenticates successfully.
-2. The resolver returns `SUPPORTED` for the exact runtime and saved immutable BuildPlan; all capability and limit checks pass.
-3. The existing authenticated server preflight accepts the request and returns a current preview/token without placing blocks.
-4. The user explicitly confirms the preview. The app never starts placement automatically.
+Settings and Build Review show the bridge-reported edition, Minecraft, Java, loader, Fabric API, bridge, and protocol versions; compatibility status; adapter selection; actual capabilities and gaps; structured reason codes and explanations; and effective execution limits. Missing or unsupported runtime facts are shown as missing/incompatible, never synthesized.
 
-Status reads remain read-only. If a runtime no longer matches an adapter, the app may use the existing authenticated status endpoint to observe bridge truth, but that does not select an adapter or authorize construction.
+Construction remains gated on all of the following:
 
-## Extension rules
+1. A saved, pinned bridge authenticates successfully.
+2. Exactly one production adapter profile matches and status is `SUPPORTED`.
+3. All bridge-reported capability and plan/runtime limit checks pass.
+4. Independent server-side BuildPlan/world preflight succeeds and returns a current short-lived token.
+5. The user separately confirms the immutable plan preview.
 
-A future adapter must be real code for a specific runtime and must be registered only after its runtime profile, actual capabilities, BuildPlan requirements, secure transport mapping, preflight/execute/cancel/status behavior, and focused tests are present. Do not register placeholder Bedrock/Legacy/Forge/NeoForge adapters, route another edition through Fabric, or silently convert plans. The AI continues to produce the same platform-neutral BuildPlan; no manual block/coordinate editor or arbitrary Minecraft command surface is part of this boundary.
+Pairing alone does not imply compatibility. A failed capability check, unsupported block/state, stale preview, or failed server preflight cannot be turned into an automatic start. Status is read-only; there is no automatic retry with a modified plan.
 
-## Verification boundary
+## Verification status
 
-Focused source tests cover safe version and enum parsing/serialization, protocol-v1 descriptor mapping, requirements, duplicate registry handling, exact-match and unsupported/unknown/experimental resolution, capability/limit gaps, and the paired-but-unsupported execution regression. Test source is not evidence that these checks ran. This checkout has no Java/JDK or Android SDK, so Kotlin/Android tests, builds, lint, Fabric compilation, and live Minecraft behavior remain unverified until the documented Gradle commands can run in a suitable environment.
+The repository contains focused source tests for version and runtime parsing, exact profile registration/resolution, Java and Fabric API mismatch reasons, bridge-reported capability negotiation, BuildPlan/schema/limit rejection, malformed and oversized protocol input, structured block/state validation details, and the paired-but-unsupported execution regression. **Test source is not evidence that tests ran.**
+
+Before claiming verification, check Java/JDK and Android SDK availability and run the focused Gradle tests plus the relevant app/bridge build tasks. Do not claim an Android compile, Fabric compile, APK, bridge test, real Minecraft test, deployment, or compatibility certification unless that exact check succeeds. Verification results belong in the completion summary as compiled, unit-tested, bridge-tested, real-Minecraft-tested, blocked, or unverified.

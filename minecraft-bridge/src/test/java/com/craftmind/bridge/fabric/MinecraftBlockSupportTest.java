@@ -1,9 +1,11 @@
 package com.craftmind.bridge.fabric;
 
+import java.util.List;
 import java.util.Map;
 import net.minecraft.Bootstrap;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -24,6 +26,8 @@ public class MinecraftBlockSupportTest {
         assertFalse(SUPPORT.isSupportedBlock("example:stone"));
         assertFalse(SUPPORT.isSupportedBlock("minecraft:not_a_real_block"));
         assertFalse(SUPPORT.hasValidState("minecraft:oak_stairs", Map.of("facing", "sideways")));
+        assertEquals(List.of("facing"), SUPPORT.unsupportedStateProperties("minecraft:oak_stairs", Map.of("facing", "sideways")));
+        assertEquals(List.of("waterlogged"), SUPPORT.unsupportedStateProperties("minecraft:oak_stairs", Map.of("waterlogged", "true")));
         assertFalse(SUPPORT.hasValidState("minecraft:oak_stairs", Map.of("admin", "true")));
     }
 

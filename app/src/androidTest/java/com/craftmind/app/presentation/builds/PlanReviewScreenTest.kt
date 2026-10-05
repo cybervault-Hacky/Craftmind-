@@ -38,6 +38,7 @@ import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.settings.ThemeMode
 import com.craftmind.app.presentation.settings.BridgePairingState
 import org.junit.Assert.assertEquals
@@ -425,18 +426,39 @@ class PlanReviewScreenTest {
             pairedAtEpochMillis = 1_700_000_000_000,
         )
         val capabilities = BridgeCapabilitiesSnapshot(
-            protocolVersion = 1,
+            protocolVersion = 2,
             bridgeId = bridge.bridgeId,
             identityFingerprint = bridge.tlsFingerprint,
-            bridgeVersion = "1.1.0",
+            bridgeVersion = "1.2.0",
+            clientAppVersion = "1.0.0-test",
+            editionName = "java",
             minecraftVersion = "1.20.1",
+            javaRuntimeMajor = 17,
             loaderName = "Fabric",
             loaderVersion = "0.16.10",
+            fabricApiVersion = "0.92.2+1.20.1",
+            supportedCapabilities = buildSet {
+                add(MinecraftCapability.WORLD_ACCESS)
+                add(MinecraftCapability.WORLD_VALIDATION)
+                add(MinecraftCapability.ORIGIN_RESOLUTION)
+                add(MinecraftCapability.BUILD_PLAN_V2)
+                if (constructionExecute) addAll(setOf(
+                    MinecraftCapability.BUILD_EXECUTION,
+                    MinecraftCapability.BLOCK_PLACEMENT,
+                    MinecraftCapability.BLOCK_STATE_SUPPORT,
+                    MinecraftCapability.STRUCTURE_BATCHING,
+                    MinecraftCapability.PROGRESS_REPORTING,
+                    MinecraftCapability.BUILD_STATUS,
+                    MinecraftCapability.CANCELLATION,
+                ))
+            },
             worldAccess = true,
             constructionExecute = constructionExecute,
-            cancellation = true,
+            cancellation = constructionExecute,
             maximumValidatedOperations = 4096,
             maximumRequestBytes = 1_048_576,
+            maximumOperationsPerTick = 32,
+            maximumExecutionSeconds = 300,
             supportedBuildPlanSchemaVersions = listOf(2),
             dimensionId = "minecraft:overworld",
             worldSessionId = "world-session-1",

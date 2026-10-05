@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 public final class BuildPlanContractValidator {
     private static final Pattern BUILD_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern COMPONENT_ID = Pattern.compile("[a-z0-9_-]{1,48}");
-    private static final Pattern BLOCK_ID = Pattern.compile("minecraft:[a-z0-9_./-]{1,128}");
+    private static final Pattern BLOCK_ID = Pattern.compile("[a-z0-9_.-]{1,32}:[a-z0-9_./-]{1,127}");
     private static final Pattern PROPERTY = Pattern.compile("[a-z0-9_]{1,64}");
     private static final Pattern STATE_VALUE = Pattern.compile("[a-z0-9_./-]{1,32}");
     private static final Pattern DIMENSION_ID = Pattern.compile("[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,64}");
@@ -33,6 +33,79 @@ public final class BuildPlanContractValidator {
     public interface BlockSupport {
         boolean isSupportedBlock(String blockId);
         boolean hasValidState(String blockId, Map<String, String> state);
+
+        /** Extension point for a server registry adapter to identify invalid requested properties without substituting state. */
+        default List<String> unsupportedStateProperties(String blockId, Map<String, String> state) {
+            List<String> properties = new ArrayList<>(state.keySet());
+            Collections.sort(properties);
+            return properties;
+        }
+    }
+
+    /** Bounded, user-safe detail for one exact server-side preflight rejection. */
+    public static final class BlockValidationFailure {
+        public final BridgeProtocol.ErrorCode reasonCode;
+        public final int operationIndex;
+        public final String blockId;
+        public final List<String> unsupportedStateProperties;
+
+        private BlockValidationFailure(BridgeProtocol.ErrorCode reasonCode, int operationIndex, String blockId,
+                                       List<String> unsupportedStateProperties) {
+            this.reasonCode = reasonCode;
+            this.operationIndex = operationIndex;
+            this.blockId = blockId;
+            this.unsupportedStateProperties = Collections.unmodifiableList(new ArrayList<>(unsupportedStateProperties));
+        }
+    }
+
+    /** Called only after validateExecutionPayload returns a block-specific error; it cannot authorize a plan. */
+    public static BlockValidationFailure findBlockValidationFailure(JsonObject payload, BlockSupport blockSupport) {
+        try {
+            JsonElement planElement = payload.get("buildPlan");
+            if (planElement == null || !planElement.isJsonObject()) return null;
+            JsonElement operationsElement = planElement.getAsJsonObject().get("operations");
+            if (operationsElement == null || !operationsElement.isJsonArray() ||
+                    operationsElement.getAsJsonArray().size() > BridgeProtocol.MAX_OPERATIONS) return null;
+            JsonArray operations = operationsElement.getAsJsonArray();
+            for (int index = 0; index < operations.size(); index++) {
+                JsonElement operationElement = operations.get(index);
+                if (!operationElement.isJsonObject()) return null;
+                JsonObject operation = operationElement.getAsJsonObject();
+                JsonElement blockElement = operation.get("blockId");
+                if (blockElement == null || !blockElement.isJsonPrimitive() || !blockElement.getAsJsonPrimitive().isString()) return null;
+                String blockId = blockElement.getAsString();
+                if (!BLOCK_ID.matcher(blockId).matches()) return null;
+                if (!blockSupport.isSupportedBlock(blockId)) {
+                    return new BlockValidationFailure(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK, index, blockId, Collections.emptyList());
+                }
+                JsonElement stateElement = operation.get("blockState");
+                if (stateElement == null || !stateElement.isJsonObject() ||
+                        stateElement.getAsJsonObject().size() > BridgeProtocol.MAX_BLOCK_STATE_PROPERTIES) return null;
+                Map<String, String> state = new HashMap<>();
+                for (Map.Entry<String, JsonElement> entry : stateElement.getAsJsonObject().entrySet()) {
+                    if (!PROPERTY.matcher(entry.getKey()).matches() || !entry.getValue().isJsonPrimitive() ||
+                            !entry.getValue().getAsJsonPrimitive().isString()) return null;
+                    String value = entry.getValue().getAsString();
+                    if (!STATE_VALUE.matcher(value).matches()) return null;
+                    state.put(entry.getKey(), value);
+                }
+                if (!blockSupport.hasValidState(blockId, state)) {
+                    List<String> properties = blockSupport.unsupportedStateProperties(blockId, state);
+                    if (properties == null || properties.size() > BridgeProtocol.MAX_BLOCK_STATE_PROPERTIES) return null;
+                    List<String> safeProperties = new ArrayList<>();
+                    for (String property : properties) {
+                        if (property == null || !PROPERTY.matcher(property).matches()) return null;
+                        safeProperties.add(property);
+                    }
+                    Collections.sort(safeProperties);
+                    return new BlockValidationFailure(BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE,
+                            index, blockId, safeProperties);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Diagnostics must never weaken the validator or turn malformed input into an accepted plan.
+        }
+        return null;
     }
 
     public static BridgeProtocol.ErrorCode validateExecutionPayload(
@@ -70,7 +143,7 @@ public final class BuildPlanContractValidator {
             int requestedOperations = BridgeProtocolCodec.requiredInt(limits, "maxOperations");
             int requestedBytes = BridgeProtocolCodec.requiredInt(limits, "maxRequestBytes");
             if (requestedOperations < 1 || requestedOperations > maximumSupportedOperations ||
-                    requestedBytes < 1024 || requestedBytes > maximumSupportedRequestBytes ||
+                    requestedBytes < BridgeProtocol.MIN_EXECUTION_REQUEST_BYTES || requestedBytes > maximumSupportedRequestBytes ||
                     actualPayloadBytes > requestedBytes) {
                 return BridgeProtocol.ErrorCode.LIMIT_EXCEEDED;
             }
@@ -181,9 +254,11 @@ public final class BuildPlanContractValidator {
                 }
                 String blockId = BridgeProtocolCodec.requiredString(operation, "blockId", 160);
                 String componentId = BridgeProtocolCodec.requiredString(operation, "componentId", 48);
-                if (!BLOCK_ID.matcher(blockId).matches() || !byId.containsKey(componentId) ||
-                        !blockSupport.isSupportedBlock(blockId)) {
+                if (!BLOCK_ID.matcher(blockId).matches() || !byId.containsKey(componentId)) {
                     return BridgeProtocol.ErrorCode.INVALID_BUILD_PLAN;
+                }
+                if (!blockSupport.isSupportedBlock(blockId)) {
+                    return BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK;
                 }
                 JsonObject positionObject = requiredObject(operation, "position");
                 BridgeProtocolCodec.requireExactKeys(positionObject, "x", "y", "z");
@@ -217,7 +292,7 @@ public final class BuildPlanContractValidator {
                     if (!STATE_VALUE.matcher(value).matches()) return BridgeProtocol.ErrorCode.INVALID_BUILD_PLAN;
                     state.put(entry.getKey(), value);
                 }
-                if (!blockSupport.hasValidState(blockId, state)) return BridgeProtocol.ErrorCode.INVALID_BUILD_PLAN;
+                if (!blockSupport.hasValidState(blockId, state)) return BridgeProtocol.ErrorCode.UNSUPPORTED_BLOCK_STATE;
                 operationCounts.put(componentId, operationCounts.getOrDefault(componentId, 0) + 1);
             }
             for (BuildPlanDocument.Component component : components) {

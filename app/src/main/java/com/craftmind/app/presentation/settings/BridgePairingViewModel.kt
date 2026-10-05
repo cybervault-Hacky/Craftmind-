@@ -206,6 +206,7 @@ class BridgePairingViewModel(
             "BRIDGE_ALREADY_CONFIGURED" -> "A bridge is already saved. Revoke it or explicitly forget it before pairing another."
             "BRIDGE_IDENTITY_MISMATCH", "BRIDGE_IDENTITY_CHANGED" -> "The TLS identity does not match the fingerprint you confirmed. Verify /craftmind identity; the changed identity was not trusted."
             "BRIDGE_CAPABILITIES_UNSUPPORTED", "BRIDGE_CAPABILITIES_INVALID" -> "The bridge reported an unsupported or malformed capability set. No build can be sent."
+            "BRIDGE_UPDATE_REQUIRED", "BRIDGE_PROTOCOL_UNSUPPORTED" -> "This server uses the older Bridge 1.1.0 / protocol 1 profile. Update CraftMind and the server bridge together to the matching app plus Bridge 1.2.0 / protocol 2, then reconnect. The saved pairing, device identity, and server trusted-client record are preserved; runtime versions are never inferred."
             "BRIDGE_TIMEOUT" -> "The bridge did not respond before the timeout. Check the private-LAN address and server listener."
             "BRIDGE_UNAVAILABLE" -> "Could not reach the bridge over HTTPS. Check the private network, firewall, and server status."
             "BRIDGE_NOT_PAIRED" -> "No trusted bridge is saved on this device. Pair it with an open operator window first."

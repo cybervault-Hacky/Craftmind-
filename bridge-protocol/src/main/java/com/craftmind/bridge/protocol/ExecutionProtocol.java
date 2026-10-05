@@ -14,6 +14,9 @@ public final class ExecutionProtocol {
         public String requestId;
         public BridgeProtocol.ErrorCode reasonCode;
         public String safeMessage;
+        public Integer failedOperationIndex;
+        public String blockId;
+        public java.util.List<String> unsupportedStateProperties = new java.util.ArrayList<>();
     }
 
     public static final class PreflightReady {

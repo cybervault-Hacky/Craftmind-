@@ -468,14 +468,23 @@ final class ConstructionCoordinator {
         final ExecutionProtocol.PreflightReady ready;
         final ExecutionProtocol.ExecutionSnapshot existing;
         final String reasonCode;
-        private PrepareResult(ExecutionProtocol.PreflightReady ready, ExecutionProtocol.ExecutionSnapshot existing, String reasonCode) {
+        final com.craftmind.bridge.protocol.BuildPlanContractValidator.BlockValidationFailure blockFailure;
+        private PrepareResult(ExecutionProtocol.PreflightReady ready, ExecutionProtocol.ExecutionSnapshot existing,
+                              String reasonCode,
+                              com.craftmind.bridge.protocol.BuildPlanContractValidator.BlockValidationFailure blockFailure) {
             this.ready = ready;
             this.existing = existing;
             this.reasonCode = reasonCode;
+            this.blockFailure = blockFailure;
         }
-        static PrepareResult ready(ExecutionProtocol.PreflightReady ready) { return new PrepareResult(ready, null, null); }
-        static PrepareResult existing(ExecutionProtocol.ExecutionSnapshot existing) { return new PrepareResult(null, existing, null); }
-        static PrepareResult rejected(String reason) { return new PrepareResult(null, null, reason); }
+        static PrepareResult ready(ExecutionProtocol.PreflightReady ready) { return new PrepareResult(ready, null, null, null); }
+        static PrepareResult existing(ExecutionProtocol.ExecutionSnapshot existing) { return new PrepareResult(null, existing, null, null); }
+        static PrepareResult rejected(String reason) { return new PrepareResult(null, null, reason, null); }
+        static PrepareResult rejected(
+                String reason,
+                com.craftmind.bridge.protocol.BuildPlanContractValidator.BlockValidationFailure blockFailure) {
+            return new PrepareResult(null, null, reason, blockFailure);
+        }
     }
 
     static final class StartResult {

@@ -138,7 +138,11 @@ class BuildExecutionViewModel(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                mutableState.update { it.copy(flow = BuildExecutionFlow.Failed(record, executionId, reason(error), retryPrepare = true)) }
+                mutableState.update {
+                    it.copy(flow = BuildExecutionFlow.Failed(
+                        record, executionId, reason(error), retryPrepare = true, detailMessage = failureDetailMessage(error),
+                    ))
+                }
             }
         }
     }
@@ -186,8 +190,12 @@ class BuildExecutionViewModel(
             }
             val canRetry = reasonCode !in NON_RETRYABLE_PREFLIGHT_FAILURES
             mutableState.update {
-                it.copy(flow = BuildExecutionFlow.Failed(record, executionId, reasonCode,
-                    retryPrepare = canRetry, retrySameId = uncertain))
+                it.copy(flow = BuildExecutionFlow.Failed(
+                    record, executionId, reasonCode,
+                    retryPrepare = canRetry,
+                    retrySameId = uncertain,
+                    detailMessage = failureDetailMessage(error),
+                ))
             }
         }
     }
@@ -493,6 +501,24 @@ class BuildExecutionViewModel(
         MinecraftExecutionPhase.COMPLETED, MinecraftExecutionPhase.FAILED, MinecraftExecutionPhase.CANCELLED,
     )
 
+    private fun failureDetailMessage(error: Exception): String? {
+        val failure = error as? MinecraftBridgeFailure ?: return null
+        val rejection = failure.blockRejection
+        if (rejection != null) {
+            val operation = "operation ${rejection.operationIndex + 1}"
+            return when (failure.reasonCode) {
+                "UNSUPPORTED_BLOCK" -> "The server rejected ${rejection.blockId} at $operation. No replacement block was used and the approved plan was not changed."
+                "UNSUPPORTED_BLOCK_STATE" -> {
+                    val properties = rejection.unsupportedStateProperties.takeIf { it.isNotEmpty() }
+                        ?.joinToString() ?: "the requested state"
+                    "The server rejected $properties for ${rejection.blockId} at $operation. No state was substituted and the approved plan was not changed."
+                }
+                else -> failure.safeMessage
+            }
+        }
+        return failure.safeMessage
+    }
+
     private fun reason(error: Exception): String =
         (error as? MinecraftBridgeFailure)?.reasonCode ?: "EXECUTION_OPERATION_FAILED"
 
@@ -506,6 +532,8 @@ class BuildExecutionViewModel(
             "BUILD_PLAN_NOT_EXECUTABLE", "BUILD_VERSION_STALE", "EXECUTION_ID_INVALID",
             "BRIDGE_RUNTIME_UNSUPPORTED", "BRIDGE_COMPATIBILITY_UNKNOWN", "BRIDGE_RUNTIME_EXPERIMENTAL",
             "BRIDGE_CAPABILITIES_UNSUPPORTED", "MINECRAFT_ADAPTER_UNAVAILABLE", "LIMIT_EXCEEDED",
+            "BRIDGE_JAVA_RUNTIME_UNSUPPORTED", "BRIDGE_FABRIC_API_UNSUPPORTED", "BRIDGE_PROTOCOL_UNSUPPORTED",
+            "BRIDGE_VERSION_UNSUPPORTED", "UNSUPPORTED_BLOCK", "UNSUPPORTED_BLOCK_STATE",
         )
     }
 }

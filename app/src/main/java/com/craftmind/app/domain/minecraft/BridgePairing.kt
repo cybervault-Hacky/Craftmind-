@@ -2,6 +2,7 @@ package com.craftmind.app.domain.minecraft
 
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
 import kotlinx.coroutines.flow.Flow
@@ -22,32 +23,45 @@ data class BridgeCapabilitiesSnapshot(
     val bridgeId: String,
     val identityFingerprint: String,
     val bridgeVersion: String,
+    /** Version supplied by this Android app and echoed in the authenticated capability response. */
+    val clientAppVersion: String?,
+    val editionName: String,
     val minecraftVersion: String,
+    val javaRuntimeMajor: Int,
     val loaderName: String,
     val loaderVersion: String,
+    val fabricApiVersion: String?,
+    val supportedCapabilities: Set<MinecraftCapability>,
     val worldAccess: Boolean,
     val constructionExecute: Boolean,
     val cancellation: Boolean,
     val maximumValidatedOperations: Int,
     val maximumRequestBytes: Int,
+    val maximumOperationsPerTick: Int,
+    val maximumExecutionSeconds: Int,
     val supportedBuildPlanSchemaVersions: List<Int>,
     val dimensionId: String? = null,
     val worldSessionId: String? = null,
 ) {
-    /** Typed, fail-safe interpretation of the existing protocol-v1 runtime fields. */
+    /** Typed, fail-closed interpretation of the authenticated protocol-v2 runtime report. */
     val runtimeDescriptor: MinecraftRuntimeDescriptor
-        get() = MinecraftRuntimeDescriptor.fromBridgeV1(
+        get() = MinecraftRuntimeDescriptor.fromBridgeV2(
+            appVersion = clientAppVersion,
+            editionName = editionName,
             bridgeProtocolVersion = protocolVersion,
             bridgeVersion = bridgeVersion,
             minecraftVersion = minecraftVersion,
+            javaRuntimeMajor = javaRuntimeMajor,
             loaderName = loaderName,
             loaderVersion = loaderVersion,
-            worldAccess = worldAccess,
-            constructionExecute = constructionExecute,
-            cancellation = cancellation,
+            fabricApiVersion = fabricApiVersion,
+            reportedCapabilities = supportedCapabilities,
             maximumValidatedOperations = maximumValidatedOperations,
             maximumRequestBytes = maximumRequestBytes,
+            maximumOperationsPerTick = maximumOperationsPerTick,
+            maximumExecutionSeconds = maximumExecutionSeconds,
             supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions.toSet(),
+            worldAvailable = worldAccess,
             operatorOriginAvailable = dimensionId != null && worldSessionId != null,
         )
 
@@ -111,4 +125,14 @@ interface MinecraftBridgePairingRepository {
     suspend fun forgetLocally()
 }
 
-class MinecraftBridgeFailure(val reasonCode: String) : Exception(reasonCode)
+data class MinecraftBlockRejectionDetails(
+    val operationIndex: Int,
+    val blockId: String,
+    val unsupportedStateProperties: List<String> = emptyList(),
+)
+
+class MinecraftBridgeFailure(
+    val reasonCode: String,
+    val safeMessage: String? = null,
+    val blockRejection: MinecraftBlockRejectionDetails? = null,
+) : Exception(safeMessage ?: reasonCode)

@@ -109,9 +109,11 @@ fun PlanReviewScreen(
                 buildList {
                     add("${profile.edition.displayName} ${profile.version.displayIdentifier}")
                     add("${profile.loader.displayName} ${profile.loaderVersion}")
-                    profile.requiredPlatformApiVersion?.let { add("${profile.loader.displayName} API $it") }
+                    profile.requiredFabricApiVersion?.let { add("Fabric API $it") }
                     add("bridge ${profile.bridgeVersion} · protocol ${profile.bridgeProtocolVersion}")
-                    profile.javaToolchainMajor?.let { add("Java $it toolchain target") }
+                    profile.javaRuntimeRequirement?.let {
+                        add("Java ${it.requiredMajor} (supported ${it.minimumSupportedMajor}–${it.maximumSupportedMajor})")
+                    }
                 }.joinToString(" · ", prefix = "${adapter.adapterId.value}: ")
             }
         }.ifEmpty { listOf("none registered") }.joinToString("; ")
@@ -423,7 +425,7 @@ private fun ConstructionExecutionCard(
         )
         Text(
             runtimeDescriptor?.let {
-                "Runtime: ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · bridge ${it.bridgeVersion ?: "unknown"} · protocol ${it.bridgeProtocolVersion ?: "unknown"}"
+                "Runtime: CraftMind app ${it.appVersion ?: "not echoed"} · ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · Java ${it.javaRuntimeMajor ?: "not reported"} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · Fabric API ${it.fabricApiVersion ?: "not reported"} · bridge ${it.bridgeVersion ?: "unknown"} · protocol ${it.bridgeProtocolVersion ?: "unknown"}"
             } ?: "Runtime: unknown — connect to a pinned bridge to resolve compatibility.",
             style = MaterialTheme.typography.bodySmall,
         )
@@ -443,14 +445,17 @@ private fun ConstructionExecutionCard(
             else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "Bridge limits: ${runtimeDescriptor?.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${runtimeDescriptor?.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"}; adapter dimensions ${planCompatibility?.limits?.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth}" } ?: "not matched"}.",
+            "Bridge limits: ${runtimeDescriptor?.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${runtimeDescriptor?.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${runtimeDescriptor?.maximumOperationsPerTick?.let { "$it operations/tick" } ?: "per-tick limit unknown"} · ${runtimeDescriptor?.maximumExecutionSeconds?.let { "$it seconds" } ?: "execution timeout unknown"}; adapter dimensions ${planCompatibility?.limits?.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth}" } ?: "not matched"}.",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            "Registered profile(s): $registeredProfileSummary. Protocol v1 does not report the server JVM or loaded platform API separately; those values are not independently verified by this screen.",
+            "Registered profile(s): $registeredProfileSummary. Runtime Java and Fabric API values are bridge-reported; declared dependency/toolchain values are not used as substitutes.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        planCompatibility?.reasonCodes?.sortedBy { it.name }?.takeIf { it.isNotEmpty() }?.let { codes ->
+            Text("Reason codes: ${codes.joinToString { it.name }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+        }
         planCompatibility?.reasons?.forEach { reason ->
             Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
         }
@@ -521,15 +526,18 @@ private fun ConstructionExecutionCard(
                 }
                 if (showFinalConfirmation) {
                     val runtimeLabel = runtimeDescriptor?.let {
-                        "${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"}"
+                        "CraftMind app ${it.appVersion ?: "not echoed"} · ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · Java ${it.javaRuntimeMajor ?: "not reported"} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · Fabric API ${it.fabricApiVersion ?: "not reported"} · bridge ${it.bridgeVersion ?: "unknown"} / protocol ${it.bridgeProtocolVersion ?: "unknown"}"
                     } ?: "runtime unknown"
                     val adapterLabel = planCompatibility?.adapterId?.value ?: "none"
                     val limitsLabel = planCompatibility?.limits?.let {
-                        "${it.maximumValidatedOperations ?: "unknown"} operations · ${it.maximumRequestBytes ?: "unknown"} request bytes · ${it.maximumDimensions?.let { dimensions -> "${dimensions.width}×${dimensions.height}×${dimensions.depth} blocks" } ?: "dimension limit unknown"}"
+                        "${it.maximumValidatedOperations ?: "unknown"} operations · ${it.maximumRequestBytes ?: "unknown"} request bytes · ${it.maximumOperationsPerTick ?: "unknown"} operations/tick · ${it.maximumExecutionSeconds ?: "unknown"} seconds · ${it.maximumDimensions?.let { dimensions -> "${dimensions.width}×${dimensions.height}×${dimensions.depth} blocks" } ?: "dimension limit unknown"}"
                     } ?: "unavailable"
+                    val reportedCapabilities = planCompatibility?.capabilities
+                        ?.sortedBy { it.name }?.joinToString { it.displayName }?.ifEmpty { "none" } ?: "not resolved"
                     val capabilityGaps = planCompatibility?.missingCapabilities
                         ?.sortedBy { it.name }?.joinToString { it.displayName }?.ifEmpty { "none" } ?: "not resolved"
-                    val summary = "Compatibility: ${planCompatibility?.status?.name ?: "UNKNOWN"}\nRuntime: $runtimeLabel\nAdapter: $adapterLabel\nCapability gaps: $capabilityGaps\nAvailable limits: $limitsLabel\nWorld: $world\nDimension: ${current.preview.dimensionId}\nOrigin: ${current.preview.resolvedOrigin.label()}\nPlan: ${current.preview.planTitle} · version ${current.preview.planVersion}\nOperations: ${current.preview.operationCount}\nStrategy: ${plan.originStrategy.name}"
+                    val reasons = planCompatibility?.reasons?.joinToString("; ")?.ifEmpty { "none" } ?: "not resolved"
+                    val summary = "Compatibility: ${planCompatibility?.status?.name ?: "UNKNOWN"}\nRuntime: $runtimeLabel\nAdapter: $adapterLabel\nBridge-reported capabilities: $reportedCapabilities\nCapability gaps: $capabilityGaps\nCompatibility reasons: $reasons\nAvailable limits: $limitsLabel\nWorld: $world\nDimension: ${current.preview.dimensionId}\nOrigin: ${current.preview.resolvedOrigin.label()}\nPlan: ${current.preview.planTitle} · version ${current.preview.planVersion}\nOperations: ${current.preview.operationCount}\nStrategy: ${plan.originStrategy.name}"
                     AlertDialog(
                         onDismissRequest = { showFinalConfirmation = false },
                         title = { Text("Authorize block placement?") },
@@ -573,6 +581,7 @@ private fun ConstructionExecutionCard(
             )
             is BuildExecutionFlow.Failed -> {
                 Text("Bridge operation did not reach a usable preview: ${current.reasonCode}. No successful placement is claimed.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                current.detailMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (current.retryPrepare && constructionEnabled && eligibleSavedVersion) {
                     OutlinedButton(onClick = { onEvent(BuildExecutionEvent.RetryPrepare) }) { Text("Run a new preflight") }
                 }

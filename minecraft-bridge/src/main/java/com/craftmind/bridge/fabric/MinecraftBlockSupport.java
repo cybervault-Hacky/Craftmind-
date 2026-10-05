@@ -1,6 +1,9 @@
 package com.craftmind.bridge.fabric;
 
 import com.craftmind.bridge.protocol.BuildPlanContractValidator;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
@@ -38,6 +41,31 @@ final class MinecraftBlockSupport implements BuildPlanContractValidator.BlockSup
     @Override
     public boolean hasValidState(String blockId, Map<String, String> state) {
         return resolveBlockState(blockId, state) != null;
+    }
+
+    @Override
+    public List<String> unsupportedStateProperties(String blockId, Map<String, String> state) {
+        Identifier identifier = Identifier.tryParse(blockId);
+        Block block = identifier == null ? null : Registries.BLOCK.getOrEmpty(identifier).orElse(null);
+        List<String> unsupported = new ArrayList<>();
+        if (block == null || !isSupportedBlock(blockId)) {
+            unsupported.addAll(state.keySet());
+        } else {
+            for (Map.Entry<String, String> entry : state.entrySet()) {
+                Property<?> property = block.getStateManager().getProperty(entry.getKey());
+                if (property == null || !accepts(property, entry.getValue())) unsupported.add(entry.getKey());
+            }
+            // A syntactically valid state can still be unsafe (for example, fluid-bearing or block-entity states).
+            if (unsupported.isEmpty() && !state.isEmpty() && resolveBlockState(blockId, state) == null) {
+                unsupported.addAll(state.keySet());
+            }
+        }
+        Collections.sort(unsupported);
+        return unsupported;
+    }
+
+    private static <T extends Comparable<T>> boolean accepts(Property<T> property, String value) {
+        return property.parse(value).isPresent();
     }
 
     BlockState resolveBlockState(String blockId, Map<String, String> state) {

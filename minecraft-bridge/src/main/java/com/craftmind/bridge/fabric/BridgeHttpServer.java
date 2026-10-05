@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 /** Private-LAN HTTPS endpoint for authenticated pairing, full execution preflight, explicit start, status, and cancel. */
 public final class BridgeHttpServer implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger("CraftMindBridge");
+    private static final java.util.regex.Pattern APP_VERSION_PATTERN = java.util.regex.Pattern.compile("[A-Za-z0-9._+-]{1,64}");
     private static final String INFO_PATH = "/v1/bridge/info";
     private static final String PAIR_PATH = "/v1/pair";
     private static final String CHALLENGE_PATH = "/v1/session/challenge";
@@ -99,7 +100,7 @@ public final class BridgeHttpServer implements AutoCloseable {
         newServer.setExecutor(executor);
         newServer.createContext("/", this::handle);
         newServer.start();
-        LOGGER.info("CraftMind Bridge protocol v1 listening on configured private interface {}:{}; construction is server-configured and capability-gated.",
+        LOGGER.info("CraftMind Bridge protocol v{} listening on configured private interface {}:{}; construction is server-configured and capability-gated.", BridgeProtocol.VERSION,
                 config.bindAddress().getHostAddress(), config.port());
     }
 
@@ -253,8 +254,12 @@ public final class BridgeHttpServer implements AutoCloseable {
         }
         if (CAPABILITIES_PATH.equals(path)) {
             requireMessage(envelope, "capabilities.request");
-            BridgeProtocolCodec.requireExactKeys(payload);
-            sendEnvelope(exchange, 200, "capabilities.response", requestId, capabilitiesSupplier.get());
+            BridgeProtocolCodec.requireExactKeys(payload, "clientAppVersion");
+            String clientAppVersion = BridgeProtocolCodec.requiredString(payload, "clientAppVersion", 64);
+            if (!APP_VERSION_PATTERN.matcher(clientAppVersion).matches()) throw malformed();
+            BridgeCapabilities report = capabilitiesSupplier.get();
+            report.clientAppVersion = clientAppVersion;
+            sendEnvelope(exchange, 200, "capabilities.response", requestId, report);
             return;
         }
         if (REVOKE_PATH.equals(path)) {
@@ -292,7 +297,7 @@ public final class BridgeHttpServer implements AutoCloseable {
             } else if (result.existing != null) {
                 sendEnvelope(exchange, 200, "execution.status.response", requestId, result.existing);
             } else {
-                sendPreflightRejected(exchange, requestId, executionId, parseErrorCode(result.reasonCode));
+                sendPreflightRejected(exchange, requestId, executionId, parseErrorCode(result.reasonCode), result.blockFailure);
             }
             return;
         }
@@ -361,10 +366,24 @@ public final class BridgeHttpServer implements AutoCloseable {
 
     private void sendPreflightRejected(HttpExchange exchange, String requestId, String executionId,
                                        BridgeProtocol.ErrorCode reason) throws IOException {
+        sendPreflightRejected(exchange, requestId, executionId, reason, null);
+    }
+
+    private void sendPreflightRejected(
+            HttpExchange exchange,
+            String requestId,
+            String executionId,
+            BridgeProtocol.ErrorCode reason,
+            com.craftmind.bridge.protocol.BuildPlanContractValidator.BlockValidationFailure blockFailure) throws IOException {
         ExecutionProtocol.RequestRejected rejected = new ExecutionProtocol.RequestRejected();
         rejected.requestId = executionId;
         rejected.reasonCode = reason;
         rejected.safeMessage = safeMessage(reason);
+        if (blockFailure != null && blockFailure.reasonCode == reason) {
+            rejected.failedOperationIndex = blockFailure.operationIndex;
+            rejected.blockId = blockFailure.blockId;
+            rejected.unsupportedStateProperties.addAll(blockFailure.unsupportedStateProperties);
+        }
         sendEnvelope(exchange, 200, "execution.preflight.rejected", requestId, rejected);
     }
 
@@ -530,7 +549,7 @@ public final class BridgeHttpServer implements AutoCloseable {
 
     private String safeMessage(BridgeProtocol.ErrorCode code) {
         switch (code) {
-            case UNSUPPORTED_PROTOCOL: return "This bridge supports protocol version 1 only.";
+            case UNSUPPORTED_PROTOCOL: return "This bridge supports protocol version 2 only.";
             case UNAUTHENTICATED: return "Authenticate or pair this device before using this bridge route.";
             case PAIRING_CLOSED: return "An operator has not opened a pairing window.";
             case PAIRING_EXPIRED: return "The one-time pairing window expired.";
@@ -539,6 +558,8 @@ public final class BridgeHttpServer implements AutoCloseable {
             case REPLAY_REJECTED: return "The request was stale, duplicated, or out of sequence.";
             case RATE_LIMITED: return "Too many requests. Wait before trying again.";
             case CONSTRUCTION_DISABLED: return "Construction is disabled by the operator or unsupported by this server setup.";
+            case UNSUPPORTED_BLOCK: return "The requested block is unavailable or disallowed by this server.";
+            case UNSUPPORTED_BLOCK_STATE: return "The requested block state is unavailable or disallowed by this server.";
             case ACTIVE_EXECUTION_EXISTS: return "Another build or unexpired preflight is active. Query it or wait for it to finish.";
             case EXECUTION_ID_CONFLICT: return "This execution ID was already used for a different plan or trusted device.";
             case EXECUTION_NOT_FOUND: return "No execution with that ID is available to this trusted device.";

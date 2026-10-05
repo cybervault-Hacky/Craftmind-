@@ -76,7 +76,7 @@ public final class CraftMindBridgeMod implements ModInitializer {
         BridgeRuntime current = runtime;
         if (current == null) return unavailable(source);
         source.sendFeedback(() -> Text.literal("CraftMind Bridge " + current.bridgeId() +
-                " · TLS SHA-256 " + current.fingerprint() + " · protocol 1 · listener " +
+                " · TLS SHA-256 " + current.fingerprint() + " · protocol " + com.craftmind.bridge.protocol.BridgeProtocol.VERSION + " · listener " +
                 (current.isListening() ? "active" : "not active")), false);
         return 1;
     }
