@@ -1,0 +1,444 @@
+package com.craftmind.app.domain.minecraft.compatibility
+
+import com.craftmind.app.domain.buildplan.BuildDimensions
+import com.craftmind.app.domain.buildplan.BuildPlan
+import java.util.Locale
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+
+/** Minecraft product family. Unknown wire values are deliberately retained as [UNKNOWN]. */
+@Serializable(with = MinecraftEditionSerializer::class)
+enum class MinecraftEdition(val wireValue: String, val displayName: String) {
+    JAVA("java", "Java Edition"),
+    BEDROCK("bedrock", "Bedrock Edition"),
+    LEGACY("legacy", "Legacy Edition"),
+    UNKNOWN("unknown", "Unknown edition");
+
+    companion object {
+        fun fromWire(value: String?): MinecraftEdition = when (value?.trim()?.lowercase(Locale.ROOT)) {
+            "java", "java edition" -> JAVA
+            "bedrock", "bedrock edition" -> BEDROCK
+            "legacy", "legacy edition" -> LEGACY
+            else -> UNKNOWN
+        }
+    }
+}
+
+object MinecraftEditionSerializer : KSerializer<MinecraftEdition> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("MinecraftEdition", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: MinecraftEdition) = encoder.encodeString(value.wireValue)
+    override fun deserialize(decoder: Decoder): MinecraftEdition = MinecraftEdition.fromWire(decoder.decodeString())
+}
+
+/** Runtime implementation family, not an assertion that two loaders share compatibility. */
+@Serializable(with = MinecraftLoaderSerializer::class)
+enum class MinecraftLoader(val wireValue: String, val displayName: String) {
+    FABRIC("Fabric", "Fabric"),
+    FORGE("Forge", "Forge"),
+    NEOFORGE("NeoForge", "NeoForge"),
+    VANILLA("Vanilla", "Vanilla"),
+    BEDROCK_NATIVE("Bedrock Native", "Bedrock Native"),
+    UNKNOWN("unknown", "Unknown loader");
+
+    val edition: MinecraftEdition
+        get() = when (this) {
+            FABRIC, FORGE, NEOFORGE, VANILLA -> MinecraftEdition.JAVA
+            BEDROCK_NATIVE -> MinecraftEdition.BEDROCK
+            UNKNOWN -> MinecraftEdition.UNKNOWN
+        }
+
+    companion object {
+        fun fromWire(value: String?): MinecraftLoader = when (value?.trim()?.lowercase(Locale.ROOT)) {
+            "fabric" -> FABRIC
+            "forge" -> FORGE
+            "neoforge", "neo forge" -> NEOFORGE
+            "vanilla" -> VANILLA
+            "bedrock native", "bedrock_native", "bedrock-native" -> BEDROCK_NATIVE
+            else -> UNKNOWN
+        }
+    }
+}
+
+object MinecraftLoaderSerializer : KSerializer<MinecraftLoader> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("MinecraftLoader", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: MinecraftLoader) = encoder.encodeString(value.wireValue)
+    override fun deserialize(decoder: Decoder): MinecraftLoader = MinecraftLoader.fromWire(decoder.decodeString())
+}
+
+/** Explicit ability vocabulary. Execution negotiation uses only values reported by the authenticated bridge. */
+@Serializable(with = MinecraftCapabilitySerializer::class)
+enum class MinecraftCapability(val wireValue: String, val displayName: String) {
+    WORLD_ACCESS("WORLD_ACCESS", "World access"),
+    BUILD_EXECUTION("BUILD_EXECUTION", "Build execution"),
+    BLOCK_PLACEMENT("BLOCK_PLACEMENT", "Block placement"),
+    BLOCK_STATE_SUPPORT("BLOCK_STATE_SUPPORT", "Validated block states"),
+    WORLD_VALIDATION("WORLD_VALIDATION", "World preflight and validation"),
+    ORIGIN_RESOLUTION("ORIGIN_RESOLUTION", "Operator-selected origin"),
+    STRUCTURE_BATCHING("STRUCTURE_BATCHING", "Bounded construction batches"),
+    PROGRESS_REPORTING("PROGRESS_REPORTING", "Progress reporting"),
+    BUILD_STATUS("BUILD_STATUS", "Execution status"),
+    CANCELLATION("CANCELLATION", "Cancellation"),
+    BUILD_PLAN_V2("BUILD_PLAN_V2", "BuildPlan schema v2"),
+    LARGE_BUILD_SUPPORT("LARGE_BUILD_SUPPORT", "Large builds"),
+    MULTI_WORLD_SUPPORT("MULTI_WORLD_SUPPORT", "Multiple worlds"),
+    UNKNOWN("UNKNOWN", "Unknown capability");
+
+    companion object {
+        fun fromWire(value: String?): MinecraftCapability = entries.firstOrNull {
+            it.wireValue.equals(value?.trim(), ignoreCase = true)
+        } ?: UNKNOWN
+    }
+}
+
+object MinecraftCapabilitySerializer : KSerializer<MinecraftCapability> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("MinecraftCapability", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: MinecraftCapability) = encoder.encodeString(value.wireValue)
+    override fun deserialize(decoder: Decoder): MinecraftCapability = MinecraftCapability.fromWire(decoder.decodeString())
+}
+
+/** Exact identifier is preserved; this type intentionally provides no ordering or automatic version fallback. */
+enum class MinecraftVersionChannel {
+    RELEASE,
+    PRE_RELEASE,
+    SNAPSHOT,
+    BETA,
+    ALPHA,
+    LEGACY,
+    UNKNOWN,
+}
+
+@Serializable(with = MinecraftVersionSerializer::class)
+class MinecraftVersion private constructor(
+    /** Safe original token for display and exact matching; null means no trustworthy identifier was provided. */
+    val identifier: String?,
+    val major: Int?,
+    val minor: Int?,
+    val patch: Int?,
+    val qualifier: String?,
+    val channel: MinecraftVersionChannel,
+) {
+    val isKnown: Boolean get() = channel != MinecraftVersionChannel.UNKNOWN
+    val displayIdentifier: String get() = identifier ?: "unknown"
+
+    override fun equals(other: Any?): Boolean = other is MinecraftVersion &&
+        identifier == other.identifier && major == other.major && minor == other.minor &&
+        patch == other.patch && qualifier == other.qualifier && channel == other.channel
+
+    override fun hashCode(): Int = arrayOf(identifier, major, minor, patch, qualifier, channel).contentHashCode()
+
+    override fun toString(): String = displayIdentifier
+
+    companion object {
+        val UNKNOWN = MinecraftVersion(null, null, null, null, null, MinecraftVersionChannel.UNKNOWN)
+
+        private val safeIdentifier = Regex("[A-Za-z0-9._+/-]{1,48}")
+        private val releasePattern = Regex("(\\d+)\\.(\\d+)(?:\\.(\\d+))?(?:-((?:pre|rc|beta|alpha)\\d+))?", RegexOption.IGNORE_CASE)
+        private val snapshotPattern = Regex("\\d{2}w\\d{2}[a-z]", RegexOption.IGNORE_CASE)
+        private val betaPattern = Regex("(?:b|beta/)(\\d+)\\.(\\d+)(?:\\.(\\d+))?", RegexOption.IGNORE_CASE)
+        private val alphaPattern = Regex("(?:a|alpha/)(\\d+)\\.(\\d+)(?:\\.(\\d+))?", RegexOption.IGNORE_CASE)
+        private val legacyPattern = Regex("(?:c\\d+\\.\\d+(?:_\\d+)?|rd-\\d+|inf-\\d+|classic/[A-Za-z0-9._+-]{1,32})", RegexOption.IGNORE_CASE)
+
+        /**
+         * Parses only safe, bounded Minecraft identifiers. Unrecognized but safe values remain UNKNOWN and are never
+         * compared by numeric proximity; malformed values lose their raw token.
+         */
+        fun parse(value: String?): MinecraftVersion {
+            if (value?.equals("unknown", ignoreCase = true) == true) return UNKNOWN
+            if (value.isNullOrEmpty() || value.length > 48 || value != value.trim() || !safeIdentifier.matches(value)) {
+                return UNKNOWN
+            }
+
+            val release = releasePattern.matchEntire(value)
+            if (release != null) {
+                val parts = numericParts(release.groupValues[1], release.groupValues[2], release.groupValues[3])
+                    ?: return unknown(value)
+                val qualifier = release.groupValues[4].takeIf(String::isNotEmpty)
+                val channel = when {
+                    qualifier == null -> MinecraftVersionChannel.RELEASE
+                    qualifier.startsWith("pre", ignoreCase = true) || qualifier.startsWith("rc", ignoreCase = true) ->
+                        MinecraftVersionChannel.PRE_RELEASE
+                    qualifier.startsWith("beta", ignoreCase = true) -> MinecraftVersionChannel.BETA
+                    qualifier.startsWith("alpha", ignoreCase = true) -> MinecraftVersionChannel.ALPHA
+                    else -> MinecraftVersionChannel.UNKNOWN
+                }
+                return if (channel == MinecraftVersionChannel.UNKNOWN) unknown(value)
+                else MinecraftVersion(value, parts.first, parts.second, parts.third, qualifier, channel)
+            }
+
+            if (snapshotPattern.matches(value)) {
+                return MinecraftVersion(value, null, null, null, null, MinecraftVersionChannel.SNAPSHOT)
+            }
+
+            val beta = betaPattern.matchEntire(value)
+            if (beta != null) {
+                val parts = numericParts(beta.groupValues[1], beta.groupValues[2], beta.groupValues[3]) ?: return unknown(value)
+                return MinecraftVersion(value, parts.first, parts.second, parts.third, null, MinecraftVersionChannel.BETA)
+            }
+
+            val alpha = alphaPattern.matchEntire(value)
+            if (alpha != null) {
+                val parts = numericParts(alpha.groupValues[1], alpha.groupValues[2], alpha.groupValues[3]) ?: return unknown(value)
+                return MinecraftVersion(value, parts.first, parts.second, parts.third, null, MinecraftVersionChannel.ALPHA)
+            }
+
+            if (legacyPattern.matches(value)) {
+                return MinecraftVersion(value, null, null, null, null, MinecraftVersionChannel.LEGACY)
+            }
+
+            return unknown(value)
+        }
+
+        private fun unknown(safeValue: String): MinecraftVersion =
+            MinecraftVersion(safeValue, null, null, null, null, MinecraftVersionChannel.UNKNOWN)
+
+        private fun numericParts(major: String, minor: String, patch: String): Triple<Int, Int, Int?>? {
+            val parsedMajor = major.toIntOrNull()?.takeIf { it in 0..99_999 } ?: return null
+            val parsedMinor = minor.toIntOrNull()?.takeIf { it in 0..99_999 } ?: return null
+            val parsedPatch = patch.takeIf(String::isNotEmpty)?.toIntOrNull()?.takeIf { it in 0..99_999 }
+            if (patch.isNotEmpty() && parsedPatch == null) return null
+            return Triple(parsedMajor, parsedMinor, parsedPatch)
+        }
+    }
+}
+
+object MinecraftVersionSerializer : KSerializer<MinecraftVersion> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("MinecraftVersion", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: MinecraftVersion) = encoder.encodeString(value.identifier ?: "unknown")
+    override fun deserialize(decoder: Decoder): MinecraftVersion = MinecraftVersion.parse(decoder.decodeString())
+}
+
+@Serializable
+data class MinecraftRuntimeDescriptor(
+    /** App version echoed by the authenticated capabilities request; it is not a server-reported runtime version. */
+    val appVersion: String? = null,
+    val edition: MinecraftEdition = MinecraftEdition.UNKNOWN,
+    val version: MinecraftVersion = MinecraftVersion.UNKNOWN,
+    val javaRuntimeMajor: Int? = null,
+    val loader: MinecraftLoader = MinecraftLoader.UNKNOWN,
+    val loaderVersion: String? = null,
+    /** Runtime-reported Fabric API version; null for loaders that do not use Fabric API. */
+    val fabricApiVersion: String? = null,
+    val bridgeProtocolVersion: Int? = null,
+    val bridgeVersion: String? = null,
+    /** Only capabilities reported by the authenticated Minecraft-side bridge. */
+    val capabilities: Set<MinecraftCapability> = emptySet(),
+    val supportedBuildPlanSchemaVersions: Set<Int> = emptySet(),
+    val maximumValidatedOperations: Int? = null,
+    val maximumRequestBytes: Int? = null,
+    val maximumOperationsPerTick: Int? = null,
+    val maximumExecutionSeconds: Int? = null,
+    val worldAvailable: Boolean = false,
+    val operatorOriginAvailable: Boolean = false,
+) {
+    companion object {
+        /** Maps the authenticated protocol-v2 runtime report; no Java/API values are inferred by the app. */
+        fun fromBridgeV2(
+            appVersion: String?,
+            editionName: String,
+            minecraftVersion: String,
+            javaRuntimeMajor: Int,
+            loaderName: String,
+            loaderVersion: String,
+            fabricApiVersion: String?,
+            bridgeProtocolVersion: Int,
+            bridgeVersion: String,
+            reportedCapabilities: Set<MinecraftCapability>,
+            supportedBuildPlanSchemaVersions: Set<Int>,
+            maximumValidatedOperations: Int,
+            maximumRequestBytes: Int,
+            maximumOperationsPerTick: Int,
+            maximumExecutionSeconds: Int,
+            worldAvailable: Boolean,
+            operatorOriginAvailable: Boolean,
+        ): MinecraftRuntimeDescriptor = MinecraftRuntimeDescriptor(
+            appVersion = appVersion,
+            edition = MinecraftEdition.fromWire(editionName),
+            version = MinecraftVersion.parse(minecraftVersion),
+            javaRuntimeMajor = javaRuntimeMajor,
+            loader = MinecraftLoader.fromWire(loaderName),
+            loaderVersion = loaderVersion,
+            fabricApiVersion = fabricApiVersion,
+            bridgeProtocolVersion = bridgeProtocolVersion,
+            bridgeVersion = bridgeVersion,
+            capabilities = reportedCapabilities,
+            supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions,
+            maximumValidatedOperations = maximumValidatedOperations,
+            maximumRequestBytes = maximumRequestBytes,
+            maximumOperationsPerTick = maximumOperationsPerTick,
+            maximumExecutionSeconds = maximumExecutionSeconds,
+            worldAvailable = worldAvailable,
+            operatorOriginAvailable = operatorOriginAvailable,
+        )
+    }
+}
+
+@Serializable
+data class MinecraftDimensionLimits(
+    val width: Int,
+    val height: Int,
+    val depth: Int,
+)
+
+@Serializable
+data class JavaRuntimeRequirement(
+    /** Preferred/certified runtime major recorded by this compatibility profile. */
+    val requiredMajor: Int,
+    val minimumSupportedMajor: Int,
+    val maximumSupportedMajor: Int,
+) {
+    init {
+        require(requiredMajor > 0 && minimumSupportedMajor > 0 && maximumSupportedMajor >= minimumSupportedMajor)
+        require(requiredMajor in minimumSupportedMajor..maximumSupportedMajor)
+    }
+
+    fun supports(actualMajor: Int): Boolean = actualMajor in minimumSupportedMajor..maximumSupportedMajor
+
+    internal fun overlaps(other: JavaRuntimeRequirement): Boolean =
+        minimumSupportedMajor <= other.maximumSupportedMajor && other.minimumSupportedMajor <= maximumSupportedMajor
+}
+
+/** One exact runtime identity; Java and API constraints are explicit rather than inferred from Minecraft version. */
+@Serializable
+data class SupportedMinecraftRuntimeDescriptor(
+    val adapterId: MinecraftAdapterId,
+    val edition: MinecraftEdition,
+    val version: MinecraftVersion,
+    val loader: MinecraftLoader,
+    val loaderVersion: String,
+    val bridgeProtocolVersion: Int,
+    val bridgeVersion: String,
+    val javaRuntimeRequirement: JavaRuntimeRequirement? = null,
+    val requiredFabricApiVersion: String? = null,
+    val supportStatus: MinecraftCompatibilityStatus = MinecraftCompatibilityStatus.SUPPORTED,
+    val maximumValidatedOperations: Int,
+    val maximumRequestBytes: Int,
+    val maximumOperationsPerTick: Int,
+    val maximumExecutionSeconds: Int,
+    val maximumDimensions: MinecraftDimensionLimits,
+) {
+    fun matchesRuntimeIdentity(runtime: MinecraftRuntimeDescriptor): Boolean =
+        runtime.edition == edition && runtime.version == version && runtime.loader == loader &&
+            runtime.loaderVersion == loaderVersion && runtime.bridgeProtocolVersion == bridgeProtocolVersion &&
+            runtime.bridgeVersion == bridgeVersion
+
+    fun matches(runtime: MinecraftRuntimeDescriptor): Boolean =
+        matchesRuntimeIdentity(runtime) &&
+            (javaRuntimeRequirement == null || runtime.javaRuntimeMajor?.let(javaRuntimeRequirement::supports) == true) &&
+            (requiredFabricApiVersion == null || runtime.fabricApiVersion == requiredFabricApiVersion)
+
+    internal fun hasSameRuntimeIdentity(other: SupportedMinecraftRuntimeDescriptor): Boolean =
+        edition == other.edition && version == other.version && loader == other.loader &&
+            loaderVersion == other.loaderVersion && bridgeProtocolVersion == other.bridgeProtocolVersion &&
+            bridgeVersion == other.bridgeVersion &&
+            (javaRuntimeRequirement == null || other.javaRuntimeRequirement == null ||
+                javaRuntimeRequirement.overlaps(other.javaRuntimeRequirement)) &&
+            (requiredFabricApiVersion == null || other.requiredFabricApiVersion == null ||
+                requiredFabricApiVersion == other.requiredFabricApiVersion)
+}
+
+@Serializable
+enum class MinecraftCompatibilityStatus {
+    SUPPORTED,
+    EXPERIMENTAL,
+    UNSUPPORTED,
+    UNKNOWN,
+}
+
+/** Stable machine-readable diagnostics; localized/user-readable explanations stay alongside each result. */
+@Serializable
+enum class MinecraftCompatibilityReasonCode(val displayName: String) {
+    UNKNOWN_RUNTIME_DESCRIPTOR("Runtime details are incomplete or unrecognized"),
+    INVALID_RUNTIME_DESCRIPTOR("Runtime details are inconsistent or invalid"),
+    UNSUPPORTED_MINECRAFT_VERSION("Minecraft version is not registered"),
+    UNSUPPORTED_LOADER("Minecraft loader is not registered"),
+    UNSUPPORTED_LOADER_VERSION("Loader version is not registered"),
+    INCOMPATIBLE_JAVA_RUNTIME("Server Java runtime is outside the profile's supported range"),
+    FABRIC_API_MISMATCH("Fabric API version does not match the registered profile"),
+    BRIDGE_PROTOCOL_MISMATCH("CraftMind Bridge protocol version does not match"),
+    BRIDGE_VERSION_MISMATCH("CraftMind Bridge version is not registered"),
+    MISSING_CAPABILITY("The server did not report a required capability"),
+    UNSUPPORTED_BUILDPLAN_SCHEMA("BuildPlan schema is not supported by this profile"),
+    PLAN_LIMIT_EXCEEDED("BuildPlan exceeds a runtime or adapter limit"),
+    AMBIGUOUS_ADAPTER_PROFILE("More than one adapter claims this runtime"),
+    UNSUPPORTED_BLOCK("The Minecraft server does not support a requested block"),
+    UNSUPPORTED_BLOCK_STATE("The Minecraft server does not support a requested block state"),
+}
+
+@JvmInline
+value class MinecraftAdapterId(val value: String) {
+    init {
+        require(Regex("[a-z0-9][a-z0-9._-]{1,63}").matches(value)) { "Invalid Minecraft adapter ID" }
+    }
+
+    override fun toString(): String = value
+}
+
+data class BuildPlanRequirements(
+    val requiredCapabilities: Set<MinecraftCapability>,
+    /** Null for runtime-only resolution; otherwise the plan's requested operation count. */
+    val operationCount: Int? = null,
+    val schemaVersion: Int? = null,
+    val dimensions: BuildDimensions? = null,
+) {
+    companion object {
+        val runtimeExecution = BuildPlanRequirements(
+            requiredCapabilities = setOf(
+                MinecraftCapability.WORLD_ACCESS,
+                MinecraftCapability.BUILD_EXECUTION,
+                MinecraftCapability.BLOCK_PLACEMENT,
+                MinecraftCapability.WORLD_VALIDATION,
+                MinecraftCapability.ORIGIN_RESOLUTION,
+                MinecraftCapability.STRUCTURE_BATCHING,
+                MinecraftCapability.PROGRESS_REPORTING,
+                MinecraftCapability.BUILD_STATUS,
+                MinecraftCapability.CANCELLATION,
+                MinecraftCapability.BUILD_PLAN_V2,
+            ),
+        )
+
+        fun from(plan: BuildPlan): BuildPlanRequirements {
+            val required = runtimeExecution.requiredCapabilities.toMutableSet()
+            if (plan.operations.any { it.blockState.isNotEmpty() }) {
+                required += MinecraftCapability.BLOCK_STATE_SUPPORT
+            }
+            return BuildPlanRequirements(
+                requiredCapabilities = required,
+                operationCount = plan.operations.size,
+                schemaVersion = plan.metadata.schemaVersion,
+                dimensions = plan.metadata.dimensions,
+            )
+        }
+    }
+}
+
+data class MinecraftCompatibilityLimits(
+    val maximumValidatedOperations: Int?,
+    val maximumRequestBytes: Int?,
+    val maximumDimensions: MinecraftDimensionLimits?,
+    val javaRuntimeRequirement: JavaRuntimeRequirement?,
+    val maximumOperationsPerTick: Int?,
+    val maximumExecutionSeconds: Int?,
+)
+
+data class MinecraftCompatibilityResult(
+    val status: MinecraftCompatibilityStatus,
+    val adapterId: MinecraftAdapterId?,
+    /** Capabilities reported by the authenticated bridge only. */
+    val capabilities: Set<MinecraftCapability>,
+    val missingCapabilities: Set<MinecraftCapability>,
+    val reasons: List<String>,
+    val warnings: List<String>,
+    val limits: MinecraftCompatibilityLimits,
+    val planWithinLimits: Boolean = true,
+    val reasonCodes: Set<MinecraftCompatibilityReasonCode> = emptySet(),
+) {
+    /** EXPERIMENTAL, UNKNOWN, missing capabilities, or failed limits can never authorize construction. */
+    val canExecute: Boolean
+        get() = status == MinecraftCompatibilityStatus.SUPPORTED && adapterId != null &&
+            missingCapabilities.isEmpty() && planWithinLimits
+}

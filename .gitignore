@@ -1,0 +1,39 @@
+# Android / Gradle
+.gradle/
+/build/
+/*/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+*.apk
+*.aab
+.externalNativeBuild/
+.cxx/
+
+# Signing and local secrets
+*.jks
+*.keystore
+*.jceks
+*.p12
+*.pfx
+*.pem
+*.key
+*.p8
+keystore.properties
+secrets.properties
+release-signing.properties
+signing.local.properties
+.env
+.env.*
+
+# Fabric development/runtime data (includes private bridge identity)
+/minecraft-bridge/run/
+**/craftmind-bridge.properties
+**/craftmind-bridge/
+
+# Test / tooling output
+.kotlin/
+__pycache__/
+*.py[cod]
