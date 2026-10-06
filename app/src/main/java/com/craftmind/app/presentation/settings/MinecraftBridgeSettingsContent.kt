@@ -118,9 +118,16 @@ internal fun MinecraftBridgeSettingsContent(
             val runtime = capabilities.runtimeDescriptor
             val compatibility = state.compatibility
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("Minecraft Runtime", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Detected automatically from the authenticated bridge · pipeline ${state.runtimeResolution?.phase?.displayName ?: "not started"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 MinecraftRuntimeCompatibilityBlock(
                     runtime = runtime,
                     compatibility = compatibility,
+                    resolution = state.runtimeResolution,
                 )
                 if (!runtime.isBedrock) {
                     Text(
@@ -140,7 +147,7 @@ internal fun MinecraftBridgeSettingsContent(
                 Text("Cancellation: ${if (capabilities.cancellation) "reported available" else "unavailable"}", style = MaterialTheme.typography.bodySmall)
                 Text("Current origin dimension: ${capabilities.dimensionId ?: "not selected"}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Pairing authenticates and pins this bridge, but does not establish compatibility. BuildPlan v2 is sent only when the resolver returns SUPPORTED, capability and limit checks pass, server preflight succeeds, and you explicitly confirm. Provider keys remain on this device.",
+                    "Edition, Minecraft version, loader, bridge, protocol, and adapter are detected automatically; CraftMind never asks you to choose them and never offers a manual execution override. Pairing authenticates and pins this bridge, but does not establish compatibility. BuildPlan v2 is sent only when the resolver returns SUPPORTED, capability and limit checks pass, server preflight succeeds, and you explicitly confirm. Provider keys remain on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -41,6 +41,7 @@ import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
@@ -51,8 +52,14 @@ import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityDi
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.presentation.settings.BridgePairingState
+import com.craftmind.app.presentation.settings.TARGET_RUNTIME_DETECTED_AUTOMATICALLY
+import com.craftmind.app.presentation.settings.adapterSummaryLines
+import com.craftmind.app.presentation.settings.availabilityLabel
+import com.craftmind.app.presentation.settings.bridgeSummaryLines
+import com.craftmind.app.presentation.settings.detectionStatusLabel
 import com.craftmind.app.presentation.settings.runtimeFactsLabel
 import com.craftmind.app.presentation.settings.runtimeIdentityLabel
+import com.craftmind.app.presentation.settings.runtimeSummaryLines
 import com.craftmind.app.presentation.settings.unavailableReason
 import kotlinx.coroutines.delay
 import java.net.URI
@@ -106,6 +113,17 @@ fun PlanReviewScreen(
     val runtimeDescriptor = bridgeConnection?.capabilities?.runtimeDescriptor
     val planCompatibility = remember(displayedPlan, runtimeDescriptor) {
         runtimeDescriptor?.let { compatibilityResolver.resolve(displayedPlan, it) }
+    }
+    // Phase 13: Build Review shows the automatically detected runtime for the authenticated session. The plan-level
+    // pipeline result is recomputed whenever the connection or the displayed plan changes; it is never cached from a
+    // previous session and never lets the user pick a runtime.
+    val runtimeResolution = remember(bridgeConnection, displayedPlan) {
+        bridgeConnection?.let { connected ->
+            compatibilityResolver.runtimeGate.resolvePlan(
+                displayedPlan,
+                connected.runtimeReport(BuildConfig.VERSION_NAME),
+            )
+        }
     }
     val planRequirements = remember(displayedPlan) { BuildPlanRequirements.from(displayedPlan) }
     val registeredProfileSummary = remember(compatibilityResolver) {
@@ -438,6 +456,46 @@ private fun ConstructionExecutionCard(
         matchingFlow !is BuildExecutionFlow.PreviewReady
 
     ReviewCard("Minecraft compatibility and available limits") {
+        Text(TARGET_RUNTIME_DETECTED_AUTOMATICALLY, style = MaterialTheme.typography.titleSmall)
+        if (runtimeResolution == null) {
+            Text(
+                "Target Runtime: not detected — no authenticated bridge session is available.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        } else {
+            val resolution = runtimeResolution
+            Text(
+                resolution.detection.detectionStatusLabel(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (resolution.detection.isDetected) {
+                resolution.runtimeSummaryLines().forEach { fact ->
+                    Text(fact, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "Bridge: ${resolution.bridgeSummaryLines().joinToString(" · ")}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Adapter: ${resolution.adapterSummaryLines().joinToString(" · ")}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                resolution.runtimeSummaryLines().forEach { fact ->
+                    Text(fact, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                }
+            }
+            if (!resolution.canExecute) {
+                Text("Build unavailable", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                Text(
+                    "No BuildPlan will be sent for execution. ${resolution.availabilityLabel()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
         Text(
             "Compatibility: ${planCompatibility?.status?.name ?: MinecraftCompatibilityStatus.UNKNOWN.name}",
             style = MaterialTheme.typography.titleSmall,

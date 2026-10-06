@@ -10,7 +10,14 @@ import com.craftmind.app.domain.minecraft.compatibility.MinecraftEdition
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftLoader
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimePlatform
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftAdapterSelectionStatus
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDetectionStatus
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimePipelinePhase
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftVersion
+import com.craftmind.app.domain.minecraft.compatibility.RuntimeDetectionTestFixtures.bedrockSnapshot
+import com.craftmind.app.domain.minecraft.compatibility.RuntimeDetectionTestFixtures.javaProductionSnapshot
+import com.craftmind.app.domain.minecraft.compatibility.RuntimeDetectionTestFixtures.legacyForge1710Snapshot
+import com.craftmind.app.domain.minecraft.compatibility.RuntimeDetectionTestFixtures.report
 import com.craftmind.bridge.protocol.BridgeProtocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -167,5 +174,131 @@ class MinecraftRuntimeCompatibilityTextTest {
         val unknownReason = unknown.unavailableReason(blank)
         assertTrue(unknownReason.contains("no nearest-version or cross-edition fallback is used", ignoreCase = true))
         assertFalse(unknownReason.contains("exceeds the limits"))
+    }
+    // ---------------------------------------------------------------------------------------------
+    // Phase 13: the Settings and Build Review wording for automatically detected runtimes. The user
+    // is never asked to pick an edition, version, loader, or adapter, and an undetected runtime is
+    // shown as unknown instead of being filled in.
+    // ---------------------------------------------------------------------------------------------
+
+    private val gate = DefaultMinecraftCompatibility.gate
+
+    @Test
+    fun buildReviewStatesThatTheTargetRuntimeWasDetectedAutomatically() {
+        assertEquals("Target Runtime: Detected automatically", TARGET_RUNTIME_DETECTED_AUTOMATICALLY)
+
+        val resolution = gate.resolveRuntime(report(javaProductionSnapshot()))
+        assertEquals(MinecraftRuntimePipelinePhase.READY, resolution.phase)
+        assertEquals("Ready", resolution.phase.displayName)
+        assertEquals("Detected automatically from the authenticated bridge", resolution.detection.detectionStatusLabel())
+        assertEquals("Build available for this authenticated runtime.", resolution.availabilityLabel())
+    }
+
+    @Test
+    fun detectedJavaRuntimeShowsEditionVersionChannelLoaderBridgeAndAdapterFacts() {
+        val resolution = gate.resolveRuntime(report(javaProductionSnapshot()))
+
+        assertEquals(
+            listOf(
+                "Java Edition",
+                "1.20.1",
+                "Release",
+                "Fabric 0.16.10 · Fabric API 0.92.2+1.20.1",
+                "Java 17",
+            ),
+            resolution.runtimeSummaryLines(),
+        )
+        assertEquals(listOf("1.2.0", "Protocol 2"), resolution.bridgeSummaryLines())
+        assertEquals(listOf("Java Edition / Fabric", "Selected"), resolution.adapterSummaryLines())
+        assertEquals(
+            listOf(
+                "Supported",
+                "Certification: Recorded as a certified production target",
+                "Execution: authorized for this authenticated runtime",
+            ),
+            resolution.compatibilitySummaryLines(),
+        )
+        assertTrue(resolution.pipelineReasonLines().isEmpty())
+    }
+
+    @Test
+    fun detectedLegacyRuntimeIsShownWithItsLegacyChannelAndAnUnavailableBuild() {
+        val resolution = gate.resolveRuntime(report(legacyForge1710Snapshot()))
+
+        assertEquals(MinecraftRuntimeDetectionStatus.DETECTED, resolution.detection.status)
+        assertEquals(MinecraftAdapterSelectionStatus.SELECTED, resolution.selection.status)
+        assertFalse(resolution.canExecute)
+        assertEquals(
+            listOf("Java Edition", "1.7.10", "Legacy", "Forge 10.13.4.1614", "Java 8"),
+            resolution.runtimeSummaryLines(),
+        )
+        assertEquals(listOf("Java Edition / Forge", "Selected"), resolution.adapterSummaryLines())
+        assertTrue(resolution.compatibilitySummaryLines().contains("Experimental"))
+        assertTrue(resolution.compatibilitySummaryLines().contains("Certification: Not performed"))
+        assertTrue(resolution.compatibilitySummaryLines().contains("Execution: not authorized"))
+
+        val availability = resolution.availabilityLabel()
+        assertTrue(availability.startsWith("Build unavailable"))
+        assertTrue(availability.contains("No BuildPlan will be sent for execution"))
+        assertTrue(resolution.pipelineReasonLines().any { it.startsWith("RUNTIME_NOT_CERTIFIED:") })
+        assertTrue(resolution.capabilityWarnings.any { it.contains("does not authorize execution") })
+    }
+
+    @Test
+    fun detectedBedrockRuntimeShowsPlatformFactsAndNeverJavaOrFabricFacts() {
+        val resolution = gate.resolveRuntime(report(bedrockSnapshot()))
+        val lines = resolution.runtimeSummaryLines()
+
+        assertEquals("Bedrock Edition", lines.first())
+        assertTrue(lines.contains("Loader: Bedrock Native"))
+        assertTrue(lines.any { it.startsWith("Platform: Bedrock Dedicated Server") })
+        assertFalse(lines.any { it.startsWith("Java ") })
+        assertFalse(lines.any { it.contains("Fabric API") })
+        assertEquals(listOf("Bedrock Edition / Bedrock Native contract", "Selected"), resolution.adapterSummaryLines())
+        assertTrue(resolution.availabilityLabel().contains("No BuildPlan will be sent for execution"))
+    }
+
+    @Test
+    fun anUndetectedRuntimeIsShownAsUnableToVerifyInsteadOfSynthesizedFacts() {
+        val unknownVersion = gate.resolveRuntime(report(javaProductionSnapshot(minecraftVersion = "unknown")))
+        assertEquals(MinecraftRuntimePipelinePhase.UNKNOWN, unknownVersion.phase)
+        assertEquals(MinecraftRuntimeDetectionStatus.UNKNOWN, unknownVersion.detection.status)
+
+        val lines = unknownVersion.runtimeSummaryLines()
+        assertEquals("Unable to verify runtime", lines.first())
+        assertEquals("Execution unavailable", lines[1])
+        assertTrue(lines.any { it.contains("Minecraft version") })
+        assertEquals("Unable to verify runtime", unknownVersion.detection.detectionStatusLabel())
+        assertTrue(unknownVersion.availabilityLabel().contains("No BuildPlan will be sent for execution"))
+        assertEquals("none", unknownVersion.selection.adapterLabel())
+        // Detection failed, so selection never ran: it is blocked rather than reported as a plain no-match.
+        assertEquals("Adapter selection blocked", unknownVersion.selection.status.statusLabel())
+
+        val incomplete = gate.resolveRuntime(report(javaProductionSnapshot(javaRuntimeMajor = null)))
+        assertEquals(MinecraftRuntimePipelinePhase.DETECTING_RUNTIME, incomplete.phase)
+        assertEquals("Runtime report incomplete", incomplete.detection.detectionStatusLabel())
+        assertFalse(incomplete.canExecute)
+
+        val rejected = gate.resolveRuntime(report(javaProductionSnapshot(protocolVersion = 1)))
+        assertEquals(MinecraftRuntimePipelinePhase.VALIDATING_RUNTIME, rejected.phase)
+        assertEquals("Runtime report rejected", rejected.detection.detectionStatusLabel())
+        assertTrue(rejected.pipelineReasonLines().any { it.startsWith("BRIDGE_PROTOCOL_MISMATCH:") })
+
+        val unauthorized = gate.resolveRuntime(report(javaProductionSnapshot(), authenticated = false))
+        assertEquals(MinecraftRuntimePipelinePhase.AUTHENTICATING, unauthorized.phase)
+        assertEquals("Adapter selection blocked", unauthorized.selection.status.statusLabel())
+    }
+
+    @Test
+    fun anUnregisteredRuntimeIsReportedWithoutAnAdapterAndWithoutANearestVersion() {
+        val resolution = gate.resolveRuntime(report(javaProductionSnapshot(minecraftVersion = "1.19.4")))
+
+        assertEquals(MinecraftRuntimePipelinePhase.SELECTING_ADAPTER, resolution.phase)
+        assertEquals(MinecraftAdapterSelectionStatus.NO_MATCH, resolution.selection.status)
+        assertEquals("none", resolution.selection.adapterLabel())
+        assertEquals("No matching adapter", resolution.selection.status.statusLabel())
+        assertTrue(resolution.pipelineReasonLines().any { it.contains("no registered production adapter") })
+        assertFalse(resolution.pipelineReasonLines().any { it.contains("1.20.1") })
+        assertTrue(resolution.availabilityLabel().contains("No BuildPlan will be sent for execution"))
     }
 }

@@ -55,6 +55,7 @@ class JavaFabric1201Adapter : MinecraftAdapter {
             ),
             limits = evaluation.limits,
             planWithinLimits = evaluation.withinLimits,
+            runtimeCertification = profile.runtimeCertification,
             reasonCodes = reasonCodes,
         )
     }

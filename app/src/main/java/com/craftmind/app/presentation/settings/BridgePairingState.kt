@@ -3,6 +3,7 @@ package com.craftmind.app.presentation.settings
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeResolution
 
 data class BridgePairingState(
     val host: String = "",
@@ -13,6 +14,12 @@ data class BridgePairingState(
     val isProfileLoaded: Boolean = false,
     val connection: BridgeConnectionState = BridgeConnectionState.Disconnected,
     val compatibility: MinecraftCompatibilityResult? = null,
+    /**
+     * Phase 13 automatic runtime pipeline result for the currently authenticated session: detection, adapter
+     * selection, compatibility resolution, and the session-bound execution binding. It is display information;
+     * execution is authorized again by the bridge repository before any BuildPlan is sent.
+     */
+    val runtimeResolution: MinecraftRuntimeResolution? = null,
     val isWorking: Boolean = false,
     val message: String? = null,
     val showRevokeConfirmation: Boolean = false,

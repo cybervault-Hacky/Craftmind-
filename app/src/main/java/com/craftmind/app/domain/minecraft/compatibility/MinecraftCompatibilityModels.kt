@@ -255,6 +255,18 @@ data class MinecraftRuntimeDescriptor(
     /** True when this descriptor describes Bedrock rather than a Java/JVM runtime. */
     val isBedrock: Boolean get() = edition == MinecraftEdition.BEDROCK
 
+    /**
+     * Release channel securely derived from the authoritative Minecraft identifier the authenticated bridge
+     * reported. It is never taken from a UI selection, a launcher name, a filename, or a profile's preference, and
+     * a contradictory profile declaration makes the descriptor invalid instead of being corrected silently.
+     */
+    val releaseChannel: MinecraftVersionChannel get() = version.channel
+
+    /** True when the bridge reported every execution limit CraftMind requires; missing limits fail closed. */
+    val hasReportedLimits: Boolean
+        get() = maximumValidatedOperations != null && maximumRequestBytes != null &&
+            maximumOperationsPerTick != null && maximumExecutionSeconds != null
+
     companion object {
         /** Maps the authenticated protocol-v2 runtime report; no Java/API values are inferred by the app. */
         @Suppress("LongParameterList")
@@ -480,6 +492,12 @@ enum class MinecraftCompatibilityReasonCode(val displayName: String) {
     UNSUPPORTED_LEGACY_VERSION("The reported legacy Minecraft identifier has no registered compatibility profile"),
     UNSUPPORTED_RELEASE_CHANNEL("No registered compatibility profile covers this release channel"),
     RUNTIME_NOT_CERTIFIED("This runtime is recognized but has no recorded runtime certification"),
+
+    // Phase 13: automatic runtime detection, session binding, and adapter-selection security.
+    APP_VERSION_MISMATCH("The authenticated bridge echoed a different CraftMind app version"),
+    RUNTIME_DETECTION_UNAUTHORIZED("Runtime detection requires an authenticated bridge session"),
+    SESSION_IDENTITY_MISMATCH("This runtime is not bound to the current authenticated bridge session"),
+    RUNTIME_IDENTITY_CHANGED("The authenticated Minecraft runtime changed after compatibility was resolved"),
 }
 
 @Serializable

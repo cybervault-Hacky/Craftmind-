@@ -1,5 +1,6 @@
 package com.craftmind.app.presentation.builds
 
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.buildplan.BuildPlanTestFixtures
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.buildplan.LocalBuildRepository
@@ -462,6 +463,7 @@ class BuildExecutionViewModelTest {
 
     private companion object {
         const val WORLD_SESSION = "world-session-test"
+        const val SESSION_ID = "session-test"
         val BRIDGE = TrustedMinecraftBridge(
             host = "192.168.1.20",
             port = 19872,
@@ -478,7 +480,9 @@ class BuildExecutionViewModelTest {
                 bridgeId = BRIDGE.bridgeId,
                 identityFingerprint = BRIDGE.tlsFingerprint,
                 bridgeVersion = "1.2.0",
-                clientAppVersion = "1.0.0-test",
+                // Phase 13 detection re-verifies the app-version echo, so the fixture reports exactly the value
+                // this build signs into its capabilities request.
+                clientAppVersion = BuildConfig.VERSION_NAME,
                 editionName = "java",
                 minecraftVersion = "1.20.1",
                 javaRuntimeMajor = 17,
@@ -512,6 +516,7 @@ class BuildExecutionViewModelTest {
                 worldSessionId = WORLD_SESSION,
             ),
             authenticatedAtEpochMillis = 1_700_000_000_000,
+            sessionId = SESSION_ID,
         )
     }
 }
