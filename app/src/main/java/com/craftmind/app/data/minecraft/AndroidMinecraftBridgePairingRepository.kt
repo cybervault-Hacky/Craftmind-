@@ -522,8 +522,9 @@ class AndroidMinecraftBridgePairingRepository(
         }
     }
 
+    /** Edition-dispatched, strict parsing of the authenticated runtime report. */
     private fun readCapabilities(payload: JsonObject, expectedProfile: TrustedMinecraftBridge?): BridgeCapabilitiesSnapshot =
-        BridgeCapabilitiesWireCodec.read(payload, expectedProfile)
+        BridgeRuntimeReportReader.read(payload, expectedProfile)
 
     private fun executionRequestPayload(
         record: LocalBuildRecord,

@@ -10,7 +10,7 @@ import kotlinx.serialization.json.Json
 
 /** Dedicated semantic BuildPlan v2 output contract. No app-side build template is selected. */
 object BuildPlanGenerationPrompt {
-    const val SYSTEM_INSTRUCTION = """
+    val SYSTEM_INSTRUCTION = """
         You are CraftMind's Minecraft architect. Design an original structure from the user's written
         request and, when supplied, bounded text-only visual analysis from an earlier image or sampled-video request.
         Do not substitute a stock layout or assume a particular building type. Keep directly observed

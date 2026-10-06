@@ -2,6 +2,9 @@ package com.craftmind.app.domain.minecraft.compatibility
 
 import com.craftmind.app.domain.buildplan.BuildDimensions
 import com.craftmind.app.domain.buildplan.BuildPlan
+import com.craftmind.app.domain.buildplan.BuildPlanLimits
+import com.craftmind.app.domain.buildplan.BuildPlanOperation
+import com.craftmind.app.domain.buildplan.BuildPlanOperationKind
 import java.util.Locale
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -102,6 +105,7 @@ object MinecraftCapabilitySerializer : KSerializer<MinecraftCapability> {
 }
 
 /** Exact identifier is preserved; this type intentionally provides no ordering or automatic version fallback. */
+@Serializable
 enum class MinecraftVersionChannel {
     RELEASE,
     PRE_RELEASE,
@@ -218,8 +222,16 @@ data class MinecraftRuntimeDescriptor(
     val appVersion: String? = null,
     val edition: MinecraftEdition = MinecraftEdition.UNKNOWN,
     val version: MinecraftVersion = MinecraftVersion.UNKNOWN,
+    /**
+     * Bedrock runtime host reported by an authenticated Bedrock bridge. Java deployments leave this [UNKNOWN];
+     * the Bedrock edition requires an explicit platform and never infers one.
+     */
+    val platform: MinecraftRuntimePlatform = MinecraftRuntimePlatform.UNKNOWN,
+    /** Bedrock host/runtime version where the bridge can report it safely; never a Java loader version. */
+    val platformVersion: String? = null,
     val javaRuntimeMajor: Int? = null,
     val loader: MinecraftLoader = MinecraftLoader.UNKNOWN,
+    /** Runtime-reported loader version; null for Bedrock, which has no loader concept. */
     val loaderVersion: String? = null,
     /** Runtime-reported Fabric API version; null for loaders that do not use Fabric API. */
     val fabricApiVersion: String? = null,
@@ -234,16 +246,25 @@ data class MinecraftRuntimeDescriptor(
     val maximumExecutionSeconds: Int? = null,
     val worldAvailable: Boolean = false,
     val operatorOriginAvailable: Boolean = false,
+    /**
+     * Integration limitations declared by the reported runtime. Only a Bedrock runtime or a legacy/experimental
+     * Java runtime may report them; the production release runtime must not claim limitations it does not have.
+     */
+    val limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
 ) {
+    /** True when this descriptor describes Bedrock rather than a Java/JVM runtime. */
+    val isBedrock: Boolean get() = edition == MinecraftEdition.BEDROCK
+
     companion object {
         /** Maps the authenticated protocol-v2 runtime report; no Java/API values are inferred by the app. */
+        @Suppress("LongParameterList")
         fun fromBridgeV2(
             appVersion: String?,
             editionName: String,
             minecraftVersion: String,
-            javaRuntimeMajor: Int,
+            javaRuntimeMajor: Int?,
             loaderName: String,
-            loaderVersion: String,
+            loaderVersion: String?,
             fabricApiVersion: String?,
             bridgeProtocolVersion: Int,
             bridgeVersion: String,
@@ -255,10 +276,15 @@ data class MinecraftRuntimeDescriptor(
             maximumExecutionSeconds: Int,
             worldAvailable: Boolean,
             operatorOriginAvailable: Boolean,
+            platform: MinecraftRuntimePlatform = MinecraftRuntimePlatform.UNKNOWN,
+            platformVersion: String? = null,
+            limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
         ): MinecraftRuntimeDescriptor = MinecraftRuntimeDescriptor(
             appVersion = appVersion,
             edition = MinecraftEdition.fromWire(editionName),
             version = MinecraftVersion.parse(minecraftVersion),
+            platform = platform,
+            platformVersion = platformVersion,
             javaRuntimeMajor = javaRuntimeMajor,
             loader = MinecraftLoader.fromWire(loaderName),
             loaderVersion = loaderVersion,
@@ -273,6 +299,7 @@ data class MinecraftRuntimeDescriptor(
             maximumExecutionSeconds = maximumExecutionSeconds,
             worldAvailable = worldAvailable,
             operatorOriginAvailable = operatorOriginAvailable,
+            limitations = limitations,
         )
     }
 }
@@ -302,6 +329,60 @@ data class JavaRuntimeRequirement(
         minimumSupportedMajor <= other.maximumSupportedMajor && other.minimumSupportedMajor <= maximumSupportedMajor
 }
 
+/**
+ * How far a runtime integration has actually been verified.
+ *
+ * The ladder is ordered and must never be collapsed: a profile may only claim what was genuinely performed, and
+ * [authorizesSupport] is true only for the two rungs that imply verification against a real runtime. Legacy,
+ * pre-release, snapshot, beta, and experimental profiles stay below that line until a real test is recorded.
+ */
+@Serializable
+enum class MinecraftRuntimeCertification(val displayName: String) {
+    NOT_PERFORMED("Not performed"),
+    STATIC_ONLY("Static/source-level analysis only"),
+    UNIT_TESTED("Source-level unit tests only"),
+    BRIDGE_TESTED("Verified against a bridge without a Minecraft runtime"),
+    RUNTIME_TESTED("Verified against a real Minecraft runtime"),
+    CERTIFIED("Recorded as a certified production target"),
+
+    ;
+
+    /** True only when the recorded verification justifies a SUPPORTED claim. */
+    val authorizesSupport: Boolean get() = this == RUNTIME_TESTED || this == CERTIFIED
+
+    /** Bedrock additionally requires a real Bedrock runtime test; a release-process label is not enough. */
+    val authorizesBedrockSupport: Boolean get() = this == RUNTIME_TESTED
+}
+
+/** Integration limitations a runtime declares up front instead of implying reliability. */
+@Serializable
+enum class MinecraftRuntimeLimitation(val displayName: String) {
+    CANCELLATION_AT_BATCH_BOUNDARY("Cancellation is applied at the next bounded batch boundary"),
+    NO_ROLLBACK("Cancelled or failed work can leave partial world changes"),
+    NO_AUTOMATIC_RESUME("An interrupted build is never resumed automatically"),
+    RECOVERY_REQUIRED_AFTER_INTERRUPTION("Interrupted world state requires operator inspection"),
+    PROGRESS_IS_BRIDGE_REPORTED("Progress is only bridge-reported; CraftMind never estimates it"),
+    SINGLE_ACTIVE_EXECUTION("Only one prepared, queued, or running build is allowed"),
+    NO_BLOCK_ENTITY_DATA("BuildPlan v2 cannot carry block-entity data"),
+    NO_TRANSACTIONAL_PLACEMENT("Block placement is not transactional across the whole plan"),
+    ORIGIN_MUST_BE_OPERATOR_SELECTED("The world origin is selected by an operator on the Minecraft side"),
+    LEGACY_RUNTIME_NOT_VERIFIED("This legacy or experimental runtime has no recorded runtime verification"),
+    LEGACY_BRIDGE_INTERFACE_UNVERIFIED("The declared legacy bridge interface has never been exercised"),
+    BLOCK_STATE_MAPPING_NOT_VERIFIED("No verified block/state mapping exists for this runtime target"),
+}
+
+/**
+ * One structured, bounded compatibility diagnostic suitable for the Android UI, logs, tests, and later AI
+ * refinement. Diagnostics never contain credentials, tokens, or provider material.
+ */
+data class MinecraftCompatibilityDiagnostic(
+    val reasonCode: MinecraftCompatibilityReasonCode,
+    val componentId: String?,
+    val blockId: String?,
+    val stateProperties: List<String> = emptyList(),
+    val detail: String,
+)
+
 /** One exact runtime identity; Java and API constraints are explicit rather than inferred from Minecraft version. */
 @Serializable
 data class SupportedMinecraftRuntimeDescriptor(
@@ -315,12 +396,38 @@ data class SupportedMinecraftRuntimeDescriptor(
     val javaRuntimeRequirement: JavaRuntimeRequirement? = null,
     val requiredFabricApiVersion: String? = null,
     val supportStatus: MinecraftCompatibilityStatus = MinecraftCompatibilityStatus.SUPPORTED,
+    /**
+     * Release channel this profile claims. It is an explicit registry decision, never inferred from the version
+     * number: `1.7.10` parses as a release token but is only treated as legacy because a profile declares it so.
+     */
+    val releaseChannel: MinecraftVersionChannel = MinecraftVersionChannel.RELEASE,
+    /** Recorded verification level of this profile; a SUPPORTED claim requires a supporting rung. */
+    val runtimeCertification: MinecraftRuntimeCertification = MinecraftRuntimeCertification.NOT_PERFORMED,
+    /** Declared integration limitations. Required for legacy/pre-release/snapshot/beta/alpha profiles. */
+    val limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
+    /** Revision label of the block/state support below; never a version guess. */
+    val blockStateSupportRevision: String = MinecraftTargetBlockStateCatalog.NONE_DECLARED_REVISION,
+    /** How platform-neutral BuildPlan content is checked for this profile. */
+    val contentValidationMode: MinecraftContentValidationMode = MinecraftContentValidationMode.SERVER_SIDE_VALIDATION,
+    /** Verified block/state mapping for [MinecraftContentValidationMode.APP_SIDE_MAPPING]; EMPTY fails closed. */
+    @kotlinx.serialization.Transient
+    val blockStateCatalog: MinecraftTargetBlockStateCatalog = MinecraftTargetBlockStateCatalog.EMPTY,
     val maximumValidatedOperations: Int,
     val maximumRequestBytes: Int,
     val maximumOperationsPerTick: Int,
     val maximumExecutionSeconds: Int,
     val maximumDimensions: MinecraftDimensionLimits,
 ) {
+    /** True when this profile describes a runtime outside the current release channel family. */
+    val isLegacyOrExperimental: Boolean get() = releaseChannel != MinecraftVersionChannel.RELEASE
+
+    /** Certification summary used by the UI and by callers that only have a profile. */
+    val certification: MinecraftRuntimeCertification get() = runtimeCertification
+
+    /** Execution is authorized only for a certified, non-experimental profile. */
+    val authorizesExecution: Boolean
+        get() = supportStatus == MinecraftCompatibilityStatus.SUPPORTED && runtimeCertification.authorizesSupport
+
     fun matchesRuntimeIdentity(runtime: MinecraftRuntimeDescriptor): Boolean =
         runtime.edition == edition && runtime.version == version && runtime.loader == loader &&
             runtime.loaderVersion == loaderVersion && runtime.bridgeProtocolVersion == bridgeProtocolVersion &&
@@ -367,8 +474,15 @@ enum class MinecraftCompatibilityReasonCode(val displayName: String) {
     AMBIGUOUS_ADAPTER_PROFILE("More than one adapter claims this runtime"),
     UNSUPPORTED_BLOCK("The Minecraft server does not support a requested block"),
     UNSUPPORTED_BLOCK_STATE("The Minecraft server does not support a requested block state"),
+    BEDROCK_RUNTIME_NOT_CERTIFIED("No runtime-certified CraftMind Bedrock target exists for this Bedrock runtime"),
+    UNSUPPORTED_BEDROCK_PLATFORM("The reported Bedrock runtime platform is not part of a registered CraftMind Bedrock contract"),
+    UNKNOWN_MINECRAFT_VERSION("Minecraft version is missing or unrecognized"),
+    UNSUPPORTED_LEGACY_VERSION("The reported legacy Minecraft identifier has no registered compatibility profile"),
+    UNSUPPORTED_RELEASE_CHANNEL("No registered compatibility profile covers this release channel"),
+    RUNTIME_NOT_CERTIFIED("This runtime is recognized but has no recorded runtime certification"),
 }
 
+@Serializable
 @JvmInline
 value class MinecraftAdapterId(val value: String) {
     init {
@@ -384,7 +498,22 @@ data class BuildPlanRequirements(
     val operationCount: Int? = null,
     val schemaVersion: Int? = null,
     val dimensions: BuildDimensions? = null,
+    /**
+     * Distinct requested placement content, bounded by the shared operation limit. Empty for runtime-only
+     * resolution. Adapters that must map platform-neutral content to a runtime representation use it; adapters
+     * whose server validates live content (Java/Fabric) ignore it.
+     */
+    val requestedContent: List<RequestedBlockState> = emptyList(),
 ) {
+    /** One distinct requested placement, independent of any edition-specific representation. */
+    data class RequestedBlockState(
+        val blockId: String,
+        val state: Map<String, String>,
+        /** First component that requested this content, when the plan carries semantic components. */
+        val componentId: String?,
+        val operationCount: Int,
+    )
+
     companion object {
         val runtimeExecution = BuildPlanRequirements(
             requiredCapabilities = setOf(
@@ -411,7 +540,26 @@ data class BuildPlanRequirements(
                 operationCount = plan.operations.size,
                 schemaVersion = plan.metadata.schemaVersion,
                 dimensions = plan.metadata.dimensions,
+                requestedContent = requestedContent(plan),
             )
+        }
+
+        /** Distinct placements in first-seen plan order; never widened, never re-ordered into a different plan. */
+        private fun requestedContent(plan: BuildPlan): List<RequestedBlockState> {
+            if (plan.operations.size > BuildPlanLimits.MAX_OPERATIONS) return emptyList()
+            val grouped = LinkedHashMap<Pair<String, Map<String, String>>, MutableList<BuildPlanOperation>>()
+            plan.operations.forEach { operation ->
+                if (operation.kind != BuildPlanOperationKind.PLACE_BLOCK) return@forEach
+                grouped.getOrPut(operation.blockId to operation.blockState) { mutableListOf() }.add(operation)
+            }
+            return grouped.entries.map { (key, operations) ->
+                RequestedBlockState(
+                    blockId = key.first,
+                    state = key.second,
+                    componentId = operations.first().componentId,
+                    operationCount = operations.size,
+                )
+            }
         }
     }
 }
@@ -435,10 +583,19 @@ data class MinecraftCompatibilityResult(
     val warnings: List<String>,
     val limits: MinecraftCompatibilityLimits,
     val planWithinLimits: Boolean = true,
+    /** False when the plan's requested block/state content cannot be represented by this runtime. */
+    val planContentSupported: Boolean = true,
+    /** Runtime-certification level of the matched Bedrock contract; null for Java runtimes. */
+    val runtimeCertification: MinecraftRuntimeCertification? = null,
+    /** Bounded structured diagnostics for the UI, logs, tests, and later AI refinement. */
+    val diagnostics: List<MinecraftCompatibilityDiagnostic> = emptyList(),
     val reasonCodes: Set<MinecraftCompatibilityReasonCode> = emptySet(),
 ) {
-    /** EXPERIMENTAL, UNKNOWN, missing capabilities, or failed limits can never authorize construction. */
+    /**
+     * EXPERIMENTAL, UNKNOWN, missing capabilities, unrepresentable plan content, or failed limits can never
+     * authorize construction.
+     */
     val canExecute: Boolean
         get() = status == MinecraftCompatibilityStatus.SUPPORTED && adapterId != null &&
-            missingCapabilities.isEmpty() && planWithinLimits
+            missingCapabilities.isEmpty() && planWithinLimits && planContentSupported
 }

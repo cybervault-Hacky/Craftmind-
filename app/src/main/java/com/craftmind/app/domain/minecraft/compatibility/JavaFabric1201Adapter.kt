@@ -1,17 +1,16 @@
 package com.craftmind.app.domain.minecraft.compatibility
 
-import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
 import com.craftmind.app.domain.minecraft.MinecraftCancellationResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
 import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
-import com.craftmind.bridge.protocol.BridgeProtocol
 
 /**
- * The sole production runtime adapter. Execution still delegates to the existing authenticated,
- * preflight-token-based Fabric bridge repository; no alternate transport or placement path is added.
+ * The production Java Edition adapter for the exact 1.20.1/Fabric profile. Execution still delegates to the
+ * existing authenticated, preflight-token-based Fabric bridge repository; no alternate transport or placement
+ * path is added. Limit evaluation is shared with the Bedrock adapter so both editions stay identical.
  */
 class JavaFabric1201Adapter : MinecraftAdapter {
     override val adapterId = ID
@@ -31,63 +30,18 @@ class JavaFabric1201Adapter : MinecraftAdapter {
             reasons += "The authenticated bridge did not report: ${missing.sortedBy(MinecraftCapability::name).joinToString { it.displayName }}."
         }
 
-        val operationLimit = runtime.maximumValidatedOperations
-            ?.coerceAtMost(profile.maximumValidatedOperations)
-        val requestByteLimit = runtime.maximumRequestBytes
-            ?.coerceAtMost(profile.maximumRequestBytes)
-        val operationsPerTick = runtime.maximumOperationsPerTick
-            ?.coerceAtMost(profile.maximumOperationsPerTick)
-        val executionSeconds = runtime.maximumExecutionSeconds
-            ?.coerceAtMost(profile.maximumExecutionSeconds)
-        val limits = MinecraftCompatibilityLimits(
-            maximumValidatedOperations = operationLimit,
-            maximumRequestBytes = requestByteLimit,
+        val evaluation = MinecraftCompatibilityLimitsEvaluation.evaluate(
+            runtime = runtime,
+            requirements = requirements,
+            maximumValidatedOperations = profile.maximumValidatedOperations,
+            maximumRequestBytes = profile.maximumRequestBytes,
+            maximumOperationsPerTick = profile.maximumOperationsPerTick,
+            maximumExecutionSeconds = profile.maximumExecutionSeconds,
             maximumDimensions = profile.maximumDimensions,
             javaRuntimeRequirement = profile.javaRuntimeRequirement,
-            maximumOperationsPerTick = operationsPerTick,
-            maximumExecutionSeconds = executionSeconds,
         )
-
-        var withinLimits = true
-        if (operationLimit == null || operationLimit <= 0) {
-            withinLimits = false
-            reasons += "The authenticated bridge did not provide a usable operation limit."
-        }
-        if (requestByteLimit == null || requestByteLimit < BridgeProtocol.MIN_EXECUTION_REQUEST_BYTES) {
-            withinLimits = false
-            reasons += "The authenticated bridge did not provide a usable request-byte limit."
-        }
-        if (operationsPerTick == null || operationsPerTick <= 0) {
-            withinLimits = false
-            reasons += "The authenticated bridge did not provide a usable per-tick operation limit."
-        }
-        if (executionSeconds == null || executionSeconds <= 0) {
-            withinLimits = false
-            reasons += "The authenticated bridge did not provide a usable execution-time limit."
-        }
-        requirements.operationCount?.let { count ->
-            if (count <= 0 || operationLimit == null || count > operationLimit) {
-                withinLimits = false
-                reasons += "The plan operation count exceeds the authenticated bridge limit."
-            }
-        }
-        requirements.schemaVersion?.let { schemaVersion ->
-            if (schemaVersion != BuildPlanLimits.CURRENT_SCHEMA_VERSION ||
-                schemaVersion !in runtime.supportedBuildPlanSchemaVersions) {
-                withinLimits = false
-                reasonCodes += MinecraftCompatibilityReasonCode.UNSUPPORTED_BUILDPLAN_SCHEMA
-                reasons += "BuildPlan schema $schemaVersion is not supported by this adapter and authenticated bridge."
-            }
-        }
-        requirements.dimensions?.let { requested ->
-            val maximum = profile.maximumDimensions
-            if (requested.width !in 1..maximum.width || requested.height !in 1..maximum.height ||
-                requested.depth !in 1..maximum.depth) {
-                withinLimits = false
-                reasons += "The plan dimensions exceed this adapter's configured maximum."
-            }
-        }
-        if (!withinLimits) reasonCodes += MinecraftCompatibilityReasonCode.PLAN_LIMIT_EXCEEDED
+        reasons += evaluation.reasons
+        reasonCodes += evaluation.reasonCodes
 
         return MinecraftCompatibilityResult(
             status = profile.supportStatus,
@@ -99,8 +53,8 @@ class JavaFabric1201Adapter : MinecraftAdapter {
                 "The server validates each requested block and state during preflight. Unsupported content is rejected; CraftMind does not substitute blocks or change an approved plan.",
                 "The serialized request is measured against the authenticated byte limit again before preflight.",
             ),
-            limits = limits,
-            planWithinLimits = withinLimits,
+            limits = evaluation.limits,
+            planWithinLimits = evaluation.withinLimits,
             reasonCodes = reasonCodes,
         )
     }

@@ -21,7 +21,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
-import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 
 @Composable
 internal fun MinecraftBridgeSettingsContent(
@@ -119,49 +118,23 @@ internal fun MinecraftBridgeSettingsContent(
             val runtime = capabilities.runtimeDescriptor
             val compatibility = state.compatibility
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    "CraftMind app ${runtime.appVersion ?: "not echoed"} · ${runtime.edition.displayName} · Minecraft ${runtime.version.displayIdentifier}",
-                    style = MaterialTheme.typography.bodyMedium,
+                MinecraftRuntimeCompatibilityBlock(
+                    runtime = runtime,
+                    compatibility = compatibility,
                 )
-                Text(
-                    "Loader: ${runtime.loader.displayName} ${runtime.loaderVersion ?: "unknown"} · Fabric API ${runtime.fabricApiVersion ?: "not reported"} · bridge ${runtime.bridgeVersion ?: "unknown"} · protocol ${runtime.bridgeProtocolVersion ?: "unknown"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    "Server JVM reported by bridge: ${runtime.javaRuntimeMajor?.let { "Java $it" } ?: "not reported"} · registered profile requirement: ${compatibility?.limits?.javaRuntimeRequirement?.let { "Java ${it.requiredMajor} (supported ${it.minimumSupportedMajor}–${it.maximumSupportedMajor})" } ?: "not matched"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    "Compatibility: ${compatibility?.status?.name ?: MinecraftCompatibilityStatus.UNKNOWN.name}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (compatibility?.status == MinecraftCompatibilityStatus.SUPPORTED) {
-                        MaterialTheme.colorScheme.primary
-                    } else MaterialTheme.colorScheme.tertiary,
-                )
-                Text("Adapter: ${compatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "Capabilities reported by the authenticated bridge: ${runtime.capabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                compatibility?.let { result ->
+                if (!runtime.isBedrock) {
                     Text(
-                        "Missing capabilities: ${result.missingCapabilities.sortedBy { it.name }.joinToString { it.displayName }.ifEmpty { "none" }}",
+                        "Registered Java profile requirement: " +
+                            (compatibility?.limits?.javaRuntimeRequirement?.let { requirement ->
+                                "Java ${requirement.requiredMajor} (supported ${requirement.minimumSupportedMajor}–${requirement.maximumSupportedMajor})"
+                            } ?: "not matched"),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Text(
-                        "Available limits: ${result.limits.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${result.limits.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${result.limits.maximumOperationsPerTick?.let { "$it operations/tick" } ?: "per-tick limit unknown"} · ${result.limits.maximumExecutionSeconds?.let { "$it seconds" } ?: "execution timeout unknown"} · ${result.limits.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth} blocks" } ?: "dimension limit unknown"}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    result.reasonCodes.sortedBy { it.name }.takeIf { it.isNotEmpty() }?.let { codes ->
-                        Text("Structured reasons: ${codes.joinToString { it.name }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
-                    }
-                    result.warnings.forEach { warning ->
-                        Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    result.reasons.forEach { reason ->
-                        Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
-                    }
                 }
+                Text(
+                    "Available limits: ${compatibility?.limits?.maximumValidatedOperations?.let { "$it operations" } ?: "operation limit unknown"} · ${compatibility?.limits?.maximumRequestBytes?.let { "$it request bytes" } ?: "request limit unknown"} · ${compatibility?.limits?.maximumOperationsPerTick?.let { "$it operations/tick" } ?: "per-tick limit unknown"} · ${compatibility?.limits?.maximumExecutionSeconds?.let { "$it seconds" } ?: "execution timeout unknown"} · ${compatibility?.limits?.maximumDimensions?.let { "${it.width}×${it.height}×${it.depth} blocks" } ?: "dimension limit unknown"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text("World access: ${if (capabilities.worldAccess) "reported on" else "off"}", style = MaterialTheme.typography.bodySmall)
                 Text("Construction: ${if (capabilities.constructionExecute) "reported on" else "disabled"}", style = MaterialTheme.typography.bodySmall)
                 Text("Cancellation: ${if (capabilities.cancellation) "reported available" else "unavailable"}", style = MaterialTheme.typography.bodySmall)

@@ -44,11 +44,16 @@ import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
+import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityDiagnostic
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.presentation.settings.BridgePairingState
+import com.craftmind.app.presentation.settings.runtimeFactsLabel
+import com.craftmind.app.presentation.settings.runtimeIdentityLabel
+import com.craftmind.app.presentation.settings.unavailableReason
 import kotlinx.coroutines.delay
 import java.net.URI
 import java.time.Instant
@@ -104,19 +109,33 @@ fun PlanReviewScreen(
     }
     val planRequirements = remember(displayedPlan) { BuildPlanRequirements.from(displayedPlan) }
     val registeredProfileSummary = remember(compatibilityResolver) {
-        compatibilityResolver.registeredAdapters().flatMap { adapter ->
+        val versionKeyedProfiles = compatibilityResolver.registeredAdapters().flatMap { adapter ->
             adapter.supportedRuntimeDescriptors.map { profile ->
                 buildList {
                     add("${profile.edition.displayName} ${profile.version.displayIdentifier}")
                     add("${profile.loader.displayName} ${profile.loaderVersion}")
                     profile.requiredFabricApiVersion?.let { add("Fabric API $it") }
+                    add("channel ${profile.releaseChannel.name} · status ${profile.supportStatus.name}")
+                    add("certification ${profile.runtimeCertification.displayName}")
+                    add("content ${profile.contentValidationMode.displayName}")
                     add("bridge ${profile.bridgeVersion} · protocol ${profile.bridgeProtocolVersion}")
                     profile.javaRuntimeRequirement?.let {
                         add("Java ${it.requiredMajor} (supported ${it.minimumSupportedMajor}–${it.maximumSupportedMajor})")
                     }
                 }.joinToString(" · ", prefix = "${adapter.adapterId.value}: ")
             }
-        }.ifEmpty { listOf("none registered") }.joinToString("; ")
+        }
+        val bedrockContracts = compatibilityResolver.registeredBedrockProfiles().map { profile ->
+            buildList {
+                add("${profile.edition.displayName} · ${BedrockRuntimeProfileRegistry.BEDROCK_BRIDGE_DISPLAY_NAME} ${profile.bridgeVersion}")
+                add("protocol ${profile.bridgeProtocolVersion}")
+                add("status ${profile.status.name}")
+                add("certification ${profile.certification.displayName}")
+                add("certified Bedrock versions ${profile.certifiedMinecraftVersions.size}")
+                add("verified block mappings ${profile.blockStateCatalog.mappingCount} (${profile.blockStateSupportRevision})")
+            }.joinToString(" · ", prefix = "${profile.adapterId.value}: ")
+        }
+        (versionKeyedProfiles + bedrockContracts).ifEmpty { listOf("none registered") }.joinToString("; ")
     }
     val dismissReview = {
         if (matchingState is BuildRefinementState.Generating) onRefinementEvent(BuildRefinementEvent.Cancel)
@@ -424,14 +443,43 @@ private fun ConstructionExecutionCard(
             style = MaterialTheme.typography.titleSmall,
         )
         Text(
-            runtimeDescriptor?.let {
-                "Runtime: CraftMind app ${it.appVersion ?: "not echoed"} · ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · Java ${it.javaRuntimeMajor ?: "not reported"} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · Fabric API ${it.fabricApiVersion ?: "not reported"} · bridge ${it.bridgeVersion ?: "unknown"} · protocol ${it.bridgeProtocolVersion ?: "unknown"}"
+            runtimeDescriptor?.let { runtime ->
+                "Runtime: ${runtime.runtimeIdentityLabel()} · ${runtime.runtimeFactsLabel()}"
             } ?: "Runtime: unknown — connect to a pinned bridge to resolve compatibility.",
             style = MaterialTheme.typography.bodySmall,
         )
+        if (runtimeDescriptor != null) {
+            planCompatibility?.takeIf { !it.canExecute }?.let { result ->
+                Text("Build unavailable", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                Text("Reason: ${result.unavailableReason(runtimeDescriptor)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            runtimeDescriptor.limitations.takeIf { it.isNotEmpty() }?.let { limitations ->
+                Text(
+                    "Declared integration limitations: " +
+                        limitations.sortedBy { it.name }.joinToString { it.displayName },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Text("Selected adapter: ${planCompatibility?.adapterId?.value ?: "none"}", style = MaterialTheme.typography.bodySmall)
         Text(
-            "Plan requires: ${planRequirements.requiredCapabilities.sortedBy { it.name }.joinToString { it.displayName }}",
+            "Target: ${runtimeDescriptor?.edition?.displayName ?: "unknown edition"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Version: ${runtimeDescriptor?.version?.displayIdentifier ?: "not reported"}" +
+                (runtimeDescriptor?.let { " · release channel ${it.version.channel.name}" } ?: "") +
+                (runtimeDescriptor?.takeIf { it.isBedrock }?.let { " · platform ${it.platform.displayName} ${it.platformVersion ?: ""}".trimEnd() } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Limit checks: ${if (planCompatibility == null) "not resolved" else if (planCompatibility.planWithinLimits) "Passed" else "Failed"} · " +
+                "content checks: ${if (planCompatibility == null) "not resolved" else if (planCompatibility.planContentSupported) "Passed" else "Failed"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Required capabilities: ${planRequirements.requiredCapabilities.sortedBy { it.name }.joinToString { it.displayName }}",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
@@ -455,6 +503,12 @@ private fun ConstructionExecutionCard(
         )
         planCompatibility?.reasonCodes?.sortedBy { it.name }?.takeIf { it.isNotEmpty() }?.let { codes ->
             Text("Reason codes: ${codes.joinToString { it.name }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+        }
+        planCompatibility?.diagnostics?.takeIf { it.isNotEmpty() }?.let { diagnostics ->
+            Text("Structured diagnostics:", style = MaterialTheme.typography.bodySmall)
+            diagnostics.forEach { diagnostic ->
+                Text("• ${diagnosticLabel(diagnostic)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+            }
         }
         planCompatibility?.reasons?.forEach { reason ->
             Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
@@ -525,8 +579,8 @@ private fun ConstructionExecutionCard(
                     ) { Text("Cancel preview") }
                 }
                 if (showFinalConfirmation) {
-                    val runtimeLabel = runtimeDescriptor?.let {
-                        "CraftMind app ${it.appVersion ?: "not echoed"} · ${it.edition.displayName} · Minecraft ${it.version.displayIdentifier} · Java ${it.javaRuntimeMajor ?: "not reported"} · ${it.loader.displayName} ${it.loaderVersion ?: "unknown"} · Fabric API ${it.fabricApiVersion ?: "not reported"} · bridge ${it.bridgeVersion ?: "unknown"} / protocol ${it.bridgeProtocolVersion ?: "unknown"}"
+                    val runtimeLabel = runtimeDescriptor?.let { runtime ->
+                        "${runtime.runtimeIdentityLabel()} · ${runtime.runtimeFactsLabel()}"
                     } ?: "runtime unknown"
                     val adapterLabel = planCompatibility?.adapterId?.value ?: "none"
                     val limitsLabel = planCompatibility?.limits?.let {
@@ -939,6 +993,12 @@ private fun warningMessage(warning: BuildDiffWarning): String = when (warning) {
     BuildDiffWarning.CHANGES_OUTSIDE_TARGET_COMPONENTS -> "Review carefully: the AI changed components outside the target set it declared."
     BuildDiffWarning.DECLARED_PRESERVED_COMPONENT_CHANGED -> "Review carefully: a component declared preserved also changed."
     BuildDiffWarning.LARGE_CHANGE_FOR_LOCALIZED_REQUEST -> "Review carefully: the placement change is broad for a localized request."
+}
+
+private fun diagnosticLabel(diagnostic: MinecraftCompatibilityDiagnostic): String {
+    val component = diagnostic.componentId?.let { " · component $it" }.orEmpty()
+    val states = diagnostic.stateProperties.takeIf { it.isNotEmpty() }?.let { " · state ${it.joinToString()}" }.orEmpty()
+    return "${diagnostic.reasonCode.name} · ${diagnostic.blockId ?: "unknown block"}$component$states"
 }
 
 private fun com.craftmind.app.domain.buildplan.BlockPosition.label(): String = "($x, $y, $z)"

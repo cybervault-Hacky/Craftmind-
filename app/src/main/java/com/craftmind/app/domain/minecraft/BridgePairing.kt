@@ -1,10 +1,12 @@
 package com.craftmind.app.domain.minecraft
 
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimePlatform
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -18,6 +20,14 @@ data class TrustedMinecraftBridge(
     val pairedAtEpochMillis: Long,
 )
 
+/**
+ * Authenticated runtime report of one pinned CraftMind bridge.
+ *
+ * Java Edition and Bedrock Edition share this type because they share the bridge protocol, authentication,
+ * capability negotiation, limits, and execution lifecycle. Edition-specific runtime facts stay explicit and
+ * nullable instead of being defaulted: a Bedrock report carries no JVM, loader, or Fabric API values, and a Java
+ * report carries no Bedrock platform.
+ */
 data class BridgeCapabilitiesSnapshot(
     val protocolVersion: Int,
     val bridgeId: String,
@@ -27,10 +37,22 @@ data class BridgeCapabilitiesSnapshot(
     val clientAppVersion: String?,
     val editionName: String,
     val minecraftVersion: String,
-    val javaRuntimeMajor: Int,
+    /** Null unless the reported runtime actually runs a JVM. */
+    val javaRuntimeMajor: Int?,
     val loaderName: String,
-    val loaderVersion: String,
+    /** Null for runtimes without a loader concept, including Bedrock. */
+    val loaderVersion: String?,
     val fabricApiVersion: String?,
+    /** Bedrock runtime host reported by a Bedrock bridge; [MinecraftRuntimePlatform.UNKNOWN] for Java. */
+    val platform: MinecraftRuntimePlatform = MinecraftRuntimePlatform.UNKNOWN,
+    /** Bedrock host/runtime version where safely reported; null otherwise. */
+    val platformVersion: String? = null,
+    /**
+     * Integration limitations declared by the reported runtime. A Bedrock bridge, a non-release Java runtime, or a
+     * Java runtime that an explicitly declared legacy/experimental contract recognizes may report them; the
+     * production release runtime may not.
+     */
+    val limitations: Set<MinecraftRuntimeLimitation> = emptySet(),
     val supportedCapabilities: Set<MinecraftCapability>,
     val worldAccess: Boolean,
     val constructionExecute: Boolean,
@@ -63,6 +85,9 @@ data class BridgeCapabilitiesSnapshot(
             supportedBuildPlanSchemaVersions = supportedBuildPlanSchemaVersions.toSet(),
             worldAvailable = worldAccess,
             operatorOriginAvailable = dimensionId != null && worldSessionId != null,
+            platform = platform,
+            platformVersion = platformVersion,
+            limitations = limitations,
         )
 
     val compatibilityResult: MinecraftCompatibilityResult

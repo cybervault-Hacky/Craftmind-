@@ -127,10 +127,26 @@ class MinecraftCompatibilityTest {
     }
 
     @Test
-    fun centralProfileRegistryContainsOnlyTheRealJava1201FabricProfile() {
+    fun centralProfileRegistryKeepsTheRealJava1201FabricProfileAndNeverInventsSupport() {
         val profile = MinecraftRuntimeProfileRegistry.javaFabric1201
+        // The production Java profile registry itself still contains exactly the production profile.
         assertEquals(listOf(profile), MinecraftRuntimeProfileRegistry.allProfiles())
-        assertEquals(listOf(profile.adapterId), DefaultMinecraftCompatibility.resolver.registeredAdapters().map { it.adapterId })
+        // Phase 12 additionally registers declared, uncertified legacy contracts; they are never SUPPORTED.
+        val registered = DefaultMinecraftCompatibility.resolver.registeredProfiles()
+        assertEquals(listOf(profile) + LegacyRuntimeProfileRegistry.allProfiles(), registered)
+        registered.filter { it.releaseChannel != MinecraftVersionChannel.RELEASE }.forEach { legacyProfile ->
+            assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, legacyProfile.supportStatus)
+            assertEquals(MinecraftRuntimeCertification.NOT_PERFORMED, legacyProfile.runtimeCertification)
+            assertFalse(legacyProfile.authorizesExecution)
+        }
+        assertEquals(profile.adapterId, DefaultMinecraftCompatibility.resolver.registeredAdapters().first().adapterId)
+        // Phase 11 registers exactly one Bedrock contract boundary in addition to the Java adapter; the contract
+        // claims no certified Bedrock runtime and can never authorize construction.
+        assertEquals(
+            listOf(BedrockRuntimeProfileRegistry.bedrockBridgeContract),
+            DefaultMinecraftCompatibility.resolver.registeredBedrockProfiles(),
+        )
+        assertTrue(BedrockRuntimeProfileRegistry.bedrockBridgeContract.certifiedMinecraftVersions.isEmpty())
         assertEquals(MinecraftEdition.JAVA, profile.edition)
         assertEquals(MinecraftVersion.parse("1.20.1"), profile.version)
         assertEquals(MinecraftLoader.FABRIC, profile.loader)
@@ -276,10 +292,22 @@ class MinecraftCompatibilityTest {
 
     @Test
     fun bedrockLegacyForgeAndVanillaAreNeverRoutedThroughTheFabricAdapter() {
-        val bedrock = fullyDescribedRuntime(
+        // Bedrock is a first-class edition in Phase 11, but it is resolved by the Bedrock contract boundary with
+        // Bedrock-owned runtime facts only. It is never matched by version proximity and never executable here.
+        val bedrock = MinecraftRuntimeDescriptor(
             edition = MinecraftEdition.BEDROCK,
             version = MinecraftVersion.parse("1.21.0"),
+            platform = MinecraftRuntimePlatform.DEDICATED_SERVER,
+            platformVersion = "1.21.0.3",
             loader = MinecraftLoader.BEDROCK_NATIVE,
+            bridgeProtocolVersion = BridgeProtocol.VERSION,
+            bridgeVersion = BedrockRuntimeProfileRegistry.BEDROCK_BRIDGE_CONTRACT_VERSION,
+            capabilities = REPORTED_CAPABILITIES,
+            supportedBuildPlanSchemaVersions = setOf(BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION),
+            maximumValidatedOperations = BridgeProtocol.MAX_OPERATIONS,
+            maximumRequestBytes = BridgeProtocol.MAX_EXECUTION_REQUEST_BYTES,
+            maximumOperationsPerTick = BridgeProtocol.MAX_OPERATIONS_PER_TICK,
+            maximumExecutionSeconds = BridgeProtocol.MAX_EXECUTION_SECONDS,
         )
         val legacy = fullyDescribedRuntime(
             edition = MinecraftEdition.LEGACY,
@@ -288,13 +316,28 @@ class MinecraftCompatibilityTest {
         )
         val vanilla = supportedCapabilities().runtimeDescriptor.copy(loader = MinecraftLoader.VANILLA)
 
-        listOf(bedrock, legacy, vanilla).forEach { runtime ->
+        listOf(legacy, vanilla).forEach { runtime ->
             val result = resolver.resolveRuntime(runtime)
             assertEquals(MinecraftCompatibilityStatus.UNSUPPORTED, result.status)
             assertNull(result.adapterId)
             assertFalse(result.canExecute)
         }
-        assertTrue(resolver.resolveRuntime(bedrock).reasons.single().contains("not routed through a Java/Fabric adapter"))
+        assertTrue(resolver.resolveRuntime(legacy).reasons.single().contains("not routed through a Java/Fabric adapter"))
+
+        // With only the Java adapter registered, a Bedrock runtime is unsupported and never routed through it.
+        val bedrockWithoutBedrockAdapter = resolver.resolveRuntime(bedrock)
+        assertEquals(MinecraftCompatibilityStatus.UNSUPPORTED, bedrockWithoutBedrockAdapter.status)
+        assertNull(bedrockWithoutBedrockAdapter.adapterId)
+        assertTrue(bedrockWithoutBedrockAdapter.reasons.single().contains("not routed through a Java/Fabric adapter"))
+
+        // With the default registry, the Bedrock contract boundary recognizes the runtime but never authorizes it.
+        val bedrockResult = DefaultMinecraftCompatibility.resolver.resolveRuntime(bedrock)
+        assertEquals(MinecraftCompatibilityStatus.EXPERIMENTAL, bedrockResult.status)
+        assertEquals(BedrockRuntimeProfileRegistry.bedrockBridgeContract.adapterId, bedrockResult.adapterId)
+        assertEquals(JavaFabric1201Adapter.ID, MinecraftRuntimeProfileRegistry.javaFabric1201.adapterId)
+        assertFalse(bedrockResult.canExecute)
+        assertTrue(MinecraftCompatibilityReasonCode.BEDROCK_RUNTIME_NOT_CERTIFIED in bedrockResult.reasonCodes)
+        assertFalse(bedrockResult.reasons.any { it.contains("not routed through a Java/Fabric adapter") })
     }
 
     @Test
@@ -303,13 +346,19 @@ class MinecraftCompatibilityTest {
         assertEquals(MinecraftCompatibilityStatus.UNKNOWN, unknown.status)
         assertNull(unknown.adapterId)
         assertFalse(unknown.canExecute)
-        assertTrue(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR in unknown.reasonCodes)
+        // A descriptor whose required version tokens are absent is rejected fail-closed. The resolver classifies
+        // a missing token as an invalid descriptor rather than an incomplete one, but the outcome is identical:
+        // status UNKNOWN, no adapter claims the runtime, and no build can execute.
+        assertTrue(MinecraftCompatibilityReasonCode.INVALID_RUNTIME_DESCRIPTOR in unknown.reasonCodes)
+        assertTrue(unknown.reasons.any { it.contains("invalid token") })
 
         val actual = supportedCapabilities().runtimeDescriptor
         val javaMissing = resolver.resolveRuntime(actual.copy(javaRuntimeMajor = null))
         val apiMissing = resolver.resolveRuntime(actual.copy(fabricApiVersion = null))
         assertEquals(MinecraftCompatibilityStatus.UNKNOWN, javaMissing.status)
         assertEquals(MinecraftCompatibilityStatus.UNKNOWN, apiMissing.status)
+        assertTrue(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR in javaMissing.reasonCodes)
+        assertTrue(MinecraftCompatibilityReasonCode.UNKNOWN_RUNTIME_DESCRIPTOR in apiMissing.reasonCodes)
         assertTrue(javaMissing.reasons.any { it.contains("actual server Java runtime") })
         assertTrue(apiMissing.reasons.any { it.contains("loaded Fabric API") })
     }
@@ -406,13 +455,22 @@ class MinecraftCompatibilityTest {
             BuildPlanRequirements.runtimeExecution.copy(operationCount = 4, schemaVersion = 2, dimensions = BuildDimensions(97, 6, 8)),
         )
         val tooFewOperationsConfigured = resolver.resolveRuntime(runtime.copy(maximumValidatedOperations = 1))
+        val planAboveReportedLimit = resolver.resolve(
+            runtime.copy(maximumValidatedOperations = 1),
+            BuildPlanRequirements.runtimeExecution.copy(operationCount = 4, schemaVersion = 2, dimensions = BuildDimensions(8, 6, 8)),
+        )
 
         assertFalse(tooManyOperations.canExecute)
         assertTrue(tooManyOperations.reasons.any { it.contains("operation count") })
         assertTrue(MinecraftCompatibilityReasonCode.PLAN_LIMIT_EXCEEDED in tooManyOperations.reasonCodes)
         assertFalse(tooWide.canExecute)
         assertTrue(tooWide.reasons.any { it.contains("dimensions") })
-        assertFalse(tooFewOperationsConfigured.canExecute)
+        // A bridge that reports a smaller but usable operation limit is honoured, never replaced with a default:
+        // the runtime-level gate stays open while every plan above the reported limit is refused.
+        assertEquals(1, tooFewOperationsConfigured.limits.maximumValidatedOperations)
+        assertFalse(planAboveReportedLimit.canExecute)
+        assertEquals(1, planAboveReportedLimit.limits.maximumValidatedOperations)
+        assertTrue(MinecraftCompatibilityReasonCode.PLAN_LIMIT_EXCEEDED in planAboveReportedLimit.reasonCodes)
     }
 
     @Test
