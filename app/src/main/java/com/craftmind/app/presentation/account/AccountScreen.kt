@@ -12,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.craftmind.app.designsystem.CraftMindCard
 import com.craftmind.app.designsystem.CraftMindDetailLines
 import com.craftmind.app.designsystem.CraftMindExpandableSection
@@ -23,6 +25,7 @@ import com.craftmind.app.designsystem.CraftMindScreen
 import com.craftmind.app.designsystem.CraftMindSecondaryButton
 import com.craftmind.app.designsystem.CraftMindSectionHeader
 import com.craftmind.app.designsystem.CraftMindStatusBadge
+import com.craftmind.app.designsystem.CraftMindTextInput
 import com.craftmind.app.designsystem.CraftMindTertiaryButton
 import com.craftmind.app.designsystem.CraftMindTone
 import com.craftmind.app.designsystem.CraftMindType
@@ -105,6 +108,37 @@ fun AccountScreen(
                     )
                 }
             }
+            if (state.showsAccountActions) {
+                // Actions exist only where a service can answer them. There is no sign-in button in a build without one.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
+                ) {
+                    CraftMindSecondaryButton(
+                        text = "Sign in",
+                        onClick = { onEvent(AccountUiEvent.SignInFormRequested) },
+                    )
+                    CraftMindSecondaryButton(
+                        text = "Create account",
+                        onClick = { onEvent(AccountUiEvent.SignUpFormRequested) },
+                    )
+                }
+            } else {
+                // Guest mode is a complete way to use CraftMind, and the screen says so rather than nagging.
+                Text(
+                    text = state.guestLine,
+                    style = CraftMindType.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (state.formMode == AccountFormMode.SIGN_IN) {
+            AccountSignInForm(state = state, onEvent = onEvent)
+        }
+
+        if (state.formMode == AccountFormMode.SIGN_UP) {
+            AccountSignUpForm(state = state, onEvent = onEvent)
         }
 
         CraftMindCard {

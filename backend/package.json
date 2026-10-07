@@ -1,0 +1,14 @@
+{
+  "name": "craftmind-auth-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CraftMind account service: registration, sign-in, sessions, guest identity. Zero runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/index.js",
+    "test": "node --no-warnings=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}

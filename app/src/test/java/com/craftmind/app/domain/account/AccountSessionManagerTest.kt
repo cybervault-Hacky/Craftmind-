@@ -20,6 +20,19 @@ class AccountSessionManagerTest {
 
     private fun manager(): AccountSessionManager = managerAt(1_500L)
 
+    /**
+     * Seeds a stored session that the service still accepts.
+     *
+     * Phase 17 made restoration server-authoritative for a configured service, so "there is a live session on this
+     * device" now has two halves: an encrypted record, and a service that confirms it. This helper makes that explicit
+     * instead of hiding it behind a default.
+     */
+    private fun stashLiveSession(identity: AccountIdentity = testIdentity()) {
+        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        authenticator.restoreBehavior = { testSuccess(session = testSession(identity = identity)) }
+        store.record = StoredAccountSession(testSession(identity = identity), testCredential())
+    }
+
     /** A manager whose clock is past the fixture session's declared expiry. */
     private fun managerAt(nowMillis: Long): AccountSessionManager = AccountSessionManager(
         authenticator = authenticator,
@@ -71,18 +84,20 @@ class AccountSessionManagerTest {
     @Test
     fun aRejectedSignInDoesNotDestroyTheIdentityAlreadyOnTheDevice() {
         val identity = testIdentity()
-        store.record = StoredAccountSession(testSession(identity = identity), testCredential())
-        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        stashLiveSession(identity)
         authenticator.signInBehavior = { AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS) }
         val manager = manager()
         manager.restoreSession()
+
+        val savesAfterRestore = store.saveCalls
+        val clearsAfterRestore = store.clearCalls
 
         val state = manager.signIn(testSignInRequest())
 
         assertTrue(state is AccountState.Failed)
         assertEquals(identity, state.identityOrNull())
-        assertEquals("a failed attempt must not clear the stored session", 0, store.clearCalls)
-        assertEquals("a failed attempt must not overwrite the stored session", 0, store.saveCalls)
+        assertEquals("a failed attempt must not clear the stored session", clearsAfterRestore, store.clearCalls)
+        assertEquals("a failed attempt must not overwrite the stored session", savesAfterRestore, store.saveCalls)
         assertEquals(identity, manager.state().identityOrNull())
     }
 
@@ -130,17 +145,81 @@ class AccountSessionManagerTest {
     }
 
     @Test
-    fun anUnexpiredStoredSessionIsRestoredWithoutANetworkRoundTripAndSaysHow() {
+    fun aStoredSessionIsConfirmedWithTheServiceWhenOneIsConfigured() {
+        stashLiveSession()
+        val manager = manager()
+
+        val state = manager.restoreSession()
+
+        val session = (state as AccountState.Authenticated).session
+        assertEquals("a configured service is the authority on whether the session is still valid", 1, authenticator.restoreCalls)
+        assertEquals(AccountSessionSource.RESTORED_ON_DEVICE, session.source)
+        assertEquals("a confirmation must not re-issue anything on the device", 1, store.saveCalls)
+    }
+
+    @Test
+    fun aStoredSessionIsUsedLocallyWhenNoServiceCanAnswer() {
         store.record = StoredAccountSession(testSession(), testCredential())
+        authenticator.availabilityValue = AccountAuthenticationAvailability.Unavailable(
+            AccountAvailabilityReason.SERVICE_UNREACHABLE,
+        )
         val manager = manager()
 
         val state = manager.restoreSession()
 
         val session = (state as AccountState.Authenticated).session
         assertEquals(AccountSessionSource.RESTORED_ON_DEVICE, session.source)
-        assertEquals("restoring a live session must not call the service", 0, authenticator.restoreCalls)
+        assertEquals("with no service there is nothing to ask, and nothing is invented", 0, authenticator.restoreCalls)
         assertEquals(0, authenticator.refreshCalls)
         assertEquals(0, store.saveCalls)
+    }
+
+    @Test
+    fun aServiceThatCannotBeReachedDoesNotEndTheSession() {
+        store.record = StoredAccountSession(testSession(), testCredential())
+        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        authenticator.restoreBehavior = {
+            AccountAuthOutcome.Unavailable(AccountAvailabilityReason.NETWORK_UNAVAILABLE)
+        }
+        val manager = manager()
+
+        val state = manager.restoreSession()
+
+        assertTrue("an unreachable service must not sign anyone out", state is AccountState.Authenticated)
+        assertEquals("the record is kept for the next attempt", 0, store.clearCalls)
+        assertNotNull(store.record)
+    }
+
+    @Test
+    fun aSessionTheServiceRejectsIsEndedAndRemovedLocally() {
+        store.record = StoredAccountSession(testSession(), testCredential())
+        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        authenticator.restoreBehavior = { AccountAuthOutcome.Failure(AccountAuthErrorCode.SESSION_REJECTED) }
+        val manager = manager()
+
+        val state = manager.restoreSession()
+
+        assertEquals(
+            AccountState.SessionExpired(testIdentity(), AccountSessionEndReason.REJECTED_BY_SERVICE),
+            state,
+        )
+        assertEquals("a session the service refuses must not stay on the device", 1, store.clearCalls)
+    }
+
+    @Test
+    fun aSuspendedAccountEndsTheSessionAndSaysWhy() {
+        store.record = StoredAccountSession(testSession(), testCredential())
+        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        authenticator.restoreBehavior = { AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED) }
+        val manager = manager()
+
+        val state = manager.restoreSession()
+
+        assertEquals(
+            AccountState.SessionExpired(testIdentity(), AccountSessionEndReason.ACCOUNT_SUSPENDED),
+            state,
+        )
+        assertEquals(1, store.clearCalls)
     }
 
     @Test
@@ -242,7 +321,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun signOutAlwaysClearsLocallyAndReturnsToLocalMode() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         val manager = manager()
         manager.restoreSession()
 
@@ -258,7 +337,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun signOutReportsHonestlyWhenRemoteRevocationCouldNotHappen() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         authenticator.signOutResult =
             AccountSignOutResult(AccountSignOutMethod.REMOTE_REVOCATION_SKIPPED, AccountAuthErrorCode.NETWORK_UNAVAILABLE)
         val manager = manager()
@@ -302,8 +381,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun switchingAccountsSignsOutFirstSoAHalfSwitchCannotHappen() {
-        store.record = StoredAccountSession(testSession(), testCredential())
-        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        stashLiveSession()
         authenticator.signInBehavior = { AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS) }
         val manager = manager()
         manager.restoreSession()
@@ -317,9 +395,8 @@ class AccountSessionManagerTest {
 
     @Test
     fun switchingAccountsAdoptsTheNewIdentityOnlyWhenTheSignInSucceeds() {
-        store.record = StoredAccountSession(testSession(), testCredential())
         val nextIdentity = testIdentity(accountId = "cm-account-0002", emailAddress = "next@example.com")
-        authenticator.availabilityValue = AccountAuthenticationAvailability.Available
+        stashLiveSession()
         authenticator.signInBehavior = { testSuccess(session = testSession(identity = nextIdentity)) }
         val manager = manager()
         manager.restoreSession()
@@ -335,7 +412,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun expiringASessionSharpensTheStateAndRemovesTheRecord() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         val manager = manager()
         manager.restoreSession()
 
@@ -350,7 +427,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun expiringBecauseRefreshIsMerelyUnavailableKeepsTheRecord() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         val manager = manager()
         manager.restoreSession()
 
@@ -361,11 +438,15 @@ class AccountSessionManagerTest {
 
     @Test
     fun anAccountDeletionRequestTouchesNothingLocal() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         authenticator.deletionResult =
             AccountDeletionOutcome.Unavailable(AccountAvailabilityReason.NO_BACKEND_CONFIGURED)
         val manager = manager()
         manager.restoreSession()
+
+        // The confirmation during restore is the baseline; the deletion request itself must add nothing to it.
+        val savesAfterRestore = store.saveCalls
+        val clearsAfterRestore = store.clearCalls
 
         val outcome = manager.requestAccountDeletion()
 
@@ -373,15 +454,15 @@ class AccountSessionManagerTest {
             AccountDeletionOutcome.Unavailable(AccountAvailabilityReason.NO_BACKEND_CONFIGURED),
             outcome,
         )
-        assertEquals("a deletion request is not a sign-out", 0, store.clearCalls)
-        assertEquals(0, store.saveCalls)
+        assertEquals("a deletion request is not a sign-out", clearsAfterRestore, store.clearCalls)
+        assertEquals("a deletion request changes no session record", savesAfterRestore, store.saveCalls)
         assertNotNull("an account request must never delete local data", store.record)
         assertTrue(manager.state() is AccountState.Authenticated)
     }
 
     @Test
     fun aFailedDeletionRequestIsReportedWithoutChangingAnythingEither() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         authenticator.deletionResult = AccountDeletionOutcome.Failure(AccountAuthErrorCode.SERVICE_UNAVAILABLE)
         val manager = manager()
         manager.restoreSession()
@@ -404,7 +485,7 @@ class AccountSessionManagerTest {
 
     @Test
     fun aLocallyUnusableRequestIsRecordedAsAFailureWithoutSigningAnyoneOut() {
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         val manager = manager()
         manager.restoreSession()
 
@@ -424,7 +505,7 @@ class AccountSessionManagerTest {
         val unsubscribe = manager.addListener { seen += it }
 
         assertEquals("a new listener is told the current state immediately", listOf(AccountState.Guest), seen)
-        store.record = StoredAccountSession(testSession(), testCredential())
+        stashLiveSession()
         manager.restoreSession()
         manager.signOut()
         unsubscribe()

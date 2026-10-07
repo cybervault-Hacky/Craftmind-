@@ -73,15 +73,32 @@ data class AccountUiState(
     val secondaryAction: AccountAction?,
     /** Why [primaryAction] is not usable right now. A disabled action always carries its reason. */
     val actionUnavailableReason: String?,
-    /** True only when a real sign-in form can lead somewhere. Never true without an account service. */
-    val showsSignInForm: Boolean,
+    /** True only when a real account form can lead somewhere. Never true without an account service. */
+    val showsAccountActions: Boolean,
+    /** True exactly while a submission is in flight, taken from the canonical state rather than from a local flag. */
+    val formBusy: Boolean,
     /** Screen-reader description of the account status. */
     val accessibilityLabel: String,
     /** True when the local ownership marker has been recorded on this device. */
     val ownershipRecorded: Boolean,
     /** Result of the last account-deletion request, stated plainly. Null when none was made. */
     val deletionLine: String?,
+    /** Which account form the surface should show, if any. A form is never shown without a service to submit it to. */
+    val formMode: AccountFormMode,
+    /** The password rule, stated once so the client and the service cannot describe different rules. */
+    val passwordRuleLine: String,
+    /** How this device is currently being used, in the terms the user can act on. */
+    val guestLine: String,
+    /** Field-level complaints for the form that is open. Empty when the form is valid or closed. */
+    val formIssues: List<AccountFormIssue>,
 )
+
+/** The account form a surface is showing. */
+enum class AccountFormMode {
+    NONE,
+    SIGN_IN,
+    SIGN_UP,
+}
 
 /** Compact projection for the Settings group. */
 data class AccountSettingsSummary(
@@ -105,6 +122,8 @@ fun accountUiState(
     nowMillis: Long,
     ownershipRecorded: Boolean = false,
     deletionOutcome: AccountDeletionOutcome? = null,
+    formMode: AccountFormMode = AccountFormMode.NONE,
+    formIssues: List<AccountFormIssue> = emptyList(),
 ): AccountUiState {
     val unavailableReason = (availability as? AccountAuthenticationAvailability.Unavailable)?.reason
     val base = AccountUiState(
@@ -123,10 +142,21 @@ fun accountUiState(
         primaryAction = if (unavailableReason == null) AccountAction.SignIn else null,
         secondaryAction = null,
         actionUnavailableReason = unavailableReason?.let(::signInUnavailableReason),
-        showsSignInForm = unavailableReason == null,
+        showsAccountActions = unavailableReason == null,
+        formBusy = state is AccountState.SigningIn,
         accessibilityLabel = "Account status: local mode. CraftMind works on this device without an account.",
         ownershipRecorded = ownershipRecorded,
         deletionLine = deletionOutcome?.let(::deletionOutcomeLine),
+        // A form is shown while it can lead somewhere: never without a service, never once signed in, and always while a
+        // submission is in flight or has just failed, so the answer lands next to the fields that caused it.
+        formMode = if (unavailableReason == null && state !is AccountState.Authenticated) {
+            formMode
+        } else {
+            AccountFormMode.NONE
+        },
+        passwordRuleLine = PASSWORD_RULE_LINE,
+        guestLine = GUEST_LINE,
+        formIssues = if (unavailableReason == null && formMode != AccountFormMode.NONE) formIssues else emptyList(),
     )
     return when (state) {
         AccountState.Guest -> base
@@ -137,7 +167,8 @@ fun accountUiState(
             headline = "Signing in",
             detail = "Contacting the CraftMind account service. Local features keep working while this is in flight.",
             primaryAction = null,
-            showsSignInForm = false,
+            // The open form stays open and busy; it is a view of this state, not a separate flag.
+            formBusy = true,
             accessibilityLabel = "Account status: signing in.",
         )
 
@@ -153,7 +184,7 @@ fun accountUiState(
                 identityProviderLine = "CraftMind account · ${session.method.name.lowercase().replace('_', ' ')}",
                 sessionLine = describeSession(session, nowMillis),
                 primaryAction = AccountAction.SignOut,
-                showsSignInForm = false,
+                showsAccountActions = false,
                 accessibilityLabel = "Account status: signed in as ${session.identity.displayName}. " +
                     describeSession(session, nowMillis),
             )
@@ -166,7 +197,8 @@ fun accountUiState(
             detail = "Clearing the account session on this device. Builds, settings, provider keys, and Minecraft " +
                 "pairing are not touched.",
             primaryAction = null,
-            showsSignInForm = false,
+            formBusy = false,
+            showsAccountActions = false,
             accessibilityLabel = "Account status: signing out.",
         )
 
@@ -182,7 +214,7 @@ fun accountUiState(
                 },
                 primaryAction = if (unavailableReason == null) AccountAction.TryAgain else null,
                 actionUnavailableReason = unavailableReason?.let(::signInUnavailableReason),
-                showsSignInForm = unavailableReason == null,
+                showsAccountActions = unavailableReason == null,
                 accessibilityLabel = "Account status: session ended. ${reason.accessibility}",
             )
         }
@@ -196,7 +228,7 @@ fun accountUiState(
                 availabilityLine = line,
                 primaryAction = null,
                 actionUnavailableReason = signInUnavailableReason(state.reason),
-                showsSignInForm = false,
+                showsAccountActions = false,
                 accessibilityLabel = "Account status: sign-in unavailable. $line",
             )
         }
@@ -212,7 +244,7 @@ fun accountUiState(
                 actionUnavailableReason = failure.action?.let { _ ->
                     unavailableReason?.let(::signInUnavailableReason)
                 },
-                showsSignInForm = failure.action != null && unavailableReason == null,
+                showsAccountActions = failure.action != null && unavailableReason == null,
                 accessibilityLabel = "Account status: ${failure.headline}. ${failure.detail}",
             )
         }
@@ -320,6 +352,12 @@ private fun expiredReasonLine(reason: AccountSessionEndReason): ExpiredReasonCop
         accessibility = "The session could not be refreshed; the account service was unreachable.",
     )
 
+    AccountSessionEndReason.ACCOUNT_SUSPENDED -> ExpiredReasonCopy(
+        copy = "The account service reports this account as suspended, so it can no longer be used to sign in. " +
+            "CraftMind keeps working locally, and nothing on this device was deleted.",
+        accessibility = "The account is suspended. CraftMind is running locally.",
+    )
+
     AccountSessionEndReason.REJECTED_BY_SERVICE -> ExpiredReasonCopy(
         copy = "The account service no longer accepts this session, so the saved session was removed from this device.",
         accessibility = "The account service rejected the stored session.",
@@ -376,6 +414,27 @@ private fun failureCopy(error: AccountAuthErrorCode): FailureCopy = when (error)
         action = AccountAction.SignIn,
     )
 
+    AccountAuthErrorCode.ACCOUNT_ALREADY_EXISTS -> FailureCopy(
+        headline = "An account already exists for that email",
+        detail = "CraftMind will not create a second account for the same address. Try signing in instead, or use a " +
+            "different email address.",
+        action = AccountAction.SignIn,
+    )
+
+    AccountAuthErrorCode.ACCOUNT_SUSPENDED -> FailureCopy(
+        headline = "This account is suspended",
+        detail = "The account service is refusing sign-in for this account. CraftMind is still fully usable locally, " +
+            "and nothing on this device has changed.",
+        action = null,
+    )
+
+    AccountAuthErrorCode.SESSION_REJECTED -> FailureCopy(
+        headline = "Your session is no longer valid",
+        detail = "The account service did not accept the saved session, so it was removed from this device. Sign in " +
+            "again to continue; your local data is untouched.",
+        action = AccountAction.SignIn,
+    )
+
     AccountAuthErrorCode.MALFORMED_RESPONSE -> FailureCopy(
         headline = "The account service answered unexpectedly",
         detail = "The response did not match the contract, so it was discarded rather than trusted. CraftMind is " +
@@ -414,6 +473,10 @@ private fun availabilityLine(reason: AccountAvailabilityReason): String = when (
 
     AccountAvailabilityReason.DISABLED_BY_POLICY ->
         "Sign-in is switched off for this build."
+
+    AccountAvailabilityReason.NOT_IMPLEMENTED_BY_SERVICE ->
+        "The CraftMind account service does not implement this yet, so CraftMind says so rather than pretending " +
+            "something happened."
 }
 
 private fun signInUnavailableReason(reason: AccountAvailabilityReason): String = when (reason) {
@@ -422,9 +485,20 @@ private fun signInUnavailableReason(reason: AccountAvailabilityReason): String =
     AccountAvailabilityReason.SERVICE_UNREACHABLE -> "Sign-in is unavailable: the account service could not be reached."
     AccountAvailabilityReason.MAINTENANCE -> "Sign-in is unavailable: the account service is in maintenance."
     AccountAvailabilityReason.DISABLED_BY_POLICY -> "Sign-in is unavailable: it is switched off for this build."
+    AccountAvailabilityReason.NOT_IMPLEMENTED_BY_SERVICE ->
+        "Unavailable: the account service does not implement this yet."
 }
 
 /** Stated wherever an account is offered, so the BYOK boundary is never ambiguous. */
+/** The password rule, identical to the one the account service enforces. */
+internal const val PASSWORD_RULE_LINE: String =
+    "Passwords need at least 10 characters, and at least two of: lowercase letters, uppercase letters, digits, symbols."
+
+/** Guest mode, stated as a complete way to use CraftMind rather than a deficit. */
+internal const val GUEST_LINE: String =
+    "You are using CraftMind as a guest. Everything on this device works without an account, and an anonymous guest " +
+        "identity is used only to tell an unregistered device apart from a registered account."
+
 internal const val SECURITY_LINE: String =
     "A CraftMind account is separate from your AI provider keys and from your Minecraft pairing. Signing in never " +
         "uploads an API key, and it never gives anyone control of your Minecraft runtime."

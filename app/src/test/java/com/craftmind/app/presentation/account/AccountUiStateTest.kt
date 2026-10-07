@@ -56,7 +56,7 @@ class AccountUiStateTest {
         assertEquals(CraftMindTone.NEUTRAL, ui.tone)
         assertNull("a build without a service must not offer a sign-in it cannot perform", ui.primaryAction)
         assertNotNull("an action that is not offered still needs its reason", ui.actionUnavailableReason)
-        assertFalse(ui.showsSignInForm)
+        assertFalse(ui.showsAccountActions)
         assertTrue(ui.detail.contains("without an account"))
     }
 
@@ -109,7 +109,7 @@ class AccountUiStateTest {
 
         assertEquals(AccountAction.TryAgain, retryable.primaryAction)
         assertEquals(AccountAction.SignIn, permanent.primaryAction)
-        assertTrue(retryable.showsSignInForm)
+        assertTrue(retryable.showsAccountActions)
     }
 
     @Test
@@ -316,7 +316,7 @@ class AccountUiStateTest {
         val ui = state(AccountState.Guest, availability = AccountAuthenticationAvailability.Available)
 
         assertEquals(AccountAction.SignIn, ui.primaryAction)
-        assertTrue(ui.showsSignInForm)
+        assertTrue(ui.showsAccountActions)
         assertNull(ui.availabilityLine)
         assertNull(ui.actionUnavailableReason)
     }
@@ -331,13 +331,89 @@ class AccountUiStateTest {
 
     @Test
     fun noProjectedFieldCanHoldASessionSecret() {
+        // `passwordRuleLine` is copy *about* passwords: it states the requirement and can never contain one. Everything
+        // that could carry an actual credential is still forbidden outright.
+        val allowedCopyFields = setOf("passwordruleline")
         val secretish = AccountUiState::class.java.declaredFields
             .map { it.name.lowercase() }
+            .filter { it !in allowedCopyFields }
             .filter { name ->
                 listOf("token", "secret", "password", "apikey", "authorization", "cookie").any(name::contains)
             }
 
         assertEquals("the projection must have no field capable of carrying a credential", emptyList<String>(), secretish)
+    }
+
+    @Test
+    fun aFormStaysOpenWhileItIsBusyOrHasFailedAndClosesOnceSignedIn() {
+        val available = AccountAuthenticationAvailability.Available
+        val busy = accountUiState(
+            state = AccountState.SigningIn(AccountSignInMethod.EMAIL_PASSWORD, previousIdentity = null),
+            availability = available,
+            nowMillis = nowMillis,
+            formMode = AccountFormMode.SIGN_IN,
+        )
+        assertTrue("a submission in flight keeps the form on screen", busy.formBusy)
+        assertTrue("the form is disabled, not replaced, while the answer is pending", busy.showsAccountActions)
+        assertEquals(AccountFormMode.SIGN_IN, busy.formMode)
+
+        val failed = accountUiState(
+            state = AccountState.Failed(AccountAuthErrorCode.INVALID_CREDENTIALS, previousIdentity = null),
+            availability = available,
+            nowMillis = nowMillis,
+            formMode = AccountFormMode.SIGN_IN,
+            formIssues = listOf(AccountFormIssue(AccountFormField.PASSWORD, "Enter your password.")),
+        )
+        assertFalse(failed.formBusy)
+        assertEquals("a failure leaves the form open, with the reason on the field", AccountFormMode.SIGN_IN, failed.formMode)
+
+        val signedIn = accountUiState(
+            state = AccountState.Authenticated(testSession(expiresAtEpochMillis = nowMillis + 60_000L)),
+            availability = available,
+            nowMillis = nowMillis,
+            formMode = AccountFormMode.SIGN_IN,
+        )
+        assertEquals("signing in closes the form", AccountFormMode.NONE, signedIn.formMode)
+        assertFalse(signedIn.formBusy)
+    }
+
+    @Test
+    fun thePasswordRuleStatedToTheUserMatchesTheRuleTheServiceEnforces() {
+        val ui = state(AccountState.Guest)
+
+        assertTrue(ui.passwordRuleLine.contains("10 characters"))
+        assertTrue(ui.passwordRuleLine.contains("two"))
+        assertFalse(
+            "the rule is a requirement, not a value that could have come from a field",
+            ui.passwordRuleLine.contains("="),
+        )
+    }
+
+    @Test
+    fun guestModeIsDescribedAsACompleteWayToUseCraftMind() {
+        val ui = state(AccountState.Guest)
+
+        assertTrue(ui.guestLine.contains("guest"))
+        assertTrue(ui.guestLine.contains("works without an account"))
+        assertFalse("no device identifier may be shown", ui.guestLine.contains("identity-"))
+        assertTrue(ui.guestLine.contains("unregistered device apart from a registered account"))
+    }
+
+    @Test
+    fun aFormIsOnlyOfferedWhenAServiceCanAnswerAndAnIssueIsShownOnItsField() {
+        val withService = state(AccountState.Guest, availability = AccountAuthenticationAvailability.Available)
+        assertTrue(withService.showsAccountActions)
+        assertTrue(withService.passwordRuleLine.isNotBlank())
+
+        val issues = accountUiState(
+            state = AccountState.Guest,
+            availability = AccountAuthenticationAvailability.Available,
+            nowMillis = nowMillis,
+            formMode = AccountFormMode.SIGN_UP,
+            formIssues = listOf(AccountFormIssue(AccountFormField.EMAIL, "That does not look like an email address yet.")),
+        )
+        assertEquals(AccountFormMode.SIGN_UP, issues.formMode)
+        assertEquals("That does not look like an email address yet.", issues.formIssues.single().message)
     }
 
     @Test

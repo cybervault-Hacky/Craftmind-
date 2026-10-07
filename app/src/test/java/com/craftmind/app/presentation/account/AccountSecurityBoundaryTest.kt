@@ -221,13 +221,21 @@ class AccountSecurityBoundaryTest {
             "okta",
             "clerk",
             "google-services",
-            "Bearer ",
             "client_id",
             "clientId",
             "API_KEY",
         )) {
             assertFalse("the account layer must not invent a backend ($forbidden)", text.contains(forbidden))
         }
+        // Phase 17 added a real client, which legitimately sends the bearer scheme — but never a token literal.
+        assertFalse(
+            "no authorization header value may be hardcoded",
+            Regex("""Bearer [A-Za-z0-9._~+/-]{16,}""").containsMatchIn(text),
+        )
+        assertTrue(
+            "the service address must come from the build, not from the source",
+            text.contains("AccountServiceConfiguration") && sourceText("AppContainer.kt").contains("CRAFTMIND_ACCOUNT_BASE_URL"),
+        )
         assertTrue(
             "the shipped build must state that no account service exists",
             sourceText("domain/account/NoBackendAccountAuthenticator.kt")

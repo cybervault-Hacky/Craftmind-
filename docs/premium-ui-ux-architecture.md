@@ -357,13 +357,16 @@ not referenced anywhere in the app or the website.
 | Encrypted session storage (`AndroidKeystoreAccountSessionStore`) | Implemented, own Keystore alias and own no-backup directory |
 | Account UI (Settings group + account overlay) | Implemented from the Phase 15 design system |
 | Ownership classification and local marker migration | Implemented, idempotent and interrupt-safe |
-| A real account service | **Not implemented.** `CraftMindAccountFoundation.authenticator()` returns `NoBackendAccountAuthenticator`, which reports `NO_BACKEND_CONFIGURED` for every authentication operation |
+| A real account service | **Not implemented in Phase 16.** `CraftMindAccountFoundation.authenticator()` returned `NoBackendAccountAuthenticator`, which reports `NO_BACKEND_CONFIGURED` for every authentication operation. Phase 17 added the real service and a `CraftMindAccountAuthenticator` that talks to it — see [`account-authentication.md`](account-authentication.md) |
 | Cloud sync, account-owned history, cross-device settings, marketplace identity, creator profile, subscriptions, credits, entitlements | **Not implemented**, and named only as future extension points |
 
 There is no fake backend anywhere: no provider SDK, no endpoint constant, no token literal, no development credential,
 and no code path that can produce a session without a service. `NoBackendAccountAuthenticator` is not a stub to be
 replaced by a fake later; when a real service exists, `CraftMindAccountFoundation` chooses a different implementation and
-everything else — state machine, storage boundary, UI projection, tests — is unchanged.
+everything else — state machine, storage boundary, UI projection, tests — is unchanged. Phase 17 did exactly that: it
+supplied `CraftMindAccountAuthenticator` over the real service in `backend/`, and the state machine, storage boundary,
+projection, and tests above kept their shape. The one deliberate contract change is documented there: with a configured
+service, restoration confirms the stored session with `GET /auth/me` instead of trusting the device alone.
 
 ### 9.2 Domain model
 
@@ -482,11 +485,22 @@ none is referenced in the UI, and secrets — provider keys and the account sess
 | Account copy: local mode complete, unavailable ≠ incorrect credentials, masked identity, no secret/identifier rendered, a11y labels, no fake progress | `AccountUiStateTest` (24 tests) | PASS |
 | Security boundary: no logging, no plaintext or shared Keystore namespace, BYOK untouched, no account data in BuildPlans or bridge payloads, no invented backend or endpoint, no WebView/analytics | `AccountSecurityBoundaryTest` (18 tests) | PASS |
 | The Phase 15 design system and navigation are unchanged by this phase | `CraftMindDesignTokensTest` (13), `CraftMindDesignSystemSourceScanTest` (2), `MainDestinationTest` (4) | PASS |
+| The account service really stores and checks accounts: registration, duplicates, invalid input, sign-in, wrong password vs unknown account, suspension, session creation, refresh rotation, expiry, logout idempotence, current account, guest creation and linking, and the four data-clear/reinstall scenarios | `backend/test/accounts.test.js`, `backend/test/scenarios.test.js` (Phase 17) | PASS (32 backend tests total) |
+| Passwords and session credentials never appear: scrypt-only hashes, digest-only tokens keyed by `AUTH_SECRET`, no credential in an error payload or a log line, bounded bodies, no account created by a failed attempt | `backend/test/security.test.js` (Phase 17) | PASS |
+| A server answer becomes app state without invention: success, rejection, suspension, unreachable, malformed, refresh rotation, unknown expiry, guest identity attached, deletion reported unimplemented, nothing printable | `AccountBackendAuthenticatorTest` (Phase 17) | PASS |
+| Stored credentials, wire codes, service-address rules, guest-identity generation, and request payloads keep their contract | `AccountApiContractTest` (Phase 17) | PASS |
+| Form validation: required fields, address shape, the 10-character/two-class password rule, matching confirmation, bounded display name, every complaint attached to its field | `AccountFormStateTest` (Phase 17) | PASS |
 
 Android compilation itself is **not** verified in this environment: no Android SDK, no Gradle distribution, and no
 Maven access are available here, so `ANDROID_BUILD = NOT_RUN`. The Compose screens are exercised by the JVM-checkable
 derivations above and by source-level scans; the instrumented Compose tests
-(`PlanReviewScreenTest`, `SettingsScreenTest`) are present but cannot be executed here. Phase 16 ran the account suite
-(91 tests) and the design-system slice (19 tests) against the offline JVM harness; the full application suite was last
-run in Phase 15 (358 run, 5 pre-existing failures, 0 errors) and could not be re-run here because the harness stubs for
-AndroidX/Compose storage were lost when the sandbox was recreated.
+(`PlanReviewScreenTest`, `SettingsScreenTest`) are present but cannot be executed here, and neither is `AccountForms.kt`
+or the screens themselves; the new text field and the two forms are checked by the token/scan tests and by hand, not by
+rendering. Phase 16 ran the account suite (91 tests) and the design-system slice (19 tests) against the offline JVM
+harness; the full application suite was last run in Phase 15 (358 run, 5 pre-existing failures, 0 errors) and could not
+be re-run here because the harness stubs for AndroidX/Compose storage were lost when the sandbox was recreated.
+
+**Phase 17:** the account slice now runs **158 tests** (the Phase 16 account foundation plus the backend-adapter,
+contract, and form suites) and the design-system slice **19 tests**, both against the offline harness; the backend suite
+runs **32 tests** with `npm test`. Android compilation, instrumented tests, and a device-to-service round trip are still
+not performed here: `ANDROID_BUILD = NOT_RUN`.

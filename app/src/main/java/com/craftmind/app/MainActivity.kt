@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
                     AccountViewModelFactory(
                         manager = appContainer.accountSessionManager,
                         ownershipMigration = appContainer.accountOwnershipMigration,
+                        guestAnnouncement = appContainer.accountAuthenticator::announceGuestIdentity,
                     )
                 },
             )

@@ -21,6 +21,9 @@ enum class AccountAvailabilityReason {
 
     /** Sign-in is switched off by policy for this build or this device. */
     DISABLED_BY_POLICY,
+
+    /** The service exists but does not implement this operation yet, and says so instead of pretending. */
+    NOT_IMPLEMENTED_BY_SERVICE,
 }
 
 /** Whether authentication can be attempted, expressed as a value rather than a boolean plus reason. */
@@ -45,6 +48,9 @@ enum class AccountSessionEndReason {
 
     /** The account service rejected the stored session. */
     REJECTED_BY_SERVICE,
+
+    /** The service reports the account as suspended, so the session cannot continue. */
+    ACCOUNT_SUSPENDED,
 
     /** The stored session could not be read back (corrupted or unreadable storage). */
     INVALID_STORED_SESSION,

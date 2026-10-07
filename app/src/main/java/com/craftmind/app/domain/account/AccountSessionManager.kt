@@ -96,8 +96,29 @@ class AccountSessionManager(
     private fun restoreFrom(stored: StoredAccountSession): AccountState {
         if (!stored.session.isExpiredAt(clock.nowMillis())) {
             val restored = stored.session.withSource(AccountSessionSource.RESTORED_ON_DEVICE)
-            session = restored
-            return publish(AccountState.Authenticated(restored))
+            // A service, when one is reachable, is the authority on whether the session is still valid. When no service
+            // can answer, the locally usable session is kept and the UI says it was not re-checked — which is what the
+            // RESTORED_ON_DEVICE provenance exists to express.
+            if (authenticator.availability() !is AccountAuthenticationAvailability.Available) {
+                session = restored
+                return publish(AccountState.Authenticated(restored))
+            }
+            return when (
+                val outcome = guarding(AccountAuthOutcome.Failure(AccountAuthErrorCode.UNEXPECTED_FAILURE)) {
+                    authenticator.restore(stored.credential, restored)
+                }
+            ) {
+                is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.RESTORED_ON_DEVICE)
+                is AccountAuthOutcome.Unavailable -> {
+                    session = restored
+                    publish(AccountState.Authenticated(restored))
+                }
+                is AccountAuthOutcome.Failure -> {
+                    session = null
+                    if (outcome.error.invalidatesStoredSession()) clearStoredSessionQuietly()
+                    publish(AccountState.SessionExpired(stored.session.identity, endReasonFor(outcome.error)))
+                }
+            }
         }
         if (!stored.session.refreshable) {
             clearStoredSessionQuietly()
@@ -118,9 +139,7 @@ class AccountSessionManager(
                 if (outcome.error.invalidatesStoredSession()) {
                     clearStoredSessionQuietly()
                     session = null
-                    publish(
-                        AccountState.SessionExpired(stored.session.identity, AccountSessionEndReason.REJECTED_BY_SERVICE),
-                    )
+                    publish(AccountState.SessionExpired(stored.session.identity, endReasonFor(outcome.error)))
                 } else {
                     session = null
                     publish(
@@ -163,6 +182,49 @@ class AccountSessionManager(
         }
     } finally {
         request.close()
+    }
+
+    /**
+     * Creates an account and signs straight into it (Phase 17 §5, §8).
+     *
+     * Deliberately the same shape as [signIn]: availability first, the in-flight state published, the answer mapped to
+     * the same typed outcomes, and adoption through the same "only if it can be stored securely" path. Registration is
+     * therefore not a second way to become authenticated — it is the same way, with a different first request.
+     *
+     * Take ownership of [password]: it is cleared before this method returns.
+     */
+    fun signUp(emailAddress: String, password: CharArray, displayName: String?): AccountState = try {
+        val availability = authenticator.availability()
+        val registrationCapable = authenticator as? AccountRegistrationCapable
+        when {
+            availability is AccountAuthenticationAvailability.Unavailable ->
+                publish(AccountState.Unavailable(availability.reason, identityOrNull()))
+
+            registrationCapable == null ->
+                // No service can create an account in this build, and the state says so rather than pretending.
+                publish(
+                    AccountState.Unavailable(
+                        AccountAvailabilityReason.NOT_IMPLEMENTED_BY_SERVICE,
+                        identityOrNull(),
+                    ),
+                )
+
+            else -> {
+                val baseIdentity = identityOrNull()
+                publish(AccountState.SigningIn(AccountSignInMethod.EMAIL_PASSWORD, baseIdentity))
+                when (
+                    val outcome = guarding(AccountAuthOutcome.Failure(AccountAuthErrorCode.UNEXPECTED_FAILURE)) {
+                        registrationCapable.signUp(emailAddress, password, displayName)
+                    }
+                ) {
+                    is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.LIVE_SIGN_IN)
+                    is AccountAuthOutcome.Failure -> publish(AccountState.Failed(outcome.error, baseIdentity))
+                    is AccountAuthOutcome.Unavailable -> publish(AccountState.Unavailable(outcome.reason, baseIdentity))
+                }
+            }
+        }
+    } finally {
+        password.fill('\u0000')
     }
 
     /**
@@ -322,5 +384,21 @@ class AccountSessionManager(
  * True when a failure means the stored credential itself is no longer usable, so keeping it would only preserve a dead
  * secret on the device.
  */
-fun AccountAuthErrorCode.invalidatesStoredSession(): Boolean =
-    this == AccountAuthErrorCode.INVALID_CREDENTIALS || this == AccountAuthErrorCode.MALFORMED_RESPONSE
+fun AccountAuthErrorCode.invalidatesStoredSession(): Boolean = when (this) {
+    // A credential the service no longer accepts, an answer that does not match the contract, a session the service
+    // rejected, or a suspended account all mean the stored record is dead weight rather than a recoverable session.
+    AccountAuthErrorCode.INVALID_CREDENTIALS,
+    AccountAuthErrorCode.MALFORMED_RESPONSE,
+    AccountAuthErrorCode.SESSION_REJECTED,
+    AccountAuthErrorCode.ACCOUNT_SUSPENDED,
+    -> true
+
+    else -> false
+}
+
+/** Why a session ended, as the account screen should describe it. Suspension is reported as itself, not as a generic rejection. */
+fun endReasonFor(error: AccountAuthErrorCode): AccountSessionEndReason = when (error) {
+    AccountAuthErrorCode.ACCOUNT_SUSPENDED -> AccountSessionEndReason.ACCOUNT_SUSPENDED
+    AccountAuthErrorCode.SESSION_REJECTED -> AccountSessionEndReason.REJECTED_BY_SERVICE
+    else -> AccountSessionEndReason.REJECTED_BY_SERVICE
+}

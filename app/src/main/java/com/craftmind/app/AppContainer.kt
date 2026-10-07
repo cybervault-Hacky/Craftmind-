@@ -12,13 +12,19 @@ import com.craftmind.app.data.builds.AtomicLocalBuildRepository
 import com.craftmind.app.data.builds.AtomicLocalBuildExecutionRepository
 import com.craftmind.app.data.minecraft.AndroidMinecraftBridgePairingRepository
 import com.craftmind.app.data.account.AndroidKeystoreAccountSessionStore
+import com.craftmind.app.data.account.CraftMindAccountAuthenticator
+import com.craftmind.app.data.account.FileGuestIdentityStore
 import com.craftmind.app.data.account.FileLocalOwnershipMarkerStore
+import com.craftmind.app.data.account.HttpAccountApi
+import com.craftmind.app.data.account.OkHttpAccountTransport
 import com.craftmind.app.data.security.AndroidKeystoreCredentialStore
 import com.craftmind.app.data.settings.DataStoreAiProviderSelectionRepository
 import com.craftmind.app.data.settings.DataStoreThemePreferenceRepository
+import com.craftmind.app.domain.account.AccountServiceConfiguration
 import com.craftmind.app.domain.account.AccountSessionManager
 import com.craftmind.app.domain.account.AccountSessionStore
 import com.craftmind.app.domain.account.CraftMindAccountFoundation
+import com.craftmind.app.domain.account.GuestIdentityManager
 import com.craftmind.app.domain.account.LocalOwnershipMigration
 import com.craftmind.app.domain.ai.AiProviderRegistry
 import com.craftmind.app.domain.buildplan.BuildHistoryPolicy
@@ -43,10 +49,31 @@ class AppContainer(context: Context) {
      * account secret and an AI provider key can never be confused for one another.
      */
     val accountSessionStore: AccountSessionStore = AndroidKeystoreAccountSessionStore(appContext)
-    val accountSessionManager: AccountSessionManager =
-        CraftMindAccountFoundation.sessionManager(sessionStore = accountSessionStore)
     val accountOwnershipMigration: LocalOwnershipMigration =
         LocalOwnershipMigration(store = FileLocalOwnershipMarkerStore(appContext))
+
+    /**
+     * The account service this build talks to (Phase 17).
+     *
+     * The address is a build value, never a literal: a build without one reports "no account service configured" and
+     * offers no sign-in at all. It must be absolute HTTPS, which [AccountServiceConfiguration] enforces before any
+     * request can be built, and the Android manifest keeps cleartext traffic disabled as well.
+     */
+    private val accountServiceConfiguration: AccountServiceConfiguration =
+        AccountServiceConfiguration.fromBuildValue(BuildConfig.CRAFTMIND_ACCOUNT_BASE_URL)
+    private val guestIdentityManager: GuestIdentityManager =
+        GuestIdentityManager(store = FileGuestIdentityStore(appContext))
+    val accountAuthenticator: CraftMindAccountAuthenticator = CraftMindAccountAuthenticator(
+        api = HttpAccountApi(
+            configuration = accountServiceConfiguration,
+            transport = OkHttpAccountTransport(),
+        ),
+        guestIdentityManager = guestIdentityManager,
+    )
+    val accountSessionManager: AccountSessionManager = CraftMindAccountFoundation.sessionManager(
+        sessionStore = accountSessionStore,
+        authenticator = accountAuthenticator,
+    )
     val providerRegistry = AiProviderRegistry(listOf(GoogleGeminiProviderAdapter()))
     val providerSelections = DataStoreAiProviderSelectionRepository(appContext)
     val buildPlanValidator = DefaultBuildPlanValidator()

@@ -29,6 +29,15 @@ enum class AccountAuthErrorCode(val retryable: Boolean) {
     /** The attempt could not be built from what was entered, so nothing was ever sent anywhere. */
     INVALID_REQUEST(retryable = false),
 
+    /** The service refused because an account already exists for that address. */
+    ACCOUNT_ALREADY_EXISTS(retryable = false),
+
+    /** The account exists but is suspended, so it cannot sign in. */
+    ACCOUNT_SUSPENDED(retryable = false),
+
+    /** The service rejected the stored session itself: it is expired, revoked, or unrecognised. */
+    SESSION_REJECTED(retryable = false),
+
     /** The session could not be persisted or removed securely on this device. */
     SESSION_STORAGE_FAILURE(retryable = true),
 
