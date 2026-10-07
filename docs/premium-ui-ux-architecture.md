@@ -325,10 +325,11 @@ The rules are deliberately strict so the interface does not drift:
    `scripts/check_website.py` — never one giant page, never a placeholder for an unimplemented feature.
 10. **No fake content anywhere**: no sample builds, no invented metrics, no "coming soon" features presented as
     available, no fabricated screenshots or runtime results.
-11. **No marketplace placeholders.** Accounts, pricing, marketplace cards/grid/detail, creator dashboards, and launch
-    arrive only when those phases actually begin. Until then nothing in the app or the website references them: no
-    "Marketplace", "Pricing", "Creator", "Servers", or "Account" navigation entry, no empty card grid, no stub screen,
-    and no website page. A placeholder advertises a product that does not exist, which is worse than its absence.
+11. **No marketplace placeholders.** Pricing, marketplace cards/grid/detail, creator dashboards, and launch arrive
+    only when those phases actually begin. Until then nothing in the app or the website references them: no
+    "Marketplace", "Pricing", "Creator", or "Servers" navigation entry, no empty card grid, no stub screen, and no
+    website page. A placeholder advertises a product that does not exist, which is worse than its absence. The accounts
+    half of this rule was fulfilled by Phase 16, which is the phase that began accounts: see §9.
 
 Explicitly forbidden in every later phase: random colours; competing primary buttons; a second card system; a second
 typography system; unrelated dialog styles; a separate navigation system; redesigning an existing screen without a
@@ -341,7 +342,129 @@ to `designsystem/` where genuinely new affordances (for example a creator card o
 
 ---
 
-## 9. What verifies these claims
+## 9. Accounts and authentication foundation (Phase 16)
+
+Phase 16 adds the account layer only: identity, session, storage boundary, UI surfaces, and the tests that pin them.
+Subscriptions, payments, marketplace, creator economy, monetization, and credits are **not** part of this phase and are
+not referenced anywhere in the app or the website.
+
+### 9.1 What exists, and what deliberately does not
+
+| Area | State after Phase 16 |
+| --- | --- |
+| Provider-neutral authenticator contract (`AccountAuthenticator`) | Implemented, with typed outcomes and typed errors |
+| State machine (`AccountSessionManager`) | Implemented, fully JVM-tested, no booleans |
+| Encrypted session storage (`AndroidKeystoreAccountSessionStore`) | Implemented, own Keystore alias and own no-backup directory |
+| Account UI (Settings group + account overlay) | Implemented from the Phase 15 design system |
+| Ownership classification and local marker migration | Implemented, idempotent and interrupt-safe |
+| A real account service | **Not implemented.** `CraftMindAccountFoundation.authenticator()` returns `NoBackendAccountAuthenticator`, which reports `NO_BACKEND_CONFIGURED` for every authentication operation |
+| Cloud sync, account-owned history, cross-device settings, marketplace identity, creator profile, subscriptions, credits, entitlements | **Not implemented**, and named only as future extension points |
+
+There is no fake backend anywhere: no provider SDK, no endpoint constant, no token literal, no development credential,
+and no code path that can produce a session without a service. `NoBackendAccountAuthenticator` is not a stub to be
+replaced by a fake later; when a real service exists, `CraftMindAccountFoundation` chooses a different implementation and
+everything else — state machine, storage boundary, UI projection, tests — is unchanged.
+
+### 9.2 Domain model
+
+`domain/account/` holds the whole model, and it is plain Kotlin with no Android, Compose, or coroutine dependency, so it
+is tested on the JVM:
+
+* `AccountState` — sealed: `Guest`, `SigningIn`, `Authenticated`, `SigningOut`, `SessionExpired`, `Unavailable`,
+  `Failed`. Invalid combinations are unrepresentable: there is no `isLoggedIn`, no `hasToken`, no `isGuest`, and no
+  `sessionValid`. `AccountState.runsLocally` is the single place that answers "is this device in local mode".
+* `AccountSession` — **metadata only**: identity, provider, method, issue time, declared expiry (or its absence),
+  refreshability, and provenance (`LIVE_SIGN_IN` / `RESTORED_ON_DEVICE`). It carries no token, no refresh token, and no
+  password; a session object is therefore safe to hold in state and to render.
+* `AccountIdentity` — a bounded, validated identity that renders only a **masked** email address, never the internal
+  account identifier.
+* `AccountSessionCredential` — a typed, zeroing, redacting holder for the session secret, which exists only inside the
+  encrypted store and the authenticator call.
+* `AccountAuthErrorCode` — the closed error vocabulary: invalid credentials, cancelled, network unavailable, service
+  unavailable, authentication unavailable, malformed response, invalid request, session storage failure, unexpected
+  failure. Failures are values, never messages from a service, and exception detail is discarded on purpose because it
+  could contain credentials.
+* `CraftMindDataOwnership` / `CraftMindDataDomain` — the ownership classification, with the production type that stores
+  each domain so the classification cannot drift into fiction. The four categories are `LOCAL_ONLY` (stays on the
+  device), `ACCOUNT_SCOPED_FUTURE` (a future phase may synchronise it), `SECRET_LOCAL_ONLY` (never leaves the device),
+  and `MINECRAFT_RUNTIME_LOCAL_ONLY` (the bridge pairing, its pinned identity, and execution records, which belong to a
+  runtime on this network and never to an account).
+
+### 9.3 Session lifecycle
+
+1. **Launch.** `AccountSessionManager.restoreSession()` reads the encrypted record. An unexpired session is restored
+   with source `RESTORED_ON_DEVICE` and **no network round trip**; the UI says "restored from this device, not
+   re-checked", because that is what happened.
+2. **Expiry.** A session whose service-declared expiry has passed is refreshed when the contract allows it. If refresh
+   fails because the service is unreachable, the record is **kept** (the session may still be recoverable); if the
+   service rejects it, the record is destroyed. An unreadable record is discarded and reported as such. CraftMind never
+   invents an expiry for a session that declared none.
+3. **Sign-in.** Availability is checked first: without a service the state becomes `Unavailable`, not a failure and not
+   a fake session. A successful attempt is only adopted if the session could actually be stored securely; otherwise the
+   device keeps whoever it was before and reports `SESSION_STORAGE_FAILURE`.
+4. **Sign-out.** Local clearing happens first and always — remote revocation is best-effort and its outcome is stated
+   (`LOCAL_ONLY`, `REMOTE_REVOCATION_SKIPPED`, `REMOTE_REVOCATION_FAILED`, `REMOTE_REVOKED`). If the device could not
+   forget the session, the UI does **not** look signed in and says so.
+5. **Account switching.** `switchAccount()` signs out first, so a failed switch can never leave half of a previous
+   identity behind. There is no multi-account implementation.
+6. **Account deletion.** `requestAccountDeletion()` is a *request* against a service. It touches nothing local: not the
+   session, not builds, not settings. Local sign-out and local data deletion stay separate operations with separate copy.
+
+### 9.4 Credential separation and the BYOK boundary
+
+* Account sessions and AI provider keys are different types in different Keystore namespaces: alias
+  `com.craftmind.account.session.aesgcm.v1` / directory `account_session` versus alias
+  `com.craftmind.provider.credentials.aesgcm.v1` / directory `provider_credentials`, both under `noBackupFilesDir`,
+  both AES-GCM, both with their own AAD. `AccountSecurityBoundaryTest` fails if the two ever converge.
+* Provider API keys are never uploaded, never attached to an account, and never sent anywhere except the provider they
+  belong to. The account layer has no reference to `CredentialStore`, no import of the provider credential packages, and
+  no field that could carry a key.
+* Sessions are never serialised by the app, never written to preferences, and never logged: the account packages contain
+  no `Log`, `println`, `System.out`, `SharedPreferences`, `WebView`, or analytics call, and the tests assert it.
+* `android:allowBackup="false"` remains set, so neither keys nor sessions can be extracted by a backup agent.
+
+### 9.5 Identity boundaries
+
+A CraftMind account is **not** a Minecraft account, **not** a bridge pairing, and **not** an AI provider account.
+Signing in grants no Minecraft runtime control: the bridge security model (pinned private-LAN HTTPS, authenticated
+runtime detection, adapter selection, compatibility resolution, session-bound authorization, explicit confirmation) is
+untouched, and the account types never appear in a `BuildPlan`, in a bridge payload, or in the compatibility resolver.
+`AccountSecurityBoundaryTest` scans those packages for account references and fails on any.
+
+### 9.6 Guest mode and the UI surfaces
+
+Guest/local mode is first class and explicit, not an error state:
+
+* Settings gains an **Account** group between Data and About — a summary with a status badge, an honest explanation, and
+  at most one action. Navigation stays exactly Home / Builds / Minecraft / Settings.
+* The account **overlay** (opened from that group) shows status, what an account is for, what stays on this device,
+  account management (sign-out vs account deletion vs local deletion), and a collapsed technical section.
+* Every string is a pure projection of state (`accountUiState`), so there is one story per state and no second copy:
+  local mode is described as complete, "authentication unavailable" and "incorrect credentials" are different states
+  with different tones, one primary action is offered at most, and an unavailable action always states its reason.
+* Nothing renders a token, a key, a session secret, or an internal account identifier; the identity is shown masked.
+* Accessibility: every state carries a spoken status label (`Account status: …`), tone is never the only signal,
+  no fake progress or percentage appears anywhere, and the existing reduced-motion tokens apply unchanged.
+
+### 9.7 Website
+
+The website keeps its eight pages and its navigation. Its existing statements about accounts were corrected in this
+phase to match reality: there is no account service to sign in to yet, so no account can be created, nothing is synced,
+and no "coming soon" account feature is advertised. The FAQ answer now states exactly what ships (an account foundation
+with local mode) and what does not.
+
+### 9.8 Future cloud extension points
+
+Named, and intentionally unused: provider-neutral authentication for OAuth/social methods (the contract already
+distinguishes methods and authorization-code requests), cloud sync of builds and settings (`ACCOUNT_SCOPED_FUTURE` is
+reserved for `BUILD_HISTORY`, `BUILD_PLAN_VERSIONS`, and `APP_SETTINGS` only), account-owned history, cross-device
+settings, marketplace identity, creator profile, subscriptions, credits, and entitlements. None of them is implemented,
+none is referenced in the UI, and secrets — provider keys and the account session credential — are classified
+`SECRET_LOCAL_ONLY` in both the present and the future classification, so no future phase may sync them.
+
+---
+
+## 10. What verifies these claims
 
 | Claim | Verified by | Result |
 | --- | --- | --- |
@@ -353,8 +476,17 @@ to `designsystem/` where genuinely new affordances (for example a creator card o
 | Minecraft stages/actions/gates derive from real detector, selector, resolver, and certification state | `MinecraftConnectionSummaryTest` (17 tests) | PASS |
 | Website architecture, navigation, download policy, honest copy, responsive + reduced-motion markers, no remote resources | `scripts/check_website.py` | PASS |
 | No secrets, APKs, keystores, or build outputs are tracked | `scripts/check_release_config.py`, secret scan before commit | PASS |
+| Account state machine: local-first sign-out, fail-closed without a service, restore/refresh/expiry, switching, deletion, listener transitions, no secret in any state | `AccountSessionManagerTest` (32 tests) | PASS |
+| Ownership classification matches the source tree; the four category names are pinned; Minecraft runtime state is runtime-local in the present and the future; the two secret stores stay separate; nothing is account-scoped today | `CraftMindDataOwnershipTest` (10 tests) | PASS |
+| Ownership-marker migration is idempotent, downgrade-safe, interrupt-safe, and carries no user content | `LocalOwnershipMigrationTest` (7 tests) | PASS |
+| Account copy: local mode complete, unavailable ≠ incorrect credentials, masked identity, no secret/identifier rendered, a11y labels, no fake progress | `AccountUiStateTest` (24 tests) | PASS |
+| Security boundary: no logging, no plaintext or shared Keystore namespace, BYOK untouched, no account data in BuildPlans or bridge payloads, no invented backend or endpoint, no WebView/analytics | `AccountSecurityBoundaryTest` (18 tests) | PASS |
+| The Phase 15 design system and navigation are unchanged by this phase | `CraftMindDesignTokensTest` (13), `CraftMindDesignSystemSourceScanTest` (2), `MainDestinationTest` (4) | PASS |
 
 Android compilation itself is **not** verified in this environment: no Android SDK, no Gradle distribution, and no
 Maven access are available here, so `ANDROID_BUILD = NOT_RUN`. The Compose screens are exercised by the JVM-checkable
 derivations above and by source-level scans; the instrumented Compose tests
-(`PlanReviewScreenTest`, `SettingsScreenTest`) are present but cannot be executed here.
+(`PlanReviewScreenTest`, `SettingsScreenTest`) are present but cannot be executed here. Phase 16 ran the account suite
+(91 tests) and the design-system slice (19 tests) against the offline JVM harness; the full application suite was last
+run in Phase 15 (358 run, 5 pre-existing failures, 0 errors) and could not be re-run here because the harness stubs for
+AndroidX/Compose storage were lost when the sandbox was recreated.

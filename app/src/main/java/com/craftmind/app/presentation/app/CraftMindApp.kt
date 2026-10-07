@@ -47,6 +47,11 @@ import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.settings.ThemeMode
 import com.craftmind.app.presentation.about.AboutScreen
+import com.craftmind.app.presentation.account.AccountScreen
+import com.craftmind.app.presentation.account.AccountSettingsSummary
+import com.craftmind.app.presentation.account.AccountUiEvent
+import com.craftmind.app.presentation.account.AccountUiState
+import com.craftmind.app.presentation.account.accountSettingsSummary
 import com.craftmind.app.presentation.builds.BuildExecutionEvent
 import com.craftmind.app.presentation.builds.BuildExecutionFlow
 import com.craftmind.app.presentation.builds.BuildExecutionState
@@ -90,7 +95,7 @@ private val NavigationItems = listOf(
 )
 
 /**
- * The app shell: four destinations, one review overlay, one about overlay.
+ * The app shell: four destinations, one review overlay, an account overlay, and an about overlay.
  *
  * Layout composes responsively instead of switching layouts: from [CraftMindLayout.mediumBreakpoint] the navigation
  * becomes a rail beside the content, below it a bottom bar. Transitions use the resolved motion tokens, so a device
@@ -113,9 +118,13 @@ fun CraftMindApp(
     executionState: BuildExecutionState,
     onExecutionEvent: (BuildExecutionEvent) -> Unit,
     compatibilityResolver: MinecraftCompatibilityResolver,
+    accountState: AccountUiState,
+    onAccountEvent: (AccountUiEvent) -> Unit,
 ) {
     var selectedRoute by rememberSaveable { mutableStateOf(MainDestination.PRIMARY.route) }
     var aboutVisible by rememberSaveable { mutableStateOf(false) }
+    var accountVisible by rememberSaveable { mutableStateOf(false) }
+    val accountSummary: AccountSettingsSummary = remember(accountState) { accountSettingsSummary(accountState) }
     var reviewContent by remember { mutableStateOf<PlanReviewContent?>(null) }
     val destination = MainDestination.fromRoute(selectedRoute)
     val motion = MaterialTheme.craftMindMotion
@@ -132,9 +141,9 @@ fun CraftMindApp(
         }
     }
 
-    // One handler with an explicit precedence order: review sheet first, then About, then back to Home.
+    // One handler with an explicit precedence order: review sheet, account, About, then back to Home.
     BackHandler(
-        enabled = reviewContent != null || aboutVisible || destination != MainDestination.PRIMARY,
+        enabled = reviewContent != null || aboutVisible || accountVisible || destination != MainDestination.PRIMARY,
     ) {
         when {
             reviewContent != null -> {
@@ -146,6 +155,7 @@ fun CraftMindApp(
                 onRefinementEvent(BuildRefinementEvent.DismissResult)
             }
 
+            accountVisible -> accountVisible = false
             aboutVisible -> aboutVisible = false
             else -> selectedRoute = MainDestination.PRIMARY.route
         }
@@ -159,6 +169,7 @@ fun CraftMindApp(
         val wideLayout = maxWidth >= CraftMindLayout.mediumBreakpoint
         val navigate: (MainDestination) -> Unit = { target ->
             aboutVisible = false
+            accountVisible = false
             selectedRoute = target.route
         }
         val destinationContent: @Composable AnimatedVisibilityScope.(MainDestination) -> Unit =
@@ -189,7 +200,16 @@ fun CraftMindApp(
                         reviewContent = PlanReviewContent(record.plan, record.request, record)
                     },
                     onNavigate = navigate,
-                    onOpenAbout = { aboutVisible = true },
+                    onOpenAbout = {
+                        accountVisible = false
+                        aboutVisible = true
+                    },
+                    accountSummary = accountSummary,
+                    onAccountEvent = onAccountEvent,
+                    onOpenAccount = {
+                        aboutVisible = false
+                        accountVisible = true
+                    },
                 )
             }
 
@@ -269,6 +289,19 @@ fun CraftMindApp(
                 AboutScreen(onClose = { aboutVisible = false })
             }
         }
+
+        if (accountVisible) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                AccountScreen(
+                    state = accountState,
+                    onEvent = onAccountEvent,
+                    onClose = { accountVisible = false },
+                )
+            }
+        }
     }
 
     reviewContent?.let { review ->
@@ -320,6 +353,9 @@ private fun DestinationContent(
     onReviewSavedPlan: (LocalBuildRecord) -> Unit,
     onNavigate: (MainDestination) -> Unit,
     onOpenAbout: () -> Unit,
+    accountSummary: AccountSettingsSummary,
+    onAccountEvent: (AccountUiEvent) -> Unit,
+    onOpenAccount: () -> Unit,
 ) {
     when (destination) {
         MainDestination.HOME -> HomeScreen(
@@ -371,6 +407,9 @@ private fun DestinationContent(
             onBridgeEvent = onBridgePairingEvent,
             onOpenAbout = onOpenAbout,
             onOpenMinecraft = { onNavigate(MainDestination.MINECRAFT) },
+            accountSummary = accountSummary,
+            onAccountEvent = onAccountEvent,
+            onOpenAccount = onOpenAccount,
         )
     }
 }

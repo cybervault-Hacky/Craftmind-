@@ -851,8 +851,8 @@ private fun RequestPreview(state: BuildComposerState, selectedModel: AiModel?) {
 
                     else -> "Your prompt is sent directly to the selected provider. No reference content is fetched."
                 },
-                "CraftMind has no hosted AI backend, no account, and no analytics. Provider-side retention is governed " +
-                    "by the provider's own terms.",
+                "CraftMind has no hosted AI backend, no account service, and no analytics. Provider-side retention is " +
+                    "governed by the provider's own terms.",
             ),
         )
     }

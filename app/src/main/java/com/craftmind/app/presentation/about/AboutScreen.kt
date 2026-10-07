@@ -216,7 +216,7 @@ fun AboutScreen(
                         "For a supported public video reference, this device reads bounded byte ranges and sends at " +
                             "most five sampled frames. The video URL itself is not sent to the model.",
                         "Accepted plans and reference metadata are kept in local history on this device. CraftMind " +
-                            "has no account, no cloud sync, and no analytics; Android app backup is disabled.",
+                            "has no account service, no cloud sync, and no analytics; Android app backup is disabled.",
                         "Raw image bytes, video bytes, and sampled frames are never stored in build history.",
                     ),
                 )
@@ -286,7 +286,7 @@ fun AboutScreen(
                     Text(text = "What this build is not", style = CraftMindType.titleMedium)
                     CraftMindDetailLines(
                         listOf(
-                            "No accounts, subscriptions, pricing, or marketplace.",
+                            "No account service, subscriptions, pricing, or marketplace.",
                             "No hosted AI backend, no CraftMind servers, no analytics.",
                             "No company registration, team, office, or funding history.",
                             "No customer counts, partnerships, awards, or certifications beyond the runtime " +

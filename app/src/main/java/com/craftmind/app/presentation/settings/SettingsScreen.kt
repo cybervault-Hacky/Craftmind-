@@ -49,13 +49,17 @@ import com.craftmind.app.designsystem.CraftMindTertiaryButton
 import com.craftmind.app.designsystem.CraftMindTone
 import com.craftmind.app.designsystem.CraftMindType
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.account.AccountAction
+import com.craftmind.app.presentation.account.AccountSettingsSummary
+import com.craftmind.app.presentation.account.AccountUiEvent
+import com.craftmind.app.presentation.account.defaultAccountSummary
 import com.craftmind.app.presentation.minecraft.minecraftConnectionSummary
 import com.craftmind.app.presentation.navigation.MainDestination
 
 /**
  * Settings (Phase 15 §10).
  *
- * Five groups, in the order a user needs them: Appearance, AI providers, Minecraft, Data, About. Secrets stay masked
+ * Six groups, in the order a user needs them: Appearance, Account, AI providers, Minecraft, Data, About. Secrets stay masked
  * and are never displayed after saving; credential handling itself is unchanged — the key is still encrypted with an
  * Android Keystore key and stored in app-private no-backup storage.
  *
@@ -73,6 +77,9 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onOpenAbout: () -> Unit = {},
     onOpenMinecraft: () -> Unit = {},
+    accountSummary: AccountSettingsSummary = defaultAccountSummary(),
+    onAccountEvent: (AccountUiEvent) -> Unit = {},
+    onOpenAccount: () -> Unit = {},
 ) {
     CraftMindScreen(
         title = "Settings",
@@ -81,6 +88,7 @@ fun SettingsScreen(
         modifier = modifier,
     ) {
         AppearanceGroup(themeMode = themeMode, onThemeModeSelected = onThemeModeSelected)
+        AccountGroup(summary = accountSummary, onEvent = onAccountEvent, onOpenAccount = onOpenAccount)
         ProviderSettingsCard(state = providerState, onEvent = onProviderEvent)
         MinecraftGroup(
             state = bridgeState,
@@ -131,6 +139,59 @@ private fun AppearanceGroup(
             message = "Motion follows your device's accessibility settings: when animations are removed, CraftMind " +
                 "switches state instantly instead of transitioning. No status is ever replaced by an animation.",
         )
+    }
+}
+
+/**
+ * Account group (Phase 16 §8).
+ *
+ * Local mode is presented as a complete state, not a shortcoming, and the group never offers an action that cannot lead
+ * anywhere: when authentication is unavailable it says why instead of showing a dead sign-in button. All account detail
+ * lives one tap away on the account screen, so Settings stays a summary.
+ */
+@Composable
+private fun AccountGroup(
+    summary: AccountSettingsSummary,
+    onEvent: (AccountUiEvent) -> Unit,
+    onOpenAccount: () -> Unit,
+) {
+    val action = summary.primaryAction
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "Account",
+            title = summary.title,
+            subtitle = "Optional. CraftMind works fully on this device without an account.",
+            trailing = { CraftMindStatusBadge(label = summary.badgeLabel, tone = summary.badgeTone) },
+        )
+        Text(
+            text = summary.detail,
+            style = CraftMindType.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        summary.identityName?.let { name ->
+            CraftMindKeyValueRow(label = "Signed in as", value = name)
+        }
+        summary.actionUnavailableReason?.let { reason ->
+            CraftMindNotice(tone = CraftMindTone.CAUTION, message = reason)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
+        ) {
+            when (action) {
+                null -> Unit
+                AccountAction.SignOut -> CraftMindSecondaryButton(
+                    text = action.label,
+                    onClick = { onEvent(AccountUiEvent.SignOutRequested) },
+                )
+
+                else -> CraftMindSecondaryButton(
+                    text = action.label,
+                    onClick = { onEvent(AccountUiEvent.RetryRequested) },
+                )
+            }
+            CraftMindTertiaryButton(text = "Account details", onClick = onOpenAccount)
+        }
     }
 }
 
@@ -207,7 +268,10 @@ private fun DataGroup() {
             ),
         )
         CraftMindDivider()
-        CraftMindKeyValueRow(label = "Accounts", value = "None. CraftMind has no sign-in and no cloud sync.")
+        CraftMindKeyValueRow(
+            label = "Accounts",
+            value = "Optional, and not available in this build: there is no account service yet, and nothing is synced.",
+        )
         CraftMindKeyValueRow(label = "Analytics", value = "None. No tracking or telemetry is collected.")
         CraftMindKeyValueRow(label = "Android backup", value = "Disabled for app data.")
         CraftMindKeyValueRow(label = "AI backend", value = "None hosted by CraftMind; requests go to your provider.")
