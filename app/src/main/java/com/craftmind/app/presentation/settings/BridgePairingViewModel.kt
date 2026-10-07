@@ -124,7 +124,7 @@ class BridgePairingViewModel(
                             compatibility?.status == MinecraftCompatibilityStatus.SUPPORTED ->
                                 "Capabilities refreshed. The runtime is supported, but one or more runtime capabilities or limits are not ready for construction."
                             else -> "Capabilities refreshed. ${resolution.detection.detectionStatusLabel()}; " +
-                                "no BuildPlan will be sent for execution.",
+                                "no BuildPlan will be sent for execution."
                         },
                     )
                 }

@@ -9,7 +9,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
@@ -27,6 +26,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.exifinterface.media.ExifInterface
+import com.craftmind.app.designsystem.CraftMindShapes
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.buildplan.BuildRequestValidator
 import java.io.ByteArrayInputStream
@@ -70,7 +70,7 @@ fun ImageThumbnail(
                 .size(size)
                 .background(
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = CraftMindShapes.md,
                 )
                 .semantics { this.contentDescription = "Reference image preview unavailable" },
             contentAlignment = Alignment.Center,

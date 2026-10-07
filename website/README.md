@@ -1,6 +1,22 @@
 # CraftMind static website
 
-This is a dependency-free static site: `index.html`, `styles.css`, and `favicon.svg`. It makes no browser-side requests, uses no hosted fonts or analytics, and needs no build step.
+This is a dependency-free static multi-page site. The Phase 15 page set is:
+
+| Page | File |
+| --- | --- |
+| Home | `index.html` |
+| How It Works | `how-it-works.html` |
+| Features | `features.html` |
+| Download | `download.html` |
+| About | `about.html` |
+| FAQ / Help | `faq.html` |
+| Privacy | `privacy.html` |
+| Terms | `terms.html` |
+
+Shared assets are `styles.css` (base design language plus a "Phase 15 multi-page components" block) and
+`favicon.svg`. Every page carries the same navigation (`Home / How it works / Features / Download / About / FAQ`) and
+the same footer (`Privacy`, `Terms`, `Source`). The site makes no browser-side requests, uses no hosted fonts or
+analytics, needs no build step, and has no remote or fabricated resources.
 
 ## Local preview and check
 
@@ -34,4 +50,17 @@ That URL is a deployment target, not a claim that Pages is live. No custom domai
 
 ## Download placeholder
 
-The `DOWNLOAD APK` hero link currently scrolls to a disabled button because no signed APK exists. Do not replace it with a fabricated or `latest/download` URL. After a verified `v1.0.0` GitHub release exists, link directly to its actual APK asset, publish the matching SHA-256, and rerun the static website check before manually deploying.
+`download.html` owns the **single** disabled `DOWNLOAD APK` control in the site; the hero link on the home page
+scrolls to it. No signed APK exists yet, so the control stays visibly unavailable and the page says the release has
+not yet been built, installed, or published.
+
+Do not replace it with a fabricated APK or a `releases/latest/download` URL, and do not make GitHub the primary
+download experience. After a verified `v1.0.0` release exists (signed, checked with `scripts/verify-release-apk.sh`),
+publish the matching SHA-256 on the download page, enable the control, and rerun `python3 scripts/check_website.py`
+before manually deploying.
+
+## Adding a page later
+
+Add the file, add it to the shared navigation and footer of every existing page, update the page list in
+`scripts/check_website.py` (page set, navigation labels, and any phrase checks), then rerun the check. New topics get
+a new page — never an appendix on the home page, and never a placeholder advertising a feature that does not exist.

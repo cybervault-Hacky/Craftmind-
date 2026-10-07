@@ -22,10 +22,21 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 
+/**
+ * Bridge session controls and the authenticated runtime detail.
+ *
+ * Shared by Settings and the Minecraft destination so both drive exactly the same real pairing, connection,
+ * refresh, revoke, and forget operations — there is no second implementation and no visual mock-up.
+ *
+ * @param showRuntimeCompatibility false when the hosting screen renders the compatibility, certification, and
+ *   execution-permission panels itself (the Minecraft destination does, with the shared design system), so the same
+ *   facts are never printed twice on one screen.
+ */
 @Composable
 internal fun MinecraftBridgeSettingsContent(
     state: BridgePairingState,
     onEvent: (BridgePairingEvent) -> Unit,
+    showRuntimeCompatibility: Boolean = true,
 ) {
     if (!state.isProfileLoaded) {
         Text(
@@ -124,11 +135,13 @@ internal fun MinecraftBridgeSettingsContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                MinecraftRuntimeCompatibilityBlock(
-                    runtime = runtime,
-                    compatibility = compatibility,
-                    resolution = state.runtimeResolution,
-                )
+                if (showRuntimeCompatibility) {
+                    MinecraftRuntimeCompatibilityBlock(
+                        runtime = runtime,
+                        compatibility = compatibility,
+                        resolution = state.runtimeResolution,
+                    )
+                }
                 if (!runtime.isBedrock) {
                     Text(
                         "Registered Java profile requirement: " +

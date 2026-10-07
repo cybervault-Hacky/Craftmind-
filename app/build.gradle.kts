@@ -94,6 +94,9 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig generation is off by default in AGP 8, and the app reads BuildConfig.VERSION_NAME in the bridge
+        // wire codec and the execution pipeline, plus VERSION_NAME / VERSION_CODE / APPLICATION_ID on the About screen.
+        buildConfig = true
     }
 
     packaging {

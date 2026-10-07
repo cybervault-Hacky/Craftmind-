@@ -1,165 +1,200 @@
 package com.craftmind.app.presentation.builds
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.List
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import com.craftmind.app.designsystem.CraftMindCard
+import com.craftmind.app.designsystem.CraftMindDivider
+import com.craftmind.app.designsystem.CraftMindEmptyState
+import com.craftmind.app.designsystem.CraftMindErrorState
+import com.craftmind.app.designsystem.CraftMindKeyValueRow
+import com.craftmind.app.designsystem.CraftMindLayout
+import com.craftmind.app.designsystem.CraftMindLoadingState
+import com.craftmind.app.designsystem.CraftMindMetaChip
+import com.craftmind.app.designsystem.CraftMindNotice
+import com.craftmind.app.designsystem.CraftMindScreen
+import com.craftmind.app.designsystem.CraftMindSecondaryButton
+import com.craftmind.app.designsystem.CraftMindStatusBadge
+import com.craftmind.app.designsystem.CraftMindTone
+import com.craftmind.app.designsystem.CraftMindType
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
+import com.craftmind.app.presentation.navigation.MainDestination
 
+/**
+ * Builds library (Phase 15 §8).
+ *
+ * Everything on this screen is local history that really exists: each card is one saved, validated plan version, with
+ * its save time, its source, its position in the build's version history, and — when the bridge pipeline wrote one —
+ * its real execution status. There are no sample builds and no placeholders, and the empty state says plainly that
+ * nothing has been generated yet.
+ *
+ * @param executionRecords execution facts written by the bridge pipeline, used for real status badges.
+ * @param minecraftStatusLabel one honest sentence about whether building is currently available; null when the
+ *   runtime state is not loaded.
+ */
 @Composable
 fun BuildsScreen(
     state: BuildsState,
     onStartBuilding: () -> Unit,
     onReview: (LocalBuildRecord) -> Unit,
     modifier: Modifier = Modifier,
+    executionRecords: List<LocalBuildExecutionRecord> = emptyList(),
+    minecraftStatusLabel: String? = null,
+    minecraftStatusTone: CraftMindTone = CraftMindTone.NEUTRAL,
+    onOpenMinecraft: () -> Unit = {},
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 30.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+    CraftMindScreen(
+        title = "Builds",
+        eyebrow = "Local library",
+        subtitle = MainDestination.BUILDS.purpose,
+        modifier = modifier,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("Builds", style = MaterialTheme.typography.headlineLarge)
-            Text(
-                text = "Review accepted plans here. Construction is available only with an authenticated compatible bridge and a separate final confirmation.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        minecraftStatusLabel?.let { label ->
+            CraftMindNotice(
+                tone = minecraftStatusTone,
+                title = "Building in Minecraft",
+                message = label,
+                actionLabel = "Open Minecraft",
+                onAction = onOpenMinecraft,
             )
         }
 
-        if (state.isLoading) {
-            CircularProgressIndicator()
-        } else if (state.loadFailed) {
-            Card(
-                modifier = Modifier.fillMaxWidth().widthIn(max = 800.dp),
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-            ) {
-                Text(
-                    "Local build records could not be read. No unvalidated plan is shown.",
-                    modifier = Modifier.padding(20.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                )
-            }
-        } else if (state.currentRecords.isEmpty()) {
-            EmptyBuildsCard(onStartBuilding)
-        } else {
-            state.currentRecords.forEach { record ->
-                val versionCount = state.versionsFor(record.buildId).size
-                BuildRecordCard(
-                    record = record,
-                    versionCount = versionCount,
-                    onReview = { onReview(record) },
-                )
-            }
-        }
-    }
-}
+        when {
+            state.isLoading -> CraftMindLoadingState(message = "Reading your local build history…")
 
-@Composable
-private fun EmptyBuildsCard(onStartBuilding: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().widthIn(max = 800.dp),
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Box(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 44.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                modifier = Modifier.widthIn(max = 440.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Box(
-                    modifier = Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.primary)
-                }
-                Text("No validated plans saved yet.", style = MaterialTheme.typography.titleLarge)
+            state.loadFailed -> CraftMindErrorState(
+                title = "Build history could not be read",
+                message = "Local build records could not be read on this device. Nothing is shown rather than " +
+                    "displaying an unvalidated or invented plan.",
+                diagnostics = listOf(
+                    "Local history is stored in app-private storage.",
+                    "Generating a new build writes a fresh record and restores this list.",
+                ),
+                retryLabel = "Open the build composer",
+                onRetry = onStartBuilding,
+            )
+
+            state.currentRecords.isEmpty() -> CraftMindEmptyState(
+                title = "No builds yet",
+                message = "Plans appear here only after a real provider response passes CraftMind's parser and " +
+                    "BuildPlan v2 validation. Nothing is added before that.",
+                icon = Icons.Default.List,
+                actionLabel = "Create your first build",
+                onAction = onStartBuilding,
+            )
+
+            else -> {
+                val records = state.currentRecords
                 Text(
-                    "Plans appear here only after a real provider response passes CraftMind's parser and validation.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "${records.size} ${if (records.size == 1) "build" else "builds"} saved on this device",
+                    style = CraftMindType.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                Button(onClick = onStartBuilding, shape = RoundedCornerShape(14.dp)) {
-                    Text("Open the build composer")
-                    Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.padding(start = 8.dp).size(18.dp))
+                records.forEach { record ->
+                    val summary = remember(record, executionRecords) {
+                        buildRecordSummary(
+                            record = record,
+                            versionCount = state.versionsFor(record.buildId).size,
+                            executions = executionRecords,
+                        )
+                    }
+                    BuildRecordCard(summary = summary, onReview = { onReview(record) })
                 }
             }
         }
     }
 }
 
+/** One library card: identity, provenance, scale, version history, and real execution status. */
 @Composable
-private fun BuildRecordCard(record: LocalBuildRecord, versionCount: Int, onReview: () -> Unit) {
-    val plan = record.plan
-    Card(
-        modifier = Modifier.fillMaxWidth().widthIn(max = 800.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(plan.metadata.title, style = MaterialTheme.typography.titleLarge)
-            Text(
-                plan.metadata.summary,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "Version ${record.version} · $versionCount saved version(s) · ${plan.metadata.dimensions.width} × ${plan.metadata.dimensions.height} × ${plan.metadata.dimensions.depth} · ${plan.operations.size} placements · ${plan.metadata.providerId} / ${plan.metadata.modelId}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = record.request.imageAnalysisSource?.let { source ->
-                    "Initial image source: ${source.providerId} / ${source.modelId}"
-                } ?: if (record.request.imageContentUri != null) {
-                    "Image reference retained locally · no analysis source recorded"
-                } else {
-                    "Text-only source"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onReview, shape = RoundedCornerShape(14.dp)) { Text("Review details") }
-                Text("Plan history · execution status is separate", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun BuildRecordCard(
+    summary: BuildRecordSummary,
+    onReview: () -> Unit,
+) {
+    CraftMindCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(CraftMindLayout.md),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(CraftMindLayout.xxs)) {
+                Text(
+                    text = summary.title,
+                    style = CraftMindType.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = summary.savedAtLabel,
+                    style = CraftMindType.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (summary.summary.isNotBlank()) {
+                Text(
+                    text = summary.summary,
+                    style = CraftMindType.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CraftMindStatusBadge(label = summary.versionLabel, tone = CraftMindTone.NEUTRAL)
+                CraftMindStatusBadge(label = summary.sourceLabel, tone = CraftMindTone.INFORMATIVE)
+                summary.executionStatusLabel?.let { status ->
+                    CraftMindStatusBadge(label = status, tone = summary.executionTone)
+                }
+            }
+
+            summary.refinementLabel?.let { label ->
+                Text(
+                    text = label,
+                    style = CraftMindType.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            CraftMindDivider()
+
+            CraftMindKeyValueRow(label = "Size", value = summary.dimensionLabel)
+            CraftMindKeyValueRow(label = "Placements", value = summary.operationCountLabel)
+            CraftMindKeyValueRow(label = "Generated by", value = summary.modelLabel)
+            if (summary.hasNewerVersion) {
+                CraftMindKeyValueRow(
+                    label = "History",
+                    value = "A newer version of this build is saved; opening the review shows the full version list.",
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CraftMindSecondaryButton(
+                    text = "Review build plan",
+                    onClick = onReview,
+                    icon = Icons.Default.ArrowForward,
+                )
             }
         }
     }

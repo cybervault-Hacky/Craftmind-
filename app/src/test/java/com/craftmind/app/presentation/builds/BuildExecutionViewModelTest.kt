@@ -445,23 +445,23 @@ class BuildExecutionViewModelTest {
         override suspend fun forgetLocally() = Unit
     }
 
-    private fun preview(record: LocalBuildRecord, executionId: String) = MinecraftExecutionPreview(
-        executionId = executionId,
-        preflightToken = "A".repeat(43),
-        planRecordId = record.recordId,
-        planVersion = record.version,
-        planTitle = record.plan.metadata.title,
-        dimensionId = "minecraft:overworld",
-        worldSessionId = WORLD_SESSION,
-        resolvedOrigin = BuildPlanTestFixtures.operation(0, "minecraft:stone", 0, 0, 0, "house").position,
-        originStrategy = "SERVER_SELECTED_ORIGIN",
-        operationCount = record.plan.operations.size,
-        createdAtEpochMillis = 1_700_000_000_000,
-        eventSequence = 1,
-        expiresAtEpochMillis = System.currentTimeMillis() + 60_000,
-    )
-
     private companion object {
+        private fun preview(record: LocalBuildRecord, executionId: String) = MinecraftExecutionPreview(
+            executionId = executionId,
+            preflightToken = "A".repeat(43),
+            planRecordId = record.recordId,
+            planVersion = record.version,
+            planTitle = record.plan.metadata.title,
+            dimensionId = "minecraft:overworld",
+            worldSessionId = WORLD_SESSION,
+            resolvedOrigin = BuildPlanTestFixtures.operation(0, "minecraft:stone", 0, 0, 0, "house").position,
+            originStrategy = "SERVER_SELECTED_ORIGIN",
+            operationCount = record.plan.operations.size,
+            createdAtEpochMillis = 1_700_000_000_000,
+            eventSequence = 1,
+            expiresAtEpochMillis = System.currentTimeMillis() + 60_000,
+        )
+
         const val WORLD_SESSION = "world-session-test"
         const val SESSION_ID = "session-test"
         val BRIDGE = TrustedMinecraftBridge(

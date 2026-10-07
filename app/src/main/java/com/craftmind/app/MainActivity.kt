@@ -17,6 +17,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.craftmind.app.designsystem.CraftMindTheme
+import com.craftmind.app.presentation.app.rememberReducedMotionPreference
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.settings.ThemeMode
 import com.craftmind.app.presentation.app.CraftMindApp
@@ -114,7 +115,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            CraftMindTheme(themeMode = themeMode) {
+            // The design system collapses every transition when the device asks for reduced motion (§15).
+            val reducedMotion = rememberReducedMotionPreference(context)
+            CraftMindTheme(themeMode = themeMode, reducedMotion = reducedMotion) {
                 CraftMindApp(
                     composerState = composerState,
                     onComposerEvent = homeViewModel::dispatch,
