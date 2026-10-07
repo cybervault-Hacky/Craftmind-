@@ -1,6 +1,13 @@
 package com.craftmind.app.presentation.settings
 
+import com.craftmind.app.domain.minecraft.certification.CertificationEvidenceFixtures
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationDecision
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationRuleEngine
+import com.craftmind.app.domain.minecraft.certification.MinecraftVerificationCategory
+import com.craftmind.app.domain.minecraft.certification.MinecraftVerificationOutcome
 import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeCertification
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
 import com.craftmind.app.domain.minecraft.compatibility.LegacyRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
@@ -300,5 +307,283 @@ class MinecraftRuntimeCompatibilityTextTest {
         assertTrue(resolution.pipelineReasonLines().any { it.contains("no registered production adapter") })
         assertFalse(resolution.pipelineReasonLines().any { it.contains("1.20.1") })
         assertTrue(resolution.availabilityLabel().contains("No BuildPlan will be sent for execution"))
+    }
+    // -------------------------------------------------------------------------------- Phase 14 §11 wording
+
+    @Test
+    fun certificationWordingSeparatesSupportedFromCertifiedAndNeverOverclaims() {
+        assertEquals(
+            "Supported / Certified production target",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.CERTIFIED,
+                MinecraftCertificationDecision.CERTIFIED,
+            ),
+        )
+        // The shipped production target reads the same even when the decision came from the shipped record path.
+        val shipped = MinecraftCertificationRuleEngine()
+            .evaluateShippedRecord(MinecraftRuntimeProfileRegistry.javaFabric1201)
+        assertEquals(
+            "Supported / Certified production target",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.CERTIFIED,
+                shipped.decision,
+            ),
+        )
+        assertEquals(
+            "Experimental / Runtime certification not performed",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.EXPERIMENTAL,
+                MinecraftRuntimeCertification.NOT_PERFORMED,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+        assertEquals(
+            "Experimental / Runtime test required",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.EXPERIMENTAL,
+                MinecraftRuntimeCertification.STATIC_ONLY,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+        assertEquals(
+            "Unsupported",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.UNSUPPORTED,
+                MinecraftRuntimeCertification.NOT_PERFORMED,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+        assertEquals(
+            "Unavailable — runtime could not be verified",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.UNKNOWN,
+                MinecraftRuntimeCertification.NOT_PERFORMED,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+        assertEquals(
+            "Unavailable — no authenticated runtime report",
+            certificationStateLabel(null, null, null),
+        )
+        // Simulated evidence alone never reads as certified, even next to a SUPPORTED status.
+        assertEquals(
+            "Not certified",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.SIMULATED_E2E_VERIFIED,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+        assertEquals(
+            "Not certified / Blocked by a declared limitation",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.BRIDGE_TESTED,
+                MinecraftCertificationDecision.BLOCKED_BY_LIMITATION,
+            ),
+        )
+        assertEquals(
+            "Not certified / Insufficient evidence",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.BRIDGE_TESTED,
+                MinecraftCertificationDecision.INSUFFICIENT_EVIDENCE,
+            ),
+        )
+        assertEquals(
+            "Not certified / Verification failed",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.BRIDGE_TESTED,
+                MinecraftCertificationDecision.FAILED,
+            ),
+        )
+        assertEquals(
+            "Not tested / Runtime test required",
+            certificationStateLabel(
+                MinecraftCompatibilityStatus.SUPPORTED,
+                MinecraftRuntimeCertification.NOT_PERFORMED,
+                MinecraftCertificationDecision.NOT_CERTIFIED,
+            ),
+        )
+    }
+
+    @Test
+    fun noCertificationLabelEverClaimsFullCompatibility() {
+        val labels = MinecraftCompatibilityStatus.entries.flatMap { status ->
+            MinecraftRuntimeCertification.entries.flatMap { certification ->
+                (MinecraftCertificationDecision.entries.map { it as MinecraftCertificationDecision? } + null)
+                    .map { decision -> certificationStateLabel(status, certification, decision) }
+            }
+        }
+        assertTrue(labels.size >= 100)
+        labels.forEach { label ->
+            assertFalse("ambiguous wording is not permitted: '$label'", label.contains("fully compatible", ignoreCase = true))
+            assertFalse("ambiguous wording is not permitted: '$label'", label.contains("full compatibility", ignoreCase = true))
+            assertFalse("ambiguous wording is not permitted: '$label'", label.contains("perfect", ignoreCase = true))
+            // A label that denies certification must never also carry the certified production wording.
+            if (label.startsWith("Not certified") || label.startsWith("Not tested") || label.startsWith("Experimental")) {
+                assertFalse(
+                    "a denying label must not claim the certified target: '$label'",
+                    label.contains("Certified production target"),
+                )
+            }
+            if (label.contains("Certified production target")) {
+                assertTrue("only a supported label may claim the certified target: '$label'", label.startsWith("Supported"))
+            }
+            assertTrue("every label must be bounded, got ${label.length}", label.length <= 80)
+        }
+        // Only a certified, support-authorizing combination may use the word "Certified" as a claim.
+        val certifiedClaims = MinecraftCompatibilityStatus.entries.flatMap { status ->
+            MinecraftRuntimeCertification.entries.flatMap { certification ->
+                MinecraftCertificationDecision.entries.map { decision ->
+                    Triple(status, certification, decision) to certificationStateLabel(status, certification, decision)
+                }
+            }
+        }.filter { (_, label) -> label == "Supported / Certified production target" }
+        assertTrue(certifiedClaims.isNotEmpty())
+        certifiedClaims.forEach { (combination, _) ->
+            assertTrue(
+                "only a support-authorizing certification may claim 'Certified', got $combination",
+                combination.second.authorizesSupport,
+            )
+        }
+    }
+
+    @Test
+    fun evidenceWordingNamesEveryCategoryAndWhetherARealRuntimeWasInvolved() {
+        val simulated = CertificationEvidenceFixtures.simulated()
+        val simulatedSummary = simulated.verificationSummaryLabel()
+        MinecraftVerificationCategory.entries.forEach { category ->
+            assertTrue("'$category' must appear in '$simulatedSummary'", simulatedSummary.contains(category.shortLabel))
+        }
+        assertTrue(simulatedSummary.contains("real runtime not performed"))
+        assertTrue(simulatedSummary.contains("static verified"))
+        assertTrue(simulatedSummary.contains("simulated e2e verified"))
+        assertTrue(simulated.evidenceStateLabel().contains("simulated end-to-end"))
+        assertTrue(
+            "simulated wording must state that no runtime was touched",
+            simulated.evidenceStateLabel().contains("no Minecraft runtime was started or modified"),
+        )
+
+        val real = CertificationEvidenceFixtures.realRuntime(executionEnvironment = "declared-certification-lab")
+        assertTrue(real.verificationSummaryLabel().contains("real runtime verified"))
+        assertTrue(real.evidenceStateLabel().contains("real Minecraft runtime"))
+        assertFalse(real.evidenceStateLabel().contains("simulated"))
+
+        val none = CertificationEvidenceFixtures.notPerformed()
+        assertTrue(
+            "an unperformed run must say so for every category",
+            MinecraftVerificationCategory.entries.all { category ->
+                none.categoryOutcomes[category] == MinecraftVerificationOutcome.NOT_PERFORMED
+            },
+        )
+        assertTrue(none.verificationSummaryLabel().contains("execution not performed"))
+        assertTrue(none.evidenceStateLabel().startsWith("Evidence: none recorded"))
+        assertEquals(
+            "not available here",
+            MinecraftVerificationOutcome.NOT_AVAILABLE.evidenceMarker(),
+        )
+        assertEquals("blocked by policy", MinecraftVerificationOutcome.BLOCKED.evidenceMarker())
+        assertEquals("FAILED", MinecraftVerificationOutcome.FAILED.evidenceMarker())
+        assertEquals("not run", MinecraftVerificationOutcome.NOT_RUN.evidenceMarker())
+    }
+
+    @Test
+    fun executionWordingExplainsWhyExecutionIsAllowedOrBlocked() {
+        val engine = MinecraftCertificationRuleEngine()
+        val shipped = engine.evaluateShippedRecord(MinecraftRuntimeProfileRegistry.javaFabric1201)
+        assertEquals(
+            "Execution allowed: the runtime is detected, exactly one adapter matched, and certification is recorded.",
+            shipped.executionPermissionLabel(canExecute = true),
+        )
+
+        val simulated = engine.evaluate(CertificationEvidenceFixtures.simulated())
+        assertEquals(
+            "Execution blocked: no real Minecraft runtime test was performed, so this runtime is not certified.",
+            simulated.executionPermissionLabel(canExecute = false),
+        )
+        assertEquals(
+            "Execution allowed by the resolved compatibility result; certification evidence is reported separately.",
+            simulated.executionPermissionLabel(canExecute = true),
+        )
+
+        val blocked = MinecraftCertificationRuleEngine(
+            com.craftmind.app.domain.minecraft.certification.MinecraftCertificationPolicy.DEFAULT.copy(
+                realRuntimeCapableEnvironments = setOf("declared-certification-lab"),
+            ),
+        ).evaluate(
+            CertificationEvidenceFixtures.realRuntime(
+                executionEnvironment = "declared-certification-lab",
+                knownLimitations = setOf(
+                    com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation.LEGACY_RUNTIME_NOT_VERIFIED,
+                ),
+            ),
+        )
+        assertEquals(MinecraftCertificationDecision.BLOCKED_BY_LIMITATION, blocked.decision)
+        assertEquals(
+            "Execution blocked: a declared limitation states this runtime is not verified.",
+            blocked.executionPermissionLabel(canExecute = false),
+        )
+
+        val nothing = engine.evaluate(null)
+        assertEquals(
+            "Execution blocked: no real Minecraft runtime test was performed, so this runtime is not certified.",
+            nothing.executionPermissionLabel(canExecute = false),
+        )
+    }
+    @Test
+    fun theCompatibilityBlockReportsCertificationStateEvidenceStateAndExecutionPermission() {
+        val production = gate.resolveRuntime(report(javaProductionSnapshot()))
+        val productionLines = production.certificationSummaryLines(production.compatibility)
+        assertEquals(3, productionLines.size)
+        assertEquals("Certification: Supported / Certified production target", productionLines[0])
+        assertTrue(
+            "the shipped record must say this build performed no new runtime test: ${productionLines[1]}",
+            productionLines[1].startsWith("Evidence: recorded production certification") &&
+                productionLines[1].contains("no new Minecraft runtime test"),
+        )
+        assertEquals(
+            "Execution allowed: the runtime is detected, exactly one adapter matched, and certification is recorded.",
+            productionLines[2],
+        )
+
+        val legacy = gate.resolveRuntime(report(legacyForge1710Snapshot()))
+        val legacyLines = legacy.certificationSummaryLines(legacy.compatibility)
+        assertEquals(3, legacyLines.size)
+        assertEquals("Certification: Experimental / Runtime certification not performed", legacyLines[0])
+        assertEquals("Evidence: none recorded (Not performed)", legacyLines[1])
+        assertTrue(
+            "legacy wording: ${legacyLines[2]}",
+            legacyLines[2].startsWith("Execution blocked: no real Minecraft runtime test"),
+        )
+
+        val bedrock = gate.resolveRuntime(report(bedrockSnapshot()))
+        val bedrockLines = bedrock.certificationSummaryLines(bedrock.compatibility)
+        assertEquals(3, bedrockLines.size)
+        assertEquals("Certification: Experimental / Runtime certification not performed", bedrockLines[0])
+        assertEquals("Evidence: none recorded (Not performed)", bedrockLines[1])
+        assertTrue(bedrockLines[2].startsWith("Execution blocked"))
+
+        // Nothing was selected, so nothing is recorded and nothing is claimed.
+        val unregistered = gate.resolveRuntime(report(javaProductionSnapshot(minecraftVersion = "1.19.4")))
+        assertTrue(unregistered.certificationSummaryLines(unregistered.compatibility).isEmpty())
+
+        // Evidence from a simulated certification run is labelled simulated and never as a real runtime.
+        val simulated = CertificationEvidenceFixtures.simulated()
+        val withEvidence = production.certificationSummaryLines(production.compatibility, simulated)
+        assertTrue(withEvidence[1].contains("simulated end-to-end"))
+        assertTrue(withEvidence[1].contains("no Minecraft runtime was started or modified"))
+        assertFalse(withEvidence[1].contains("real Minecraft runtime"))
+        withEvidence.forEach { line ->
+            assertFalse("ambiguous wording is not permitted: '$line'", line.contains("fully compatible", ignoreCase = true))
+        }
+
+        // A real-runtime record, if one ever exists, is labelled as such and still names its level.
+        val real = CertificationEvidenceFixtures.realRuntime(executionEnvironment = "declared-certification-lab")
+        val withRealEvidence = production.certificationSummaryLines(production.compatibility, real)
+        assertTrue(withRealEvidence[1].startsWith("Evidence: real Minecraft runtime"))
     }
 }

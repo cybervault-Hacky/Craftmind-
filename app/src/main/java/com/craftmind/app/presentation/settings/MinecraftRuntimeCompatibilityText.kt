@@ -1,12 +1,23 @@
 package com.craftmind.app.presentation.settings
 
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationDecision
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationEvaluation
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationEvidence
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationRuleEngine
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationSource
+import com.craftmind.app.domain.minecraft.certification.MinecraftEvidenceMode
+import com.craftmind.app.domain.minecraft.certification.MinecraftVerificationCategory
+import com.craftmind.app.domain.minecraft.certification.MinecraftVerificationOutcome
 import com.craftmind.app.domain.minecraft.compatibility.CompatibilityAdapterSelection
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftAdapterSelectionStatus
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityReasonCode
+import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftLoader
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeCertification
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDetectionResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDetectionStatus
@@ -194,3 +205,141 @@ internal fun MinecraftRuntimeResolution.pipelineReasonLines(): List<String> = bu
 }
 
 private const val MAXIMUM_VISIBLE_DIAGNOSTICS = 6
+
+/**
+ * Phase 14 certification wording.
+ *
+ * The UI must let a reader tell *supported* from *certified*, and *simulated* from *real runtime* evidence. These
+ * labels are deliberately literal: no phrase claims more than the recorded evidence, and ambiguous wording such as
+ * "fully compatible" is never produced.
+ */
+internal fun certificationStateLabel(
+    status: MinecraftCompatibilityStatus?,
+    certification: MinecraftRuntimeCertification?,
+    decision: MinecraftCertificationDecision?,
+): String = when {
+    status == null || certification == null -> "Unavailable — no authenticated runtime report"
+    status == MinecraftCompatibilityStatus.UNSUPPORTED -> "Unsupported"
+    status == MinecraftCompatibilityStatus.UNKNOWN -> "Unavailable — runtime could not be verified"
+    decision == MinecraftCertificationDecision.CERTIFIED && certification.authorizesSupport ->
+        "Supported / Certified production target"
+    status == MinecraftCompatibilityStatus.SUPPORTED && certification.authorizesSupport ->
+        "Supported / Certified production target"
+    status == MinecraftCompatibilityStatus.EXPERIMENTAL &&
+        certification == MinecraftRuntimeCertification.NOT_PERFORMED ->
+        "Experimental / Runtime certification not performed"
+    status == MinecraftCompatibilityStatus.EXPERIMENTAL -> "Experimental / Runtime test required"
+    certification == MinecraftRuntimeCertification.NOT_PERFORMED -> "Not tested / Runtime test required"
+    decision == MinecraftCertificationDecision.BLOCKED_BY_LIMITATION ->
+        "Not certified / Blocked by a declared limitation"
+    decision == MinecraftCertificationDecision.INSUFFICIENT_EVIDENCE -> "Not certified / Insufficient evidence"
+    decision == MinecraftCertificationDecision.FAILED -> "Not certified / Verification failed"
+    else -> "Not certified"
+}
+
+/** One verification category rendered honestly, including every non-passing outcome. */
+internal fun MinecraftVerificationOutcome.evidenceMarker(): String = when (this) {
+    MinecraftVerificationOutcome.PASSED -> "verified"
+    MinecraftVerificationOutcome.FAILED -> "FAILED"
+    MinecraftVerificationOutcome.NOT_RUN -> "not run"
+    MinecraftVerificationOutcome.NOT_AVAILABLE -> "not available here"
+    MinecraftVerificationOutcome.NOT_PERFORMED -> "not performed"
+    MinecraftVerificationOutcome.BLOCKED -> "blocked by policy"
+}
+
+/** Compact evidence line: `static verified · unit verified · … · real runtime not performed`. */
+internal fun MinecraftCertificationEvidence.verificationSummaryLabel(): String =
+    categoryOutcomes.entries.sortedBy { it.key.rank }.joinToString(" · ") { (category, outcome) ->
+        "${category.shortLabel} ${outcome.evidenceMarker()}"
+    }
+
+internal val MinecraftVerificationCategory.shortLabel: String
+    get() = when (this) {
+        MinecraftVerificationCategory.STATIC -> "static"
+        MinecraftVerificationCategory.UNIT -> "unit"
+        MinecraftVerificationCategory.PROTOCOL -> "protocol"
+        MinecraftVerificationCategory.SIMULATED_INTEGRATION -> "simulated e2e"
+        MinecraftVerificationCategory.REAL_RUNTIME_INTEGRATION -> "real runtime"
+        MinecraftVerificationCategory.END_TO_END_EXECUTION -> "execution"
+        MinecraftVerificationCategory.CERTIFICATION_DECISION -> "decision"
+    }
+
+/** Evidence-state line, always naming whether a real Minecraft runtime was involved. */
+internal fun MinecraftCertificationEvidence.evidenceStateLabel(): String = when (evidenceMode) {
+    MinecraftEvidenceMode.SIMULATED ->
+        "Evidence: simulated end-to-end (${evidenceLevel.displayName}) · no Minecraft runtime was started or modified"
+    MinecraftEvidenceMode.REAL_RUNTIME ->
+        "Evidence: real Minecraft runtime (${evidenceLevel.displayName})"
+    MinecraftEvidenceMode.NONE -> "Evidence: none recorded (${evidenceLevel.displayName})"
+}
+
+/** Why execution is allowed or blocked, in one honest sentence. */
+internal fun MinecraftCertificationEvaluation.executionPermissionLabel(canExecute: Boolean): String = when {
+    canExecute && isCertified ->
+        "Execution allowed: the runtime is detected, exactly one adapter matched, and certification is recorded."
+    canExecute ->
+        "Execution allowed by the resolved compatibility result; certification evidence is reported separately."
+    decision == MinecraftCertificationDecision.NOT_CERTIFIED && !realRuntimeTested ->
+        "Execution blocked: no real Minecraft runtime test was performed, so this runtime is not certified."
+    decision == MinecraftCertificationDecision.BLOCKED_BY_LIMITATION ->
+        "Execution blocked: a declared limitation states this runtime is not verified."
+    decision == MinecraftCertificationDecision.FAILED ->
+        "Execution blocked: verification failed and the runtime is not certified."
+    else -> "Execution blocked: the recorded evidence does not certify this runtime."
+}
+
+/**
+ * The certification evaluation Settings shows for a resolved runtime (Phase 14 §11/§16).
+ *
+ * Settings holds no verification run of its own — evidence is produced by a certification run — so this reports what
+ * the project has *recorded* for the matched profile: the shipped production record for the certified Java target, and
+ * an explicit "nothing recorded" for every other runtime. It never invents new evidence and never upgrades a simulated
+ * or absent run into certification.
+ */
+internal fun MinecraftRuntimeResolution.certificationEvaluation(
+    resolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
+    engine: MinecraftCertificationRuleEngine = MinecraftCertificationRuleEngine(),
+): MinecraftCertificationEvaluation? {
+    val adapterId = selection.adapterId ?: return null
+    resolver.registeredProfiles()
+        .firstOrNull { it.adapterId == adapterId }
+        ?.let { return engine.evaluateShippedRecord(it) }
+    resolver.registeredBedrockProfiles()
+        .firstOrNull { it.adapterId == adapterId }
+        ?.let { return engine.evaluateShippedBedrockContract(it) }
+    return null
+}
+
+/** The evidence-state line: always says whether a real Minecraft runtime was involved, or that none was recorded. */
+internal fun evidenceStateLine(
+    evaluation: MinecraftCertificationEvaluation,
+    evidence: MinecraftCertificationEvidence?,
+): String = when {
+    evidence != null -> evidence.evidenceStateLabel()
+    evaluation.source == MinecraftCertificationSource.SHIPPED_PRODUCTION_RECORD ->
+        "Evidence: recorded production certification · this build performed no new Minecraft runtime test"
+
+    else -> "Evidence: none recorded (${evaluation.evidenceLevel.displayName})"
+}
+
+/**
+ * The certification lines for the existing compatibility block: certification state, evidence state, and why execution
+ * is allowed or blocked. Empty when no adapter was selected, because there is then nothing recorded to report.
+ */
+internal fun MinecraftRuntimeResolution.certificationSummaryLines(
+    compatibility: MinecraftCompatibilityResult?,
+    evidence: MinecraftCertificationEvidence? = null,
+    resolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
+    engine: MinecraftCertificationRuleEngine = MinecraftCertificationRuleEngine(),
+): List<String> {
+    val evaluation = certificationEvaluation(resolver, engine) ?: return emptyList()
+    return listOf(
+        "Certification: " + certificationStateLabel(
+            compatibility?.status,
+            compatibility?.runtimeCertification ?: evaluation.evidenceLevel,
+            evaluation.decision,
+        ),
+        evidenceStateLine(evaluation, evidence),
+        evaluation.executionPermissionLabel(canExecute),
+    )
+}

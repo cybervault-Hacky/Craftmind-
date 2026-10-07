@@ -1,4 +1,4 @@
-# Multi-Edition Minecraft Compatibility Core (Phases 10–13)
+# Multi-Edition Minecraft Compatibility Core (Phases 10–14)
 
 ## Scope and support policy
 
@@ -166,7 +166,9 @@ Phase 12 extends the same core. It adds no second resolver, registry, version mo
 
 ### Certification ladder
 
-`MinecraftRuntimeCertification` is ordered and never collapsed: `NOT_PERFORMED`, `STATIC_ONLY`, `UNIT_TESTED`, `BRIDGE_TESTED`, `RUNTIME_TESTED`, `CERTIFIED`. Only `RUNTIME_TESTED` and `CERTIFIED` authorize a `SUPPORTED` claim (`authorizesSupport`); Bedrock additionally requires `RUNTIME_TESTED` (`authorizesBedrockSupport`), so a release-process label can never stand in for a real Bedrock runtime test. Registry validation rejects a `SUPPORTED` profile whose certification does not support it, and the legacy adapter re-checks the same rule so a registry bypass cannot surface an uncertified runtime as `SUPPORTED`. Static analysis and unit tests are recorded as exactly what they are — not as runtime verification.
+`MinecraftRuntimeCertification` is ordered and never collapsed: `NOT_PERFORMED`, `STATIC_ONLY`, `UNIT_TESTED`, `BRIDGE_TESTED`, `SIMULATED_E2E_VERIFIED`, `RUNTIME_TESTED`, `CERTIFIED`, ranked by an explicit `evidenceRank` rather than by declaration order. Only `RUNTIME_TESTED` and `CERTIFIED` authorize a `SUPPORTED` claim (`authorizesSupport`); Bedrock additionally requires `RUNTIME_TESTED` (`authorizesBedrockSupport`), so a release-process label can never stand in for a real Bedrock runtime test.
+
+Phase 14 added the single rung `SIMULATED_E2E_VERIFIED` between `BRIDGE_TESTED` and `RUNTIME_TESTED`: a complete production-pipeline run against a controlled **simulated** bridge is genuine evidence about CraftMind's own wiring and is recorded as such. It is capped by `MAXIMUM_SIMULATED_LEVEL`, is `isSimulatedEvidence` and never `isRealRuntimeEvidence`, never authorizes support or Bedrock support, and cannot be upgraded to a runtime rung by any code path — only real-runtime evidence in a policy-declared environment can certify. See [`minecraft-certification-testing.md`](minecraft-certification-testing.md). Registry validation rejects a `SUPPORTED` profile whose certification does not support it, and the legacy adapter re-checks the same rule so a registry bypass cannot surface an uncertified runtime as `SUPPORTED`. Static analysis and unit tests are recorded as exactly what they are — not as runtime verification.
 
 ### Resolver behavior and structured reasons
 
@@ -361,7 +363,71 @@ the four limits, `worldAccess`, `dimensionId`, `worldSessionId`, Bedrock `platfo
   `0.92.2+1.20.1`, Bridge `1.2.0`, protocol 2, BuildPlan schema 2.
 - Every Phase 1–12 security control remains in force; automatic detection adds checks and never relaxes one.
 
+## Universal testing and certification (Phase 14)
+
+Phase 14 does not change the compatibility core: no protocol field, resolver rule, adapter, registry entry, limit
+evaluation, block/state catalog, or execution gate was modified. It adds a certification layer **on top** of Phases
+10–13 in `domain/minecraft/certification/`, so that every compatibility claim can be traced to explicit evidence and
+nothing can be certified without one.
+
+- **Layers.** Seven verification categories (`STATIC`, `UNIT`, `PROTOCOL`, `SIMULATED_INTEGRATION`,
+  `REAL_RUNTIME_INTEGRATION`, `END_TO_END_EXECUTION`, `CERTIFICATION_DECISION`) with six explicit outcomes (`PASSED`,
+  `FAILED`, `NOT_RUN`, `NOT_AVAILABLE`, `NOT_PERFORMED`, `BLOCKED`). A skipped check is never a pass.
+- **Evidence.** `MinecraftCertificationEvidence` records the full runtime identity, bridge/protocol/schema/catalog
+  versions, suite and run IDs, environment, a timestamp only when a run happened, level, mode, per-category outcomes,
+  execution evidence, limitations, and whether a real runtime test occurred. `MinecraftCertificationSanitizer` rejects
+  (never redacts) secrets, hosts, IPs, keystores, and fingerprints, so certification artifacts are safe to commit.
+- **Decisions.** `MinecraftCertificationRuleEngine` is the only decision maker and returns `CERTIFIED`,
+  `NOT_CERTIFIED`, `INSUFFICIENT_EVIDENCE`, `BLOCKED_BY_LIMITATION`, or `FAILED` deterministically. `MinecraftCertificationPolicy.DEFAULT`
+  declares **no** real-runtime capable environment, so no new certification can be minted in this repository; the
+  shipped Java 1.20.1 production record is reported separately, with `evidenceMode = NONE` and
+  `source = SHIPPED_PRODUCTION_RECORD`, and is neither downgraded nor extended with invented runtime evidence.
+- **Matrix.** `MinecraftCompatibilityCertificationMatrix` holds 35 runtime rows (Java production, Forge 1.7.10 and
+  1.12.2, the Bedrock contract, 19 unsupported/invalid cases, 11 security cases) and 15 execution failure cases, each
+  declaring the layers that apply. `CertificationMatrixTest` executes every row through production code and asserts
+  detection status, selection status, stable reason code, adapter, executability, and certification decision, so a row
+  that stops being true fails the build instead of going stale.
+- **Simulated end-to-end.** `SimulatedCertificationPipeline` drives a protocol-faithful simulated bridge through
+  authentication, capability exchange, app-version echo, detection, descriptor validation, adapter selection,
+  compatibility resolution, BuildPlan validation, preflight, execution authorization, execution, progress,
+  cancellation, and completion — all production code, no bypassed layer. It proves wiring only; its evidence is capped
+  at `SIMULATED_E2E_VERIFIED` and its decision is `NOT_CERTIFIED`.
+- **Execution depth.** `REQUEST_ACCEPTED`, `PRECHECK_PASSED`, `EXECUTION_STARTED`, `BLOCKS_WRITTEN`,
+  `PROGRESS_REPORTED`, `EXECUTION_COMPLETED`, `EXECUTION_CANCELLED`, `EXECUTION_FAILED`; the world-touching stages are
+  marked `requiresRealWorld`, so a simulated read-back is always labelled simulated and a cancelled run writes at most
+  a bounded prefix.
+- **Failure injection and security.** 15 documented failure cases each assert the documented reason code, the refusing
+  stage, and that nothing was written before the validation that refused it; `CertificationSecurityRegressionTest`
+  re-asserts pinned HTTPS pairing, mandatory authentication, replay and staleness refusal, session and identity
+  binding, bridge-reported capabilities only, protocol/schema downgrade refusal, `min(global, runtime)` limits a client
+  can never raise, server-side block/state validation, the absence of any command/shell/credential surface, and the
+  absence of secrets or identity material in evidence and reports.
+- **Real-runtime hook.** `MinecraftRealRuntimeCertificationHarness` performs 17 steps against a
+  `MinecraftRealRuntimeHost`. The shipped `NoRealRuntimeHostProvider` supplies none — no download, no network, no fake
+  server called real — so every step is `NOT_PERFORMED`, the outcome is `RUNTIME_TEST_NOT_PERFORMED`, and nothing is
+  certified. A host that claims to be real still cannot certify unless the policy declares its environment.
+- **Certification BuildPlan.** A deterministic three-placement probe inside 3×1×3 bounds, `PLACE_BLOCK` only, schema 2,
+  validated by the same `DefaultBuildPlanValidator`, `MinecraftBlockCatalog`, and bridge contract validator as a user
+  build. Production validation was not weakened for it, and the suite asserts that the validator still rejects
+  unsupported blocks, invalid states, empty operations, invalid and duplicate coordinates, unsupported schemas, and
+  oversized operation lists.
+- **UI.** The existing compatibility block gains three lines — certification state, evidence state, and why execution
+  is allowed or blocked — plus per-category verification detail in the existing advanced panel. Labels are literal and
+  bounded; no combination of inputs can produce "fully compatible", and only a support-authorizing certification can
+  produce "Certified production target". There is no redesign and no new screen.
+
+Statuses in this build: **Java 1.20.1** `SUPPORTED` / `CERTIFIED` (shipped production record, no new runtime evidence);
+**Bedrock** `EXPERIMENTAL` / `NOT_PERFORMED` / not certified, execution disabled; **legacy Forge 1.7.10 and 1.12.2**
+`EXPERIMENTAL` / `NOT_PERFORMED` / not certified, execution disabled; **everything else** unsupported or unavailable
+with a typed reason. `REAL_RUNTIME_TESTS = NOT_PERFORMED`.
+
 ## Verification status
+
+Phase 14 adds the certification suite (`SimulatedEndToEndCertificationTest`, `CertificationMatrixTest`,
+`CertificationFailureInjectionTest`, `CertificationSecurityRegressionTest`, `CertificationRuleEngineTest`,
+`CertificationBuildPlanTest`, `RealRuntimeCertificationHarnessTest`) plus certification-wording tests in
+`MinecraftRuntimeCompatibilityTextTest`; [`minecraft-certification-testing.md`](minecraft-certification-testing.md)
+describes each layer and how to reproduce it.
 
 Phase 13 adds runtime-detection tests (edition/loader coherence, exact version and channel handling, Java-runtime
 validation, bridge/protocol and app-version echo, missing limits, unauthenticated/unbound/oversized/forged reports,
@@ -376,13 +442,13 @@ The repository contains focused source tests for version and runtime parsing, ex
 **Test source is not evidence that tests ran.** Verification below is separated by category, and no category is claimed beyond what was actually executed. The Gradle build still cannot run in this sandbox — there is no Android SDK/AGP/Gradle distribution and no Maven Central/Google egress — so `./gradlew test`, `lint`, `assembleDebug`, `connectedDebugAndroidTest`, and the Fabric mod build were **not** executed. Tools were reconstructed outside Gradle again for Phase 13 (a JDK 17 runtime, JDK 8 `javac` from a packaged `tools.jar` plus a synthetic Java-8 platform jar derived from the JDK 17 runtime image with post-Java-8 class attributes removed, Kotlin `2.1.10` with the matching serialization compiler plugin, kotlinx-serialization `1.8.0` core+json compiled from source with `-Xfragments`, gson `2.10.1` and junit `4.13.2` compiled from source, hamcrest-core `1.3` from the junit checkout). All of that tooling lives outside the repository; nothing generated by it is committed.
 
 - **Static/source level**: `scripts/check_website.py` → PASS; `scripts/check_release_config.py` → PASS (3 checks) plus a NOTE that static checks are not builds.
-- **Compilation**: 86 Kotlin sources (54 main + 31 test classes + 1 test fixture) compiled with 0 errors → 622 JVM classes (502 main + 120 test); `bridge-protocol` main sources compiled with JDK 8 `javac` → 34 classes. The six edited Android-only files (`AndroidMinecraftBridgePairingRepository`, `BridgePairingViewModel`, `BuildExecutionViewModel`, `PlanReviewScreen`, `MinecraftBridgeSettingsContent`, `MinecraftRuntimeCompatibility`) were reviewed and parse-checked but **not** compiled (no AGP/AndroidX/Compose/OkHttp artifacts in the sandbox).
-- **Unit tests (Android-free Kotlin subset)**: 230 tests across 30 classes → **226 passed, 4 failed**. The compatibility core is green: `OK (108 tests)` across the seven detection/selection/gate/legacy/Bedrock/UI-text classes, including the new `MinecraftRuntimeDetectionTest` (`OK (16 tests)`), `MinecraftAdapterSelectionTest` (`OK (9 tests)`), `MinecraftRuntimeCompatibilityGateTest` (`OK (14 tests)`), and `MinecraftRuntimeCompatibilityTextTest` (`OK (11 tests)`). The 4 failures (`AiBuildEngineTest` ×2, `BuildPlanContextSerializerTest`, `BuildDiffTest`) are pre-existing, unrelated to Phases 10–13, and reproduce identically on the Phase 12 baseline tree in this sandbox: before any Phase 13 edit the same harness reported `Tests run: 185, Failures: 4` with exactly those four names.
+- **Compilation**: 102 Kotlin sources (60 main + 42 test, including the certification fixtures) compiled with 0 errors → 756 JVM classes (564 main + 192 test); Phase 13 baseline with the same harness was 86 sources → 622 classes; `bridge-protocol` main sources compiled with JDK 8 `javac` → 34 classes. The six edited Android-only files (`AndroidMinecraftBridgePairingRepository`, `BridgePairingViewModel`, `BuildExecutionViewModel`, `PlanReviewScreen`, `MinecraftBridgeSettingsContent`, `MinecraftRuntimeCompatibility`) were reviewed and parse-checked but **not** compiled (no AGP/AndroidX/Compose/OkHttp artifacts in the sandbox).
+- **Unit tests (Android-free Kotlin subset)**: **292 tests across 37 classes → 288 passed, 4 failed** (Phase 13 baseline with the same harness: 230 across 30 → 226 passed, same 4 failures; Phase 12 baseline: 185 → same 4 failures). The new certification suite is `OK (57 tests)` across 7 classes, and the compatibility core is green and grew with the wording tests: `OK (113 tests)` across the seven detection/selection/gate/legacy/Bedrock/UI-text classes, including `MinecraftRuntimeCompatibilityTextTest` `OK (16 tests)`. The 4 failures (`AiBuildEngineTest` ×2, `BuildPlanContextSerializerTest`, `BuildDiffTest`) are pre-existing, unrelated to Phases 10–14, and were neither deleted, skipped, nor weakened; one pre-existing ladder test was updated for the single new rung with four assertions added and none removed.
 - **Bridge tests (Java, `bridge-protocol`)**: `BridgeCryptoTest`, `BridgeNetworkAddressPolicyTest`, `BridgeProtocolCodecTest`, `BuildPlanContractValidatorTest` → `OK (14 tests)`. `BuildPlanContractValidatorTest` uses a Java text block, which the sandbox's JDK 8 `javac` cannot parse, so that one test source was mechanically converted to an equivalent string concatenation **in a temporary copy** (`/tmp`, repository file untouched) before compiling.
-- **Android app build / APK / `connectedAndroidTest` / instrumentation**: not run (no SDK/AGP) — no APK, deployment, or release artifact is claimed anywhere.
+- **Android app build / APK / `connectedAndroidTest` / instrumentation**: not run (no SDK/AGP). The one Android-only file Phase 14 edited (`MinecraftRuntimeCompatibility.kt`) was reviewed and parse-checked against its unmodified original with an identical kotlinc invocation; the error classes are identical (unresolved `androidx`/Compose symbols only), and **no Android compilation is claimed** — no APK, deployment, or release artifact is claimed anywhere.
 - **Fabric mod build / real Java runtime test**: not run (no Gradle/Maven egress, no Minecraft runtime in this environment).
 - **Bedrock bridge / real Bedrock runtime test**: not performed; no Bedrock bridge implementation exists in this repository.
 - **Legacy/experimental bridge or real Minecraft legacy runtime test**: not performed; no legacy bridge, Forge mod, or legacy runtime integration exists in this repository.
-- **Certification**: none. The production Java profile is recorded as CraftMind's shipped production target (`CERTIFIED`); legacy contracts are `NOT_PERFORMED` and Bedrock is `NOT_PERFORMED`. No legacy or Bedrock runtime has been runtime-tested here, and static analysis or unit tests are never reported as runtime certification.
+- **Certification**: `REAL_RUNTIME_TESTS = NOT_PERFORMED`. No real Java, Bedrock, or legacy Minecraft runtime test happened in Phase 14, and none is claimed. The production Java profile remains recorded as CraftMind's shipped production target (`CERTIFIED`, `evidenceMode = NONE`, `source = SHIPPED_PRODUCTION_RECORD`), explicitly separated from newly established evidence; legacy contracts and Bedrock remain `NOT_PERFORMED` and not certified, with execution disabled. New Phase 14 evidence is simulated only: level `SIMULATED_E2E_VERIFIED`, mode `SIMULATED`, decision `NOT_CERTIFIED`. The shipped certification policy declares no real-runtime capable environment, so nothing in this checkout can mint a new certification. Static analysis, unit tests, simulated pipeline runs, adapter existence, resolver matches, BuildPlan validation, and syntactically valid capability reports are never reported as runtime certification.
 
 Before claiming verification, check Java/JDK and Android SDK availability and run the focused Gradle tests plus the relevant app/bridge build tasks. Do not claim an Android compile, Fabric compile, APK, bridge test, real Minecraft test, deployment, or compatibility certification unless that exact check succeeds. Verification results belong in the completion summary as compiled, unit-tested, bridge-tested, real-Minecraft-tested, blocked, or unverified.

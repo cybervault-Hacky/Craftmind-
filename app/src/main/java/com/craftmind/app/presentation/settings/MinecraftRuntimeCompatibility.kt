@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.craftmind.app.domain.minecraft.certification.MinecraftCertificationEvidence
 import com.craftmind.app.domain.minecraft.compatibility.BedrockRuntimeProfileRegistry
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
@@ -27,9 +28,10 @@ import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeResoluti
  * Missing facts are shown as missing rather than synthesized, and there is no control that lets the user choose an
  * edition, version, loader, or adapter — the only interactive element is a display toggle for technical detail.
  *
- * The compatibility status, the release channel, the recorded certification, the declared limitations, and the
- * reason a build cannot run are always visible; the raw capability/adapter detail is collapsible so the honest
- * summary is never hidden behind an advanced panel.
+ * The compatibility status, the release channel, the recorded certification, the certification state and evidence
+ * state (Phase 14), the declared limitations, and the reason a build cannot run are always visible; the raw
+ * capability/adapter detail and the per-category verification detail are collapsible so the honest summary is never
+ * hidden behind an advanced panel.
  */
 @Composable
 internal fun MinecraftRuntimeCompatibilityBlock(
@@ -38,6 +40,11 @@ internal fun MinecraftRuntimeCompatibilityBlock(
     modifier: Modifier = Modifier,
     /** Phase 13 pipeline result; when absent the block falls back to the descriptor-only display. */
     resolution: MinecraftRuntimeResolution? = null,
+    /**
+     * Phase 14 certification evidence, when a certification run recorded any. Settings normally has none, and the
+     * block then says so explicitly instead of implying that a runtime test happened.
+     */
+    certificationEvidence: MinecraftCertificationEvidence? = null,
 ) {
     var advancedExpanded by remember { mutableStateOf(false) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -95,6 +102,22 @@ internal fun MinecraftRuntimeCompatibilityBlock(
                 "Compatibility: ${pipeline.compatibilitySummaryLines().joinToString(" · ")}",
                 style = MaterialTheme.typography.bodySmall,
             )
+            // Phase 14: certification state, evidence state, and why execution is allowed or blocked. These are
+            // derived from the recorded certification only; nothing here can claim a runtime test that did not happen.
+            pipeline.certificationSummaryLines(
+                compatibility ?: pipeline.compatibility,
+                certificationEvidence,
+            ).forEach { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (line.startsWith("Execution blocked")) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
             if (pipeline.detection.isDetected && !pipeline.canExecute) {
                 Text(
                     pipeline.availabilityLabel(),
@@ -130,6 +153,18 @@ internal fun MinecraftRuntimeCompatibilityBlock(
                 pipeline.binding?.let { binding ->
                     Text(
                         "Bound to session ${binding.identity.sessionId} · runtime ${binding.identity.runtimeKey}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                certificationEvidence?.let { evidence ->
+                    Text(
+                        "Verification detail: ${evidence.verificationSummaryLabel()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Evidence run: ${evidence.testSuiteId} · ${evidence.testRunId} · ${evidence.executionEnvironment}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
