@@ -3,8 +3,12 @@
  * in-memory development sink is never selected as a production fallback.
  */
 
+import { isWellFormedEmail } from "./ids.js";
+
 const MINIMUM_SECRET_LENGTH = 32;
 const MINIMUM_PROVIDER_TOKEN_LENGTH = 24;
+const MINIMUM_BOOTSTRAP_SECRET_LENGTH = 43;
+const MINIMUM_DEVELOPER_AI_KEY_LENGTH = 24;
 
 export class ConfigurationError extends Error {
   constructor(message) {
@@ -40,6 +44,13 @@ function httpsUrl(environment, name, required = false) {
     throw new ConfigurationError(`${name} must be an absolute HTTPS URL without credentials or a fragment`);
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+function isCanonicalBootstrapSecret(value) {
+  if (typeof value !== "string" || value.length < MINIMUM_BOOTSTRAP_SECRET_LENGTH || value.length > 256 ||
+      !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  const decoded = Buffer.from(value, "base64url");
+  return decoded.length >= 32 && decoded.length <= 192 && decoded.toString("base64url") === value;
 }
 
 function originList(environment) {
@@ -110,6 +121,35 @@ export function loadConfiguration(environment = process.env, options = {}) {
     throw new ConfigurationError("production CORS does not allow wildcard origins");
   }
 
+  const developerBootstrapEmailRaw = (environment.CRAFTMIND_DEV_BOOTSTRAP_EMAIL ?? "").trim();
+  const developerBootstrapSecret = (environment.CRAFTMIND_DEV_BOOTSTRAP_SECRET ?? "").trim();
+  if (Boolean(developerBootstrapEmailRaw) !== Boolean(developerBootstrapSecret)) {
+    throw new ConfigurationError("CRAFTMIND_DEV_BOOTSTRAP_EMAIL and CRAFTMIND_DEV_BOOTSTRAP_SECRET must be configured together");
+  }
+  if (developerBootstrapEmailRaw && !isWellFormedEmail(developerBootstrapEmailRaw)) {
+    throw new ConfigurationError("CRAFTMIND_DEV_BOOTSTRAP_EMAIL must be a valid email address");
+  }
+  if (developerBootstrapSecret && !isCanonicalBootstrapSecret(developerBootstrapSecret)) {
+    throw new ConfigurationError("CRAFTMIND_DEV_BOOTSTRAP_SECRET must be a high-entropy base64url value of at least 43 characters");
+  }
+
+  const developerAiProvider = (environment.CRAFTMIND_DEVELOPER_AI_PROVIDER ?? "").trim();
+  const developerAiModel = (environment.CRAFTMIND_DEVELOPER_AI_MODEL ?? "").trim();
+  const developerAiApiKey = environment.CRAFTMIND_DEVELOPER_AI_API_KEY ?? "";
+  const developerAiValuesPresent = [developerAiProvider, developerAiModel, developerAiApiKey].filter(Boolean).length;
+  if (developerAiValuesPresent !== 0 && developerAiValuesPresent !== 3) {
+    throw new ConfigurationError("CRAFTMIND_DEVELOPER_AI_PROVIDER, CRAFTMIND_DEVELOPER_AI_MODEL, and CRAFTMIND_DEVELOPER_AI_API_KEY must be configured together");
+  }
+  if (developerAiProvider && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(developerAiProvider)) {
+    throw new ConfigurationError("CRAFTMIND_DEVELOPER_AI_PROVIDER has an invalid identifier");
+  }
+  if (developerAiModel.length > 128 || /[\u0000-\u001f\u007f]/.test(developerAiModel)) {
+    throw new ConfigurationError("CRAFTMIND_DEVELOPER_AI_MODEL is not usable");
+  }
+  if (developerAiApiKey && (developerAiApiKey.length < MINIMUM_DEVELOPER_AI_KEY_LENGTH || developerAiApiKey.length > 4096)) {
+    throw new ConfigurationError("CRAFTMIND_DEVELOPER_AI_API_KEY is outside its supported length range");
+  }
+
   const configuration = {
     databaseUrl,
     authSecret,
@@ -127,6 +167,17 @@ export function loadConfiguration(environment = process.env, options = {}) {
     emailWebhookToken: emailProvider === "webhook" ? emailWebhookToken : null,
     emailFrom: emailProvider === "webhook" ? emailFrom : null,
     emailDeliveryMode: emailProvider === "memory" ? "DEVELOPMENT_SINK" : "PROVIDER_CONFIGURED",
+    developerBootstrapEmail: developerBootstrapEmailRaw ? developerBootstrapEmailRaw.toLowerCase() : null,
+    developerBootstrapSecret: developerBootstrapSecret || null,
+    developerAccessTokenTtlSeconds: positiveInteger(environment, "DEVELOPER_ACCESS_TOKEN_TTL_SECONDS", 900, 3600),
+    developerRefreshTokenTtlSeconds: positiveInteger(environment, "DEVELOPER_REFRESH_TOKEN_TTL_SECONDS", 604_800, 2_592_000),
+    developerConfirmationTtlSeconds: positiveInteger(environment, "DEVELOPER_CONFIRMATION_TTL_SECONDS", 300, 900),
+    developerAi: Object.freeze({
+      provider: developerAiProvider || null,
+      model: developerAiModel || null,
+      apiKey: developerAiApiKey || null,
+      configured: developerAiValuesPresent === 3,
+    }),
     publicOrigin,
     trustProxyTls,
     corsAllowedOrigins,
@@ -138,6 +189,11 @@ export function loadConfiguration(environment = process.env, options = {}) {
       resetRequest: Object.freeze({ maximum: positiveInteger(environment, "RATE_RESET_REQUEST_MAX", 5, 10_000), windowMs: positiveInteger(environment, "RATE_RESET_REQUEST_WINDOW_MS", 3_600_000, 86_400_000) }),
       resetConfirm: Object.freeze({ maximum: positiveInteger(environment, "RATE_RESET_CONFIRM_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_RESET_CONFIRM_WINDOW_MS", 900_000, 86_400_000) }),
       session: Object.freeze({ maximum: positiveInteger(environment, "RATE_SESSION_MAX", 60, 10_000), windowMs: positiveInteger(environment, "RATE_SESSION_WINDOW_MS", 900_000, 86_400_000) }),
+      developerBootstrap: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_BOOTSTRAP_MAX", 5, 100), windowMs: positiveInteger(environment, "RATE_DEV_BOOTSTRAP_WINDOW_MS", 900_000, 86_400_000) }),
+      developerLogin: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_LOGIN_MAX", 5, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_LOGIN_WINDOW_MS", 900_000, 86_400_000) }),
+      developerSession: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_SESSION_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_SESSION_WINDOW_MS", 900_000, 86_400_000) }),
+      developerAdmin: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_ADMIN_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_ADMIN_WINDOW_MS", 900_000, 86_400_000) }),
+      developerAi: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_AI_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_AI_WINDOW_MS", 60_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

@@ -407,14 +407,14 @@ describe("Phase 18 account security and recovery", () => {
     old.close();
     try {
       const migrated = openDatabase(filename);
-      assert.equal(SCHEMA_VERSION, 2);
+      assert.equal(SCHEMA_VERSION, 3);
       assert.equal(migrated.prepare("SELECT email FROM users WHERE user_id = ?").get("usr_existing").email, "legacy@example.com");
       assert.equal(migrated.prepare("SELECT last_used_at, device_label FROM sessions WHERE session_id = ?").get("ses_existing").last_used_at, "2026-01-01T00:00:00.000Z");
       assert.equal(migrated.prepare("SELECT device_label FROM sessions WHERE session_id = ?").get("ses_existing").device_label, "Unknown device");
       assert.equal(migrated.prepare("SELECT email_verified_at FROM users WHERE user_id = ?").get("usr_existing").email_verified_at, null);
       migrated.close();
       const reopened = openDatabase(filename);
-      assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 2);
+      assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
       assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 1);
       reopened.close();
     } finally {

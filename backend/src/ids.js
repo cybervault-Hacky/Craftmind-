@@ -3,8 +3,9 @@
  *
  * Two rules shape this file:
  *
- * 1. **Tokens are never stored.** A session token is 32 random bytes handed to the client exactly once; the database
- *    keeps only `HMAC-SHA256(AUTH_SECRET, token)`. A stolen database copy therefore cannot be replayed against the API,
+ * 1. **Tokens are never stored.** User session tokens are 32 random bytes handed to the client once; the database
+ *    keeps only `HMAC-SHA256(AUTH_SECRET, token)`. Developer sessions and one-time challenges use a separate
+ *    purpose-prefixed HMAC namespace. A stolen database copy therefore cannot be replayed as a bearer credential,
  *    and a stolen `AUTH_SECRET` alone is not a token either.
  * 2. **Identifiers are opaque.** Account and session identifiers are random, not derived from an email address or an
  *    incrementing counter, so they leak nothing about the account and cannot be guessed.
@@ -23,6 +24,22 @@ export function newSessionId() {
   return `ses_${randomUUID()}`;
 }
 
+export function newDeveloperId() {
+  return `dvl_${randomUUID()}`;
+}
+
+export function newDeveloperSessionId() {
+  return `dvs_${randomUUID()}`;
+}
+
+export function newAuditId() {
+  return `aud_${randomUUID()}`;
+}
+
+export function newGrantId() {
+  return `grt_${randomUUID()}`;
+}
+
 export function newToken() {
   return randomBytes(TOKEN_BYTES).toString("base64url");
 }
@@ -30,6 +47,14 @@ export function newToken() {
 /** The digest stored for a token. Deterministic, so lookup is a single indexed comparison. */
 export function tokenDigest(authSecret, token) {
   return createHmac("sha256", authSecret).update(token, "utf8").digest("base64url");
+}
+
+/** Dedicated, purpose-separated digest namespace for developer sessions and one-time confirmation challenges. */
+export function developerTokenDigest(authSecret, purpose, token) {
+  return createHmac("sha256", authSecret)
+    .update(`craftmind:developer:${purpose}:`, "utf8")
+    .update(token, "utf8")
+    .digest("base64url");
 }
 
 /** Purpose-separated digest for email verification and password-recovery tokens. */

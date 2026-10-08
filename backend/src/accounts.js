@@ -295,12 +295,20 @@ export async function login(database, configuration, body) {
 
   let tokens;
   runTransaction(database, () => {
+    // Recheck under the session-creation write lock: an administrator may suspend the account while scrypt verification
+    // is pending. Either login commits first and suspension revokes its session, or suspension commits first and login
+    // observes the new status; a suspended account must never receive a successful new session.
+    const latestUser = database.prepare("SELECT * FROM users WHERE user_id = ?").get(user.user_id);
+    if (!latestUser || latestUser.status === ACCOUNT_STATUS.DELETED) throw new AccountApiError(ErrorCode.INVALID_CREDENTIALS);
+    if (latestUser.status === ACCOUNT_STATUS.SUSPENDED) throw new AccountApiError(ErrorCode.ACCOUNT_SUSPENDED);
+    if (latestUser.password_hash !== user.password_hash) throw new AccountApiError(ErrorCode.INVALID_CREDENTIALS);
+    if (latestUser.email_verified_at === null) throw new AccountApiError(ErrorCode.EMAIL_NOT_VERIFIED);
     try {
-      linkGuestIdentity(database, guestIdentityId, user.user_id);
+      linkGuestIdentity(database, guestIdentityId, latestUser.user_id);
     } catch (error) {
       if (!(error instanceof AccountApiError) || error.code !== ErrorCode.GUEST_IDENTITY_ALREADY_LINKED) throw error;
     }
-    tokens = issueSession(database, configuration, user.user_id, guestIdentityId, deviceLabel);
+    tokens = issueSession(database, configuration, latestUser.user_id, guestIdentityId, deviceLabel);
   });
   const sessionRow = database.prepare("SELECT * FROM sessions WHERE session_id = ?").get(tokens.sessionId);
   return { account: toPublicAccount(user), session: toPublicSession(sessionRow, tokens) };

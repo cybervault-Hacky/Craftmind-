@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Entry point for the CraftMind account service.
+ * Entry point for the CraftMind account service and separate developer control plane.
  *
  * The service refuses to start without a valid configuration (see `config.js`), applies its migrations, and then serves
  * the account API over HTTP. In production it is expected to sit behind a TLS terminator, so the app always talks

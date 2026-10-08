@@ -8,7 +8,7 @@ import { createAccountService } from "../src/server.js";
 export const TEST_SECRET = "test-secret-that-is-long-enough-for-configuration-validation";
 const servicesByUrl = new Map();
 
-export async function startService(overrides = {}, { emailDelivery = new DevelopmentEmailSink() } = {}) {
+export async function startService(overrides = {}, { emailDelivery = new DevelopmentEmailSink(), developerAiProvider = null, rateLimiter = undefined } = {}) {
   const configuration = loadConfiguration({
     NODE_ENV: "test",
     DATABASE_URL: ":memory:",
@@ -31,7 +31,7 @@ export async function startService(overrides = {}, { emailDelivery = new Develop
     warn: (message) => logs.push(`warn ${message}`),
     error: (message) => logs.push(`error ${message}`),
   };
-  const server = createAccountService({ database, configuration, logger, emailDelivery });
+  const server = createAccountService({ database, configuration, logger, emailDelivery, developerAiProvider, rateLimiter });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;

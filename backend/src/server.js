@@ -1,10 +1,11 @@
 /**
- * Hardened JSON API for CraftMind account identity. No request bodies, email addresses, query strings, tokens, or
- * exception messages are written to the service log.
+ * Hardened JSON API for CraftMind account identity and a separately-authorized developer control plane. No request
+ * bodies, email addresses, query strings, tokens, or exception messages are written to the service log.
  */
 
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   changePassword,
   cleanupExpiredAccountRecords,
@@ -25,8 +26,31 @@ import {
 import { createEmailDelivery } from "./email-delivery.js";
 import { AccountApiError, ErrorCode } from "./errors.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
+import {
+  authenticateDeveloper,
+  bootstrapDeveloper,
+  cleanupExpiredDeveloperRecords,
+  currentDeveloper,
+  listDeveloperSessions,
+  loginDeveloper,
+  logoutDeveloper,
+  refreshDeveloperSession,
+  revokeDeveloperSession,
+} from "./developer-auth.js";
+import {
+  cancelDeveloperAction,
+  confirmDeveloperAction,
+  invokeDeveloperTool,
+  recordDeveloperAiAudit,
+  recordDeveloperToolRejection,
+} from "./admin-tools.js";
+import { DeveloperAiCoordinator } from "./developer-ai.js";
+import { SCHEMA_VERSION } from "./db.js";
 
 const NON_ENUMERATING_RESPONSE_FLOOR_MS = 150;
+const DEVELOPER_DASHBOARD = readFileSync(new URL("../public/developer.html", import.meta.url), "utf8");
+const DEVELOPER_SCRIPT = readFileSync(new URL("../public/developer.js", import.meta.url), "utf8");
+const DEVELOPER_STYLES = readFileSync(new URL("../public/developer.css", import.meta.url), "utf8");
 
 const SECURITY_HEADERS = Object.freeze({
   "Content-Type": "application/json; charset=utf-8",
@@ -54,6 +78,20 @@ function sendJson(response, status, payload, requestId, extraHeaders = {}) {
 function sendNoContent(response, requestId, extraHeaders = {}) {
   response.writeHead(204, { ...SECURITY_HEADERS, "X-Request-Id": requestId, ...extraHeaders });
   response.end();
+}
+
+function sendDeveloperAsset(response, status, body, contentType, requestId, extraHeaders = {}) {
+  const bytes = Buffer.from(body, "utf8");
+  response.writeHead(status, {
+    ...SECURITY_HEADERS,
+    "Content-Type": contentType,
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+    "Cache-Control": "no-store, max-age=0",
+    "Content-Length": String(bytes.byteLength),
+    "X-Request-Id": requestId,
+    ...extraHeaders,
+  });
+  response.end(bytes);
 }
 
 function sendError(response, error, requestId, extraHeaders = {}) {
@@ -98,6 +136,15 @@ function bearerToken(request) {
   return match[1];
 }
 
+function requireDeveloperActor(request, database, configuration) {
+  let token;
+  try { token = bearerToken(request); }
+  catch { throw new AccountApiError(ErrorCode.DEVELOPER_AUTHENTICATION_REQUIRED); }
+  if (token === undefined) throw new AccountApiError(ErrorCode.DEVELOPER_AUTHENTICATION_REQUIRED);
+  const authenticated = authenticateDeveloper(database, configuration, token);
+  return { ...authenticated.developer, session: authenticated.session };
+}
+
 function safeRoutePath(request) {
   try { return new URL(request.url ?? "/", "http://internal.invalid").pathname; }
   catch { return "/invalid-url"; }
@@ -106,6 +153,10 @@ function safeRoutePath(request) {
 function applyCors(request, configuration) {
   const origin = request.headers.origin;
   if (origin === undefined) return {};
+  const expectedSameOrigin = configuration.production
+    ? configuration.publicOrigin
+    : `${request.socket.encrypted ? "https" : "http"}://${request.headers.host ?? ""}`;
+  if (typeof origin === "string" && origin === expectedSameOrigin) return {};
   if (typeof origin !== "string" || !configuration.corsAllowedOrigins.includes(origin)) {
     throw new AccountApiError(ErrorCode.CORS_ORIGIN_NOT_ALLOWED);
   }
@@ -146,14 +197,17 @@ function statusForEmailDelivery(result, emailDelivery) {
   return emailDelivery.mode === "DEVELOPMENT_SINK" ? "DEVELOPMENT_SINK" : "PROVIDER_ACCEPTED";
 }
 
-/** @param {{ database: import('node:sqlite').DatabaseSync, configuration: object, logger?: object, emailDelivery?: object, rateLimiter?: object }} options */
-export function createAccountService({ database, configuration, logger = console, emailDelivery, rateLimiter }) {
+/** @param {{ database: import('node:sqlite').DatabaseSync, configuration: object, logger?: object, emailDelivery?: object, rateLimiter?: object, developerAiProvider?: object }} options */
+export function createAccountService({ database, configuration, logger = console, emailDelivery, rateLimiter, developerAiProvider = null }) {
   const mail = emailDelivery ?? createEmailDelivery(configuration);
   const limits = rateLimiter ?? new InMemoryRateLimiter({ authSecret: configuration.authSecret });
+  const developerAi = new DeveloperAiCoordinator({ provider: developerAiProvider });
   cleanupExpiredAccountRecords(database);
+  cleanupExpiredDeveloperRecords(database);
   const cleanupTimer = setInterval(() => {
     try {
       cleanupExpiredAccountRecords(database);
+      cleanupExpiredDeveloperRecords(database);
     } catch (error) {
       logger.error?.(JSON.stringify({ event: "account_expiry_cleanup_failed", errorType: error?.name ?? "Error" }));
     }
@@ -292,6 +346,98 @@ export function createAccountService({ database, configuration, logger = console
       consumeLimit(limits, "session", request, "", configuration.rateLimit.session);
       return { status: 200, payload: revokeOtherSessions(database, configuration, token) };
     }],
+    ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
+    ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
+    ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
+    ["POST /developer/auth/bootstrap", async (request) => {
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "developer-bootstrap", request, "", configuration.rateLimit.developerBootstrap);
+      return { status: 201, payload: await bootstrapDeveloper(database, configuration, body) };
+    }],
+    ["POST /developer/auth/login", async (request) => {
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "developer-login", request, body.email, configuration.rateLimit.developerLogin);
+      return { status: 200, payload: await loginDeveloper(database, configuration, body) };
+    }],
+    ["POST /developer/auth/refresh", async (request) => {
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "developer-session", request, "", configuration.rateLimit.developerSession);
+      return { status: 200, payload: refreshDeveloperSession(database, configuration, body) };
+    }],
+    ["GET /developer/auth/me", async (request) => {
+      consumeLimit(limits, "developer-session", request, "", configuration.rateLimit.developerSession);
+      requireDeveloperActor(request, database, configuration);
+      const token = bearerToken(request);
+      return { status: 200, payload: currentDeveloper(database, configuration, token) };
+    }],
+    ["POST /developer/auth/logout", async (request) => {
+      consumeLimit(limits, "developer-session", request, "", configuration.rateLimit.developerSession);
+      requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      if (Object.keys(body).length !== 0) throw new AccountApiError(ErrorCode.INVALID_REQUEST);
+      const token = bearerToken(request);
+      return { status: 200, payload: logoutDeveloper(database, configuration, token) };
+    }],
+    ["GET /developer/auth/sessions", async (request) => {
+      consumeLimit(limits, "developer-session", request, "", configuration.rateLimit.developerSession);
+      requireDeveloperActor(request, database, configuration);
+      const token = bearerToken(request);
+      return { status: 200, payload: listDeveloperSessions(database, configuration, token) };
+    }],
+    ["POST /developer/auth/sessions/revoke", async (request) => {
+      consumeLimit(limits, "developer-session", request, "", configuration.rateLimit.developerSession);
+      requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      if (Object.keys(body).length !== 1 || typeof body.sessionId !== "string") throw new AccountApiError(ErrorCode.INVALID_REQUEST);
+      const token = bearerToken(request);
+      return { status: 200, payload: revokeDeveloperSession(database, configuration, token, body) };
+    }],
+    ["POST /developer/tools/invoke", async (request) => {
+      consumeLimit(limits, "developer-admin", request, "", configuration.rateLimit.developerAdmin);
+      const actor = requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      if (Object.keys(body).length !== 2 || typeof body.tool !== "string" || !Object.hasOwn(body, "arguments")) {
+        recordDeveloperToolRejection(database, actor);
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+      const result = invokeDeveloperTool(database, configuration, actor, body.tool, body.arguments, {
+        configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider,
+      });
+      return { status: 200, payload: { tool: body.tool, result } };
+    }],
+    ["POST /developer/tools/confirm", async (request) => {
+      consumeLimit(limits, "developer-admin", request, "", configuration.rateLimit.developerAdmin);
+      const actor = requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      return { status: 200, payload: { result: confirmDeveloperAction(database, configuration, actor, body) } };
+    }],
+    ["POST /developer/tools/cancel", async (request) => {
+      consumeLimit(limits, "developer-admin", request, "", configuration.rateLimit.developerAdmin);
+      const actor = requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      return { status: 200, payload: { result: cancelDeveloperAction(database, configuration, actor, body) } };
+    }],
+    ["GET /developer/ai/status", async (request) => {
+      consumeLimit(limits, "developer-ai", request, "", configuration.rateLimit.developerAi);
+      requireDeveloperActor(request, database, configuration);
+      return { status: 200, payload: { available: developerAi.isAvailable } };
+    }],
+    ["POST /developer/ai/turn", async (request) => {
+      consumeLimit(limits, "developer-ai", request, "", configuration.rateLimit.developerAi);
+      const actor = requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      if (Object.keys(body).length !== 1 || typeof body.prompt !== "string") {
+        recordDeveloperAiAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_TOOL_INPUT_INVALID });
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+      return {
+        status: 200,
+        payload: await developerAi.runTurn({
+          database, configuration, actor, prompt: body.prompt,
+          context: { configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider },
+        }),
+      };
+    }],
     ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth" } })],
   ]);
 
@@ -330,9 +476,10 @@ export function createAccountService({ database, configuration, logger = console
           ? new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED)
           : new AccountApiError(ErrorCode.INVALID_REQUEST, "Unknown account endpoint.");
       }
-      const { status: handlerStatus, payload } = await handler(request, { requestId });
+      const { status: handlerStatus, payload, asset } = await handler(request, { requestId });
       status = handlerStatus;
-      sendJson(response, status, payload, requestId, corsHeaders);
+      if (asset) sendDeveloperAsset(response, status, asset.body, asset.contentType, requestId, corsHeaders);
+      else sendJson(response, status, payload, requestId, corsHeaders);
     } catch (error) {
       const typed = error instanceof AccountApiError ? error : new AccountApiError(ErrorCode.UNKNOWN_ERROR);
       status = typed.status;

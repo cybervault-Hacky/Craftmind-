@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>CraftMind Developer Control Plane</title>
+  <link rel="stylesheet" href="/developer/developer.css">
+  <script src="/developer/developer.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Private service surface</p>
+        <h1>CraftMind control plane</h1>
+        <p class="muted">Separate developer authentication. No normal CraftMind account session is accepted here.</p>
+      </div>
+      <span class="badge">Developer access</span>
+    </header>
+
+    <p id="notice" class="notice" role="status" aria-live="polite"></p>
+
+    <section id="login-panel" class="card">
+      <h2>Developer sign in</h2>
+      <form id="login-form" class="stack">
+        <label>Email <input id="login-email" name="email" type="email" autocomplete="username" required maxlength="254"></label>
+        <label>Password <input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <details class="bootstrap">
+        <summary>First-owner setup</summary>
+        <p class="muted">Only works when the deployment has configured the one-time bootstrap email and high-entropy secret. The password is set here, hashed by the service, and used for normal sign-in afterwards. Bootstrap becomes permanently consumed in the database after success.</p>
+        <form id="bootstrap-form" class="stack">
+          <label>One-time bootstrap secret <input id="bootstrap-secret" name="secret" type="password" autocomplete="off" required maxlength="256"></label>
+          <label>Choose developer password <input id="bootstrap-password" name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="256"></label>
+          <button type="submit" class="secondary">Create initial owner</button>
+        </form>
+      </details>
+    </section>
+
+    <section id="dashboard" hidden>
+      <div class="card identity-row">
+        <div><p class="eyebrow">Authenticated developer</p><strong id="identity"></strong><span id="role" class="badge"></span></div>
+        <button id="logout" type="button" class="secondary">Sign out</button>
+      </div>
+      <nav class="tabs" aria-label="Developer control plane sections">
+        <button type="button" data-panel="overview-panel">Overview</button>
+        <button type="button" data-panel="users-panel">Users</button>
+        <button type="button" data-panel="security-panel">Security</button>
+        <button type="button" data-panel="audit-panel">Audit log</button>
+        <button type="button" data-panel="ai-panel">Developer AI</button>
+        <button type="button" data-panel="config-panel">Configuration</button>
+      </nav>
+
+      <section id="overview-panel" class="panel card">
+        <h2>Overview</h2>
+        <div id="overview-content" class="metrics"></div>
+      </section>
+
+      <section id="users-panel" class="panel card" hidden>
+        <h2>User management</h2>
+        <form id="user-search-form" class="inline-form">
+          <label class="grow">Exact account email <input id="user-email" type="email" required maxlength="254"></label>
+          <button type="submit">Inspect user</button>
+        </form>
+        <div id="user-result"></div>
+        <div id="user-sessions"></div>
+        <div class="grant-controls">
+          <h3>Administrative access-grant metadata</h3>
+          <p class="muted">Owner/Admin roles can issue or revoke metadata only. Grants do not activate a feature, membership, credit, subscription, or payment.</p>
+          <form id="grant-form" class="inline-form">
+            <label>Grant type
+              <select id="grant-type"><option value="BETA_ACCESS">Beta access</option><option value="PREVIEW_ACCESS">Preview access</option><option value="PROMOTIONAL_ACCESS">Promotional access</option></select>
+            </label>
+            <label>Expires at <input id="grant-expiry" type="datetime-local" required></label>
+            <button type="submit">Prepare grant</button>
+          </form>
+          <div id="grant-list"></div>
+        </div>
+      </section>
+
+      <section id="security-panel" class="panel card" hidden>
+        <h2>Developer sessions</h2>
+        <p class="muted">Only safe metadata is displayed. Session credentials stay in memory for this page session and are never rendered or persisted in browser storage.</p>
+        <button id="refresh-dev-sessions" type="button" class="secondary">Refresh sessions</button>
+        <div id="developer-sessions"></div>
+      </section>
+
+      <section id="audit-panel" class="panel card" hidden>
+        <h2>Append-only audit log</h2>
+        <button id="refresh-audit" type="button" class="secondary">Refresh audit log</button>
+        <div id="audit-events"></div>
+      </section>
+
+      <section id="ai-panel" class="panel card" hidden>
+        <h2>Developer AI</h2>
+        <p id="ai-status" class="muted"></p>
+        <form id="ai-form" class="stack">
+          <label>Describe the administrative intent <textarea id="ai-prompt" rows="4" maxlength="2000" required></textarea></label>
+          <button id="ai-submit" type="submit">Ask Developer AI</button>
+        </form>
+        <pre id="ai-result" class="result" aria-live="polite"></pre>
+        <p class="muted">AI output can only propose one registered tool. The backend validates roles and arguments. Mutating actions stop for explicit confirmation; no AI response can confirm them.</p>
+      </section>
+
+      <section id="config-panel" class="panel card" hidden>
+        <h2>Configuration and service status</h2>
+        <div id="config-content"></div>
+      </section>
+
+      <section id="confirmation" class="card confirmation" hidden aria-labelledby="confirmation-title">
+        <p class="eyebrow">Explicit confirmation required</p>
+        <h2 id="confirmation-title">Review this action</h2>
+        <p id="confirmation-summary"></p>
+        <div class="button-row">
+          <button id="confirm-action" type="button" class="danger">Confirm action</button>
+          <button id="cancel-action" type="button" class="secondary">Cancel</button>
+        </div>
+      </section>
+    </section>
+    <footer><p>Private developer surface. The public CraftMind website does not link here.</p></footer>
+  </main>
+</body>
+</html>

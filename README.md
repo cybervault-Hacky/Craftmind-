@@ -156,14 +156,24 @@ hosted account service is configured or deployed by this repository.
 - **Android and website.** Verification, reset/change-password, session list/revocation, safe status copy, and typed
 response checks are contained in the Settings account experience. The static website remains eight pages and keeps its
 single disabled APK download control until a real signed APK exists.
-- **Scope kept narrow.** Account deletion remains unavailable. Developer/Admin system, Developer AI, memberships, credits,
-gifts, bans/Admin moderation, subscriptions, payments, and marketplace remain **NOT IMPLEMENTED**; there is no public
-account dashboard or cloud sync.
+- **Scope kept narrow.** Account deletion remains unavailable. Phase 18 itself does not add developer/admin authority to ordinary user accounts; Phase 19 implements the separate, backend-authorized developer control plane described below. Memberships, credits, gifts, bans/full moderation, subscriptions, payments, and marketplace remain out of scope; there is no public user account dashboard or cloud sync.
 - **Backend verification:** `cd backend && npm test` → 50/50 passed on Node.js v22.22.3; all backend JavaScript syntax checks passed.
 The Android/API local integration test is opt-in at
 `CRAFTMIND_LOCAL_AUTH_INTEGRATION=1 ./gradlew :app:testDebugUnitTest --tests com.craftmind.app.data.account.AccountHttpIntegrationTest`;
 it has not been run in this checkout. No Android build, device test, live network integration, mail-provider test, or
 deployment is claimed.
+
+## Phase 19 — Developer control plane and Developer AI foundation
+
+Phase 19 supersedes Phase 18's prior out-of-scope note **only** by adding a distinct, backend-authorized developer surface. It never grants normal user accounts developer authority and does not change the canonical user auth/session system, Android navigation, Minecraft permissions, or the public website. Full contracts and operational boundaries: [`docs/developer-control-plane.md`](docs/developer-control-plane.md).
+
+- **One-time owner bootstrap.** `CRAFTMIND_DEV_BOOTSTRAP_EMAIL` plus a high-entropy `CRAFTMIND_DEV_BOOTSTRAP_SECRET` enable one atomic first-owner creation. The secret is not stored, returned, or logged; the durable marker prevents replay/concurrent second owners. Remove the injected secret after bootstrap. The owner sets a normal scrypt-hashed password; login never depends on environment credentials.
+- **Separate sessions and access.** `/developer/auth/*` uses its own opaque, digest-only access/refresh credentials, rotation/replay protection, expiry, revocation, session listing, and rate limits. Ordinary user tokens and caller role/header fields are rejected by developer endpoints.
+- **Explicit audited tools.** A separate `/developer` sign-in/dashboard offers bounded user lookup, safe session metadata/revocation, suspend/restore with user-session revocation, append-oriented audits, non-secret config status, and optional independent beta/preview/promo grant metadata. No raw credentials, generic SQL, shell, source execution, subscriptions, or payments.
+- **Server-checked high-impact confirmation.** Mutations are prepared as actor-bound, short-lived digest-only challenges; server authorization, target/schema validation, role re-check, one-use confirmation, expiry, and audit writes are enforced server-side. Restore does not resurrect old sessions.
+- **Provider-neutral AI only.** An injected adapter can propose at most one registered role-filtered tool. It receives no database/configuration/secrets; unknown/malformed proposals fail, and high-impact actions still need separate operator confirmation. No adapter or live provider integration is bundled; deterministic fake providers exercise the boundary.
+- **Migration/security.** SQLite schema v3 adds isolated developer accounts/sessions/bootstrap state, audited confirmations/grants, and an append-oriented audit log. Developer rate limits are configurable and currently in-memory/process-local. The dashboard is not linked from the eight-page public website; Android remains Home / Builds / Minecraft / Settings and includes no developer credentials or AI key.
+- **Verification status:** `cd backend && npm test` → 73/73 passed; backend JavaScript syntax checks, `python3 scripts/check_website.py` (8 pages), `python3 scripts/check_release_config.py`, and `git diff --check` passed. Android build/device tests, live AI/email provider calls, hosted network integration, an independent security audit, and production deployment are not claimed.
 
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
@@ -237,7 +247,7 @@ The Android UI reports the authenticated session, bridge-reported edition/Minecr
 - Other provider adapters or user-configurable AI endpoints.
 - Manual build editing/design tools, block palettes, coordinate editors, templates, rollback, undo, or visual/screenshot verification of a constructed world.
 - Cloud sync, account-owned build history, cross-device settings, ads, premium tiers, or an AI gateway/provider-billing backend. The account service handles authentication only; local build history and BYOK provider credentials are not attached to accounts.
-- Developer/Admin system, Developer AI, memberships, credits, gifts, bans/Admin moderation, subscriptions, payments, and marketplace are **NOT IMPLEMENTED**. Account deletion is also unavailable and is not presented as a successful action; there is no public account dashboard.
+- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; no real AI provider adapter is bundled or claimed. Account deletion remains unavailable; there is no public user account dashboard.
 - Bedrock execution: no Bedrock bridge implementation exists here, no Bedrock version is runtime-certified, and the Bedrock block/state catalog is empty, so the Bedrock bridge never receives a BuildPlan. Bedrock cannot load the Java Fabric mod. No unsafe client automation (screen scraping, input simulation, injection, patching, anti-cheat/DRM/license bypass) is implemented or planned as a substitute.
 - Manual Minecraft runtime selection or override: there is no edition/Minecraft-version/loader/adapter picker, no nearest-version fallback, no cross-edition matching, and no "execute anyway" control. The runtime comes only from the authenticated bridge; a runtime that cannot be detected stays unknown and construction stays disabled.
 - Legacy/beta/snapshot/experimental execution: no legacy bridge, Forge mod, or legacy runtime integration exists here; the two declared legacy contracts are `EXPERIMENTAL` with `NOT_PERFORMED` certification and an empty block/state catalog, so a recognized legacy runtime is refused with a typed `RUNTIME_NOT_CERTIFIED` failure before any bridge call. Support would require a real runtime test recorded in the registry first.

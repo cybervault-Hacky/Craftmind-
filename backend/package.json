@@ -2,7 +2,7 @@
   "name": "craftmind-auth-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "CraftMind account service: registration, sign-in, sessions, guest identity. Zero runtime dependencies.",
+  "description": "CraftMind account service and separate developer control plane. Zero runtime dependencies.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"

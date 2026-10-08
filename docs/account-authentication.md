@@ -8,9 +8,7 @@ management, production configuration, security boundaries, and features that rem
 Related documents: [`premium-ui-ux-architecture.md`](premium-ui-ux-architecture.md) §9 (the Phase 16 account foundation)
 and the repository [`README.md`](../README.md).
 
-Scope note: this phase implements only authentication and account security. Developer/Admin accounts or tools, Developer
-AI, memberships, credits, gifts, bans/Admin moderation, subscriptions, payments, marketplace, public account dashboards,
-Minecraft permissions, and moving BYOK keys to the service are **NOT IMPLEMENTED**.
+Scope note: Phase 18 implements only normal-user authentication and account security; that remains the contract of this document. Phase 19 later adds a separate developer identity/control plane documented in [`developer-control-plane.md`](developer-control-plane.md). Ordinary account sessions still grant no developer/admin authority. Memberships, credits, gifts, bans/full moderation, subscriptions, payments, marketplace, public user dashboards, Minecraft permissions, and moving BYOK keys to the service are **NOT IMPLEMENTED**.
 
 ---
 
@@ -24,7 +22,7 @@ One technology, one process, no frameworks: a small **Node.js** service using on
 | Errors | `backend/src/errors.js` | Closed safe error vocabulary, HTTP status mapping, and redacted service exceptions |
 | Passwords | `backend/src/passwords.js` | scrypt hashing and verification (`N=16384, r=8, p=1`, 64-byte key, per-password salt), password policy, and constant-work unknown-account handling |
 | Identifiers and tokens | `backend/src/ids.js` | Opaque `usr_`/`ses_` identifiers, 256-bit random one-time/session tokens, purpose-separated HMAC-SHA256 digests, constant-time comparison, and validation |
-| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL/foreign keys and transactional, versioned v1→v2 migrations for legacy users/sessions plus verification/recovery token tables |
+| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL/foreign keys and transactional, versioned migrations; the Phase 18 account changes were v1→v2 and Phase 19 adds separate developer-control-plane schema v3 |
 | Account logic | `backend/src/accounts.js` | Registration, verification, login, refresh/revoke, password recovery/change, safe session metadata, and guest linking |
 | Email delivery | `backend/src/email-delivery.js` | Provider-neutral delivery, honest in-memory development sink, and production HTTPS JSON webhook adapter |
 | Rate limiting | `backend/src/rate-limiter.js` | Bounded in-memory fixed-window limits with independent IP and keyed-email buckets; raw email/IP rate-limit keys are never retained or logged |
@@ -38,7 +36,7 @@ One technology, one process, no frameworks: a small **Node.js** service using on
 * `guest_identities` — original anonymous identity/link data is preserved.
 * `email_verification_tokens` and `password_recovery_tokens` — only purpose-separated HMAC-SHA256 token digests, user IDs, issue/expiry/consumption timestamps. Clear tokens are never stored in SQLite.
 
-Every migration runs transactionally and is idempotently tracked. Existing users, sessions, guest identities, and account statuses are preserved. There is no subscription, credit, entitlement, gift, ban, moderation, marketplace, or admin table; tests reject unrelated schema expansion.
+Every migration runs transactionally and is idempotently tracked. Existing users, sessions, guest identities, and account statuses are preserved. Phase 18 migration v2 contains only account/verification/recovery tables; Phase 19 migration v3 adds the separate developer/control-plane tables documented in [`developer-control-plane.md`](developer-control-plane.md). There are still no subscription, payment, credit, gift, ban/moderation, or marketplace tables.
 
 `DATABASE_URL` is a SQLite file path (or `:memory:` in tests only). SQLite is chosen because it is embedded, has no
 network, and needs no second service to run: the smallest thing that genuinely persists accounts.
@@ -222,4 +220,4 @@ tests on the app side.
 
 * **Account deletion** remains unavailable. The service/authenticator returns `NOT_IMPLEMENTED_BY_SERVICE`; no deletion is faked, no local data is removed by the request, and users must be told the service did not implement it.
 * **Production email delivery is not deployed/configured by this repository.** The provider-neutral HTTPS webhook adapter exists, and production startup requires it, but no provider account, endpoint, credential, or deployment is included. The development sink is private, in-memory, test-only, and sends no email.
-* **Developer/Admin system, Developer AI, memberships, credits, gifts, bans/Admin moderation, subscriptions, payments, marketplace, public account dashboard, OAuth/social sign-in, sync, cross-device history, and account-owned builds** are **NOT IMPLEMENTED**. No route, entitlement, admin authority, or Minecraft runtime permission is added by sign-in.
+* **Ordinary user sign-in never grants developer/admin authority or Minecraft permissions.** A separate developer identity/control plane exists in Phase 19; see [`developer-control-plane.md`](developer-control-plane.md). Memberships, credits, gifts, bans/full moderation, subscriptions, payments, marketplace, public user dashboard, OAuth/social sign-in, sync, cross-device history, and account-owned builds remain **NOT IMPLEMENTED**.

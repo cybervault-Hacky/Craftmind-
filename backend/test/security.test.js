@@ -178,6 +178,12 @@ describe("account service security", () => {
       .sort();
 
     assert.deepEqual(tables, [
+      "admin_audit_log",
+      "developer_access_grants",
+      "developer_accounts",
+      "developer_action_confirmations",
+      "developer_bootstrap_state",
+      "developer_sessions",
       "email_verification_tokens",
       "guest_identities",
       "password_recovery_tokens",
@@ -185,7 +191,7 @@ describe("account service security", () => {
       "sessions",
       "users",
     ]);
-    for (const forbidden of ["subscription", "payment", "credit", "gift", "ban", "marketplace", "admin", "developer", "entitlement"]) {
+    for (const forbidden of ["subscription", "payment", "credit", "gift", "ban", "marketplace"]) {
       assert.equal(
         tables.some((name) => name.includes(forbidden)),
         false,

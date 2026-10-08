@@ -1,7 +1,4 @@
-/**
- * SQLite persistence and transactional schema migrations for accounts, sessions, and guest identity.
- * No feature outside authentication/account identity is represented here.
- */
+/** SQLite persistence and transactional migrations for account identity and the separately-authorized developer control plane. */
 
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
@@ -75,6 +72,89 @@ const MIGRATIONS = [
       `CREATE INDEX sessions_by_revocation ON sessions(revoked_at)`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE developer_accounts (
+         developer_id TEXT PRIMARY KEY,
+         email TEXT NOT NULL,
+         email_canonical TEXT NOT NULL UNIQUE,
+         password_hash TEXT NOT NULL,
+         role TEXT NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'DEVELOPER')),
+         status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'SUSPENDED')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         last_login_at TEXT
+       )`,
+      `CREATE TABLE developer_sessions (
+         session_id TEXT PRIMARY KEY,
+         developer_id TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE CASCADE,
+         access_digest TEXT NOT NULL UNIQUE,
+         refresh_digest TEXT NOT NULL UNIQUE,
+         issued_at TEXT NOT NULL,
+         access_expires_at TEXT NOT NULL,
+         refresh_expires_at TEXT NOT NULL,
+         last_used_at TEXT NOT NULL,
+         device_label TEXT NOT NULL DEFAULT 'Developer dashboard',
+         revoked_at TEXT
+       )`,
+      `CREATE INDEX developer_sessions_by_developer ON developer_sessions(developer_id, issued_at)`,
+      `CREATE INDEX developer_sessions_by_refresh_expiry ON developer_sessions(refresh_expires_at)`,
+      `CREATE TABLE developer_bootstrap_state (
+         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         consumed_at TEXT NOT NULL,
+         developer_id TEXT NOT NULL UNIQUE REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT
+       )`,
+      `CREATE TABLE developer_access_grants (
+         grant_id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         entitlement_key TEXT NOT NULL CHECK (entitlement_key IN ('BETA_ACCESS', 'PREVIEW_ACCESS', 'PROMOTIONAL_ACCESS')),
+         granted_by TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         created_at TEXT NOT NULL,
+         expires_at TEXT NOT NULL,
+         revoked_at TEXT,
+         revoked_by TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT
+       )`,
+      `CREATE INDEX developer_grants_by_user ON developer_access_grants(user_id, created_at DESC)`,
+      `CREATE INDEX developer_grants_by_entitlement ON developer_access_grants(user_id, entitlement_key, expires_at)`,
+      `CREATE TABLE admin_audit_log (
+         audit_id TEXT PRIMARY KEY,
+         actor_developer_id TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke'
+         )),
+         target_user_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096)
+       )`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+      `CREATE TABLE developer_action_confirmations (
+         confirmation_digest TEXT PRIMARY KEY,
+         developer_id TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE CASCADE,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'revoke_user_sessions', 'suspend_user', 'restore_user', 'grant_entitlement', 'revoke_entitlement'
+         )),
+         target_user_id TEXT,
+         arguments_json TEXT NOT NULL CHECK (length(arguments_json) <= 4096),
+         created_at TEXT NOT NULL,
+         expires_at TEXT NOT NULL,
+         consumed_at TEXT
+       )`,
+      `CREATE INDEX developer_confirmations_by_expiry ON developer_action_confirmations(expires_at)`,
+    ],
+  },
 ];
 
 /** @param {string} databaseUrl path to the SQLite file (`:memory:` is accepted only by tests) */
@@ -84,6 +164,7 @@ export function openDatabase(databaseUrl) {
   const database = new DatabaseSync(path);
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
+  database.exec("PRAGMA recursive_triggers = ON");
   database.exec("PRAGMA busy_timeout = 5000");
   database.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
   migrate(database);
