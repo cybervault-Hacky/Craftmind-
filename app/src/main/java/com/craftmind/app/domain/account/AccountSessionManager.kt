@@ -109,6 +109,10 @@ class AccountSessionManager(
                 }
             ) {
                 is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.RESTORED_ON_DEVICE)
+                is AccountAuthOutcome.VerificationRequired -> publish(AccountState.SessionExpired(
+                    stored.session.identity,
+                    AccountSessionEndReason.REJECTED_BY_SERVICE,
+                ))
                 is AccountAuthOutcome.Unavailable -> {
                     session = restored
                     publish(AccountState.Authenticated(restored))
@@ -133,6 +137,10 @@ class AccountSessionManager(
             }
         ) {
             is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.RESTORED_ON_DEVICE)
+            is AccountAuthOutcome.VerificationRequired -> publish(AccountState.SessionExpired(
+                stored.session.identity,
+                AccountSessionEndReason.REJECTED_BY_SERVICE,
+            ))
             is AccountAuthOutcome.Failure -> {
                 // Only a failure that says the credential itself is dead may destroy the stored record; a transient
                 // failure keeps it so the next launch can try again.
@@ -176,6 +184,9 @@ class AccountSessionManager(
                 }
             ) {
                 is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.LIVE_SIGN_IN)
+                is AccountAuthOutcome.VerificationRequired -> publish(
+                    AccountState.VerificationRequired(outcome.identity, outcome.deliveryStatus),
+                )
                 is AccountAuthOutcome.Failure -> publish(AccountState.Failed(outcome.error, baseIdentity))
                 is AccountAuthOutcome.Unavailable -> publish(AccountState.Unavailable(outcome.reason, baseIdentity))
             }
@@ -218,6 +229,9 @@ class AccountSessionManager(
                     }
                 ) {
                     is AccountAuthOutcome.Success -> adopt(outcome, AccountSessionSource.LIVE_SIGN_IN)
+                    is AccountAuthOutcome.VerificationRequired -> publish(
+                        AccountState.VerificationRequired(outcome.identity, outcome.deliveryStatus),
+                    )
                     is AccountAuthOutcome.Failure -> publish(AccountState.Failed(outcome.error, baseIdentity))
                     is AccountAuthOutcome.Unavailable -> publish(AccountState.Unavailable(outcome.reason, baseIdentity))
                 }
@@ -307,6 +321,89 @@ class AccountSessionManager(
         if (reason != AccountSessionEndReason.REFRESH_UNAVAILABLE) clearStoredSessionQuietly()
         session = null
         return publish(AccountState.SessionExpired(previous, reason))
+    }
+
+    // ----------------------------------------------------------------------------- account verification and security
+
+    /** Verify the one-time address token. The manager owns and clears the character array. */
+    fun verifyEmail(token: CharArray): AccountApiOutcome<AccountEmailVerificationResult> = try {
+        val capability = authenticator as? AccountSecurityCapable
+            ?: return AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+        when (val result = guarding(AccountApiOutcome.Unreachable) { capability.verifyEmail(token) }) {
+            is AccountApiOutcome.Success -> {
+                val existingSession = session
+                if (existingSession == null) {
+                    publish(AccountState.EmailVerified(result.value.record.toIdentity()))
+                } else {
+                    publish(AccountState.Authenticated(existingSession))
+                }
+                result
+            }
+            else -> result
+        }
+    } finally {
+        token.fill('\u0000')
+    }
+
+    fun resendVerification(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> =
+        securityCapability()?.let { guarding(AccountApiOutcome.Unreachable) { it.resendVerification(emailAddress) } }
+            ?: AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+
+    fun requestPasswordReset(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> =
+        securityCapability()?.let { guarding(AccountApiOutcome.Unreachable) { it.requestPasswordReset(emailAddress) } }
+            ?: AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+
+    /** Recovery invalidates every server session; clear any local credential this device may still hold. */
+    fun confirmPasswordReset(token: CharArray, newPassword: CharArray): AccountApiOutcome<AccountOperationReceipt> = try {
+        val capability = authenticator as? AccountSecurityCapable
+            ?: return AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+        val outcome = guarding(AccountApiOutcome.Unreachable) { capability.confirmPasswordReset(token, newPassword) }
+        if (outcome is AccountApiOutcome.Success) {
+            val previous = identityOrNull()
+            session = null
+            clearStoredSessionQuietly()
+            publish(AccountState.SessionExpired(previous, AccountSessionEndReason.REJECTED_BY_SERVICE))
+        }
+        outcome
+    } finally {
+        token.fill('\u0000')
+        newPassword.fill('\u0000')
+    }
+
+    fun changePassword(currentPassword: CharArray, newPassword: CharArray): AccountApiOutcome<AccountPasswordChangeResult> = try {
+        withStoredSecurityCredential { capability, credential ->
+            capability.changePassword(credential, currentPassword, newPassword)
+        }
+    } finally {
+        currentPassword.fill('\u0000')
+        newPassword.fill('\u0000')
+    }
+
+    fun listSessions(): AccountApiOutcome<AccountSessionList> =
+        withStoredSecurityCredential { capability, credential -> capability.listSessions(credential) }
+
+    fun revokeSession(sessionId: String): AccountApiOutcome<Unit> =
+        withStoredSecurityCredential { capability, credential -> capability.revokeSession(credential, sessionId) }
+
+    fun revokeOtherSessions(): AccountApiOutcome<AccountRevokeSessionsResult> =
+        withStoredSecurityCredential { capability, credential -> capability.revokeOtherSessions(credential) }
+
+    private fun securityCapability(): AccountSecurityCapable? = authenticator as? AccountSecurityCapable
+
+    private inline fun <T> withStoredSecurityCredential(
+        operation: (AccountSecurityCapable, AccountSessionCredential) -> AccountApiOutcome<T>,
+    ): AccountApiOutcome<T> {
+        val capability = securityCapability() ?: return AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+        val stored = try {
+            sessionStore.load()
+        } catch (_: Exception) {
+            null
+        } ?: return AccountApiOutcome.Rejected(AccountApiErrorCode.AUTHENTICATION_REQUIRED)
+        return try {
+            guarding(AccountApiOutcome.Unreachable) { operation(capability, stored.credential) }
+        } finally {
+            stored.credential.close()
+        }
     }
 
     // ------------------------------------------------------------------------------------ account deletion request

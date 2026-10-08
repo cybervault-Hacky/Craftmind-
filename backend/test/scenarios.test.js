@@ -13,12 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { call, guestIdentity, loginCall, register, startService, VALID_PASSWORD } from "./helpers.js";
+import { call, guestIdentity, loginCall, register, registerVerified, startService, VALID_PASSWORD } from "./helpers.js";
 
 test("scenario A — register, sign out, sign in again: the same account", async () => {
   const service = await startService();
   try {
-    const created = await register(service.baseUrl, { email: "scenario-a@example.com" });
+    const created = await registerVerified(service, { email: "scenario-a@example.com" });
     assert.equal(created.status, 201);
     const accountId = created.body.account.userId;
 
@@ -44,7 +44,7 @@ test("scenario A — register, sign out, sign in again: the same account", async
 test("scenario B — sign in, close the app, reopen: the session is restored while it is valid", async () => {
   const service = await startService();
   try {
-    const created = await register(service.baseUrl, { email: "scenario-b@example.com" });
+    const created = await registerVerified(service, { email: "scenario-b@example.com" });
     const { accessToken, refreshToken } = created.body.session;
 
     // Reopening the app is the device asking the service who it is with the credential it stored — nothing else.
@@ -73,7 +73,7 @@ test("scenario C — clear app data, reinstall, restart the service, sign in: th
   let service;
   try {
     service = await startService({ DATABASE_URL: databasePath });
-    const first = await register(service.baseUrl, {
+    const first = await registerVerified(service, {
       email: "scenario-c@example.com",
       displayName: "Scenario C",
       guestIdentityId: guestIdentity("c1"),
@@ -125,7 +125,7 @@ test("scenario D — use it as a guest, then create an account: the guest identi
     assert.equal(recorded.status, 201);
     assert.equal(recorded.body.guest.linked, false);
 
-    const created = await register(service.baseUrl, {
+    const created = await registerVerified(service, {
       email: "scenario-d@example.com",
       guestIdentityId: identity,
     });

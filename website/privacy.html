@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101713">
-  <meta name="description" content="The complete data flow implemented by CraftMind: Keystore-backed credential storage, direct provider requests, local history, and the optional pinned-LAN bridge.">
+  <meta name="description" content="CraftMind's implemented privacy boundaries: optional account authentication, Keystore-backed credentials, direct provider requests, local history, and the pinned-LAN bridge.">
   <title>Privacy — CraftMind</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
@@ -45,14 +45,19 @@
     <section class="section container" aria-labelledby="flows-title">
       <div class="section-heading">
         <p class="eyebrow">DATA FLOWS</p>
-        <h2 id="flows-title">Four flows, in plain language.</h2>
-        <p>There is no CraftMind account service, no CraftMind backend, and no telemetry. The flows below are the complete set the app implements.</p>
+        <h2 id="flows-title">Five flows, in plain language.</h2>
+        <p>The app has no account-service URL by default. The repository includes an optional authentication service for configured builds, but no production endpoint or mail provider is operated here. CraftMind has no AI proxy backend and no telemetry.</p>
       </div>
       <div class="privacy-grid" style="margin-top:42px">
         <article class="privacy-card">
           <span class="privacy-icon" aria-hidden="true">⌑</span>
           <h3>Credential storage</h3>
           <p>The provider key is encrypted with AES-GCM using a key held by the Android Keystore and saved in app-private no-backup storage. It is never included in a Minecraft bridge request and never shown back in full.</p>
+        </article>
+        <article class="privacy-card">
+          <span class="privacy-icon" aria-hidden="true">◎</span>
+          <h3>Optional account authentication</h3>
+          <p>Only a build configured for an HTTPS CraftMind account service sends account details. That service stores email and display name, a salted scrypt password hash, guest identity, session-token digests, and one-time-token digests. It does not store plaintext passwords or raw token values. Account deletion is unavailable.</p>
         </article>
         <article class="privacy-card">
           <span class="privacy-icon" aria-hidden="true">↗</span>
@@ -78,11 +83,13 @@
         <ul>
           <li>Your provider credential lives only in app-private storage; you can remove it from Settings, and clearing the app's data or uninstalling removes it.</li>
           <li>Your bridge profile is stored the same way and can be forgotten from the pairing screen.</li>
-          <li>Build history is local. Deleting app data removes it, and nothing is restored from a server because none exists.</li>
+          <li>Build history is local and is not synced to an account. Clearing app data removes it.</li>
+          <li>Account deletion is unavailable. The app may explain that status, but the account service has no deletion endpoint and no account or device data is removed by such a request. A production operator must publish data-handling and retention details before accepting users.</li>
           <li>No analytics, crash-reporting, advertising, or tracking SDK is included in the app or on this website.</li>
         </ul>
         <h3>What leaves your device</h3>
         <ul>
+          <li>If an account-service URL is configured, the submitted email, display name, password during sign-up/sign-in or password change, one-time code, and opaque session credentials travel to that service over HTTPS. Passwords are hashed before storage; session credentials are kept in the Android Keystore-backed store.</li>
           <li>Your prompt and any chosen visual reference, sent to Google Gemini over HTTPS with your key.</li>
           <li>A bounded execution request sent to your paired Minecraft bridge over pinned private-LAN HTTPS — never your API key.</li>
         </ul>

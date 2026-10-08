@@ -1,15 +1,16 @@
-# Accounts and Authentication (Phase 17)
+# Accounts and Authentication (Phase 18)
 
-This document is the authoritative description of **real user accounts in CraftMind**: the service that stores them,
-the contracts between app and service, the guest identity a device carries before it has an account, the session
-lifecycle, the security boundaries, how to run the service locally, and what is deliberately **not** implemented.
+This is the authoritative description of CraftMind's existing account architecture and its Phase 18 hardening: the
+SQLite service, app/service contracts, guest identity, email verification, password recovery and change, remote session
+management, production configuration, security boundaries, and features that remain unavailable. It extends Phases
+16–17; it does not replace their canonical account/session model.
 
-Related documents: [`premium-ui-ux-architecture.md`](premium-ui-ux-architecture.md) §9 (the Phase 16 account foundation
-this phase connects to a real service) and the repository [`README.md`](../README.md).
+Related documents: [`premium-ui-ux-architecture.md`](premium-ui-ux-architecture.md) §9 (the Phase 16 account foundation)
+and the repository [`README.md`](../README.md).
 
-Scope note: CraftMind has accounts, and only accounts. There is no developer account, no administrator account, no
-dashboard, no gifting, no banning, no credits, no subscription, no payment, and no marketplace. Nothing in this phase
-administers anything, and no AI system has an account.
+Scope note: this phase implements only authentication and account security. Developer/Admin accounts or tools, Developer
+AI, memberships, credits, gifts, bans/Admin moderation, subscriptions, payments, marketplace, public account dashboards,
+Minecraft permissions, and moving BYOK keys to the service are **NOT IMPLEMENTED**.
 
 ---
 
@@ -19,26 +20,25 @@ One technology, one process, no frameworks: a small **Node.js** service using on
 
 | Piece | File | Responsibility |
 | --- | --- | --- |
-| Configuration | `backend/src/config.js` | Reads and validates the environment. Requires an `AUTH_SECRET` of at least 32 characters, refuses an in-memory database outside tests, and only accepts `DATABASE_URL` values it understands |
-| Errors | `backend/src/errors.js` | The closed error vocabulary, the HTTP status for each code, and the one exception type the server throws |
-| Passwords | `backend/src/passwords.js` | scrypt hashing and verification (`N=16384, r=8, p=1`, 64-byte key, per-password salt), the password policy, and a dummy verification used to keep "unknown account" and "wrong password" indistinguishable in cost |
-| Identifiers and tokens | `backend/src/ids.js` | `usr_`/`ses_` identifiers, 256-bit random tokens, HMAC-SHA256 digests, digest comparison, and the email/display-name/guest-identity validation rules |
-| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL, foreign keys, a busy timeout, and a migration for exactly three account-domain tables plus migration metadata |
-| Account logic | `backend/src/accounts.js` | Registration, sign-in, refresh, sign-out, current account, guest registration, and guest linking |
-| HTTP | `backend/src/server.js` | Routing, bounded request bodies, JSON parsing, authentication, `Cache-Control: no-store`, and request ids |
+| Configuration | `backend/src/config.js` | Validates `AUTH_SECRET`, persistent SQLite, email provider and HTTPS webhook, public origin, trusted TLS proxy, CORS origins, body limits, token TTLs, and per-operation rate limits |
+| Errors | `backend/src/errors.js` | Closed safe error vocabulary, HTTP status mapping, and redacted service exceptions |
+| Passwords | `backend/src/passwords.js` | scrypt hashing and verification (`N=16384, r=8, p=1`, 64-byte key, per-password salt), password policy, and constant-work unknown-account handling |
+| Identifiers and tokens | `backend/src/ids.js` | Opaque `usr_`/`ses_` identifiers, 256-bit random one-time/session tokens, purpose-separated HMAC-SHA256 digests, constant-time comparison, and validation |
+| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL/foreign keys and transactional, versioned v1→v2 migrations for legacy users/sessions plus verification/recovery token tables |
+| Account logic | `backend/src/accounts.js` | Registration, verification, login, refresh/revoke, password recovery/change, safe session metadata, and guest linking |
+| Email delivery | `backend/src/email-delivery.js` | Provider-neutral delivery, honest in-memory development sink, and production HTTPS JSON webhook adapter |
+| Rate limiting | `backend/src/rate-limiter.js` | Bounded in-memory fixed-window limits with independent IP and keyed-email buckets; raw email/IP rate-limit keys are never retained or logged |
+| HTTP | `backend/src/server.js` | Hardened routing, bounded JSON bodies, content type, CORS/HTTPS-proxy checks, security headers, throttles, and secret-free request logs |
 | Entry point | `backend/src/index.js` | Configuration → database → listen → graceful shutdown |
 
-**Storage schema (migration v1).** Three account-domain tables, plus the standard `schema_migrations` version ledger:
+**Storage schema (migrations v1–v2).** Three original account-domain tables are extended in place, two purpose-specific token tables are added, and `schema_migrations` records applied versions:
 
-* `users` — `user_id` (primary key), `email`, `email_canonical` (unique, case/space-insensitive), `display_name`,
-  `password_hash`, `status` (`ACTIVE` / `SUSPENDED` / `DELETED`), `created_at`, `updated_at`.
-* `sessions` — `session_id` (primary key), `user_id` (foreign key), `access_digest`, `refresh_digest`,
-  `issued_at`, `access_expires_at`, `refresh_expires_at`, `revoked_at`, and nullable `guest_identity_id`. Indexed on both digests and on `user_id`.
-* `guest_identities` — `guest_identity_id` (primary key), `linked_user_id` (nullable, set when the identity is linked),
-  `created_at`, `last_seen_at`, `linked_at`. Indexed on `linked_user_id`.
+* `users` — original identifiers/email/hash/status/timestamps remain; v2 adds nullable `email_verified_at`. Existing `ACTIVE`, `SUSPENDED`, and `DELETED` values are not rewritten. Phase 17 accounts had no email-verification proof, so migrated accounts remain unverified and must use resend/verification before a new sign-in; their rows are not dropped or silently marked verified.
+* `sessions` — original digest-only access/refresh tokens, expiry, revocation, user and guest link remain; v2 adds `last_used_at` and `device_label` with backward-safe defaults, then backfills `last_used_at` from `issued_at`. Existing session rows remain in SQLite, but the service refuses them until their account is verified.
+* `guest_identities` — original anonymous identity/link data is preserved.
+* `email_verification_tokens` and `password_recovery_tokens` — only purpose-separated HMAC-SHA256 token digests, user IDs, issue/expiry/consumption timestamps. Clear tokens are never stored in SQLite.
 
-There is no account-subscription, credit, entitlement, gift, ban, marketplace, or admin table, and the test suite fails
-if one ever appears.
+Every migration runs transactionally and is idempotently tracked. Existing users, sessions, guest identities, and account statuses are preserved. There is no subscription, credit, entitlement, gift, ban, moderation, marketplace, or admin table; tests reject unrelated schema expansion.
 
 `DATABASE_URL` is a SQLite file path (or `:memory:` in tests only). SQLite is chosen because it is embedded, has no
 network, and needs no second service to run: the smallest thing that genuinely persists accounts.
@@ -47,38 +47,32 @@ network, and needs no second service to run: the smallest thing that genuinely p
 
 ## 2. API contracts
 
-Every endpoint is `POST /auth/…` except the two `GET`s. Request and response bodies are JSON with string members; a
-missing optional member is omitted rather than sent as `null`; registration requires a non-empty `displayName`. Every response carries `Cache-Control: no-store`, and every
-error is `{"error": {"code": "...", "message": "...", "requestId": "..."}}` with a stable `code`.
+All bodies are JSON. Missing optional members are omitted, not `null`. Responses set `Cache-Control: no-store`, `Pragma: no-cache`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a restrictive CSP, and `Permissions-Policy`; errors use `{"error":{"code":"…","message":"…","requestId":"…"}}` with a stable code and no stack/provider detail.
 
 | Endpoint | Request | Success | Notes |
 | --- | --- | --- | --- |
-| `POST /auth/register` | `{email, password, displayName, guestIdentityId?}` | `201 {account, session, guestLinked}` | Rejects a duplicate address with `ACCOUNT_ALREADY_EXISTS` (case- and space-insensitive). A guest identity is linked when one is supplied |
-| `POST /auth/login` | `{email, password, guestIdentityId?}` | `200 {account, session}` | The same account-plus-session core as registration. Unknown addresses and wrong passwords share one code and message. An unknown address and a wrong password produce the same code and message |
-| `POST /auth/refresh` | `{refreshToken}` | `200 {session}` | Rotates **both** tokens; the previous pair stops working immediately |
-| `POST /auth/logout` | `{refreshToken?, accessToken?}` | `200 {revoked, alreadyRevoked, revokedSessions}` | Idempotent: signing out twice is a success, and the answer says which case it was |
-| `GET /auth/me` | `Authorization: Bearer <accessToken>` | `200 {account}` | The **only** source of account truth. The service answers with the account its own session belongs to |
-| `POST /auth/guest` | `{guestIdentityId}` | `201 {guest: {guestIdentityId, linked, createdAt}}` | Records an anonymous identity so a later registration can be linked. Idempotent |
-| `GET /health` | — | `200 {status: "ok", service: "craftmind-auth"}` | Availability probe. Reveals nothing about accounts |
-| `POST /auth/password-reset` | `{email}` | `501 PASSWORD_RESET_NOT_IMPLEMENTED` | An explicit future contract |
+| `POST /auth/register` | `{email, password, displayName, guestIdentityId?, deviceLabel?}` | `201 {account, verificationRequired, deliveryStatus, guestLinked}` | No session is issued until email verification; status is `DEVELOPMENT_SINK`, `PROVIDER_ACCEPTED`, or `UNAVAILABLE`—none claims inbox delivery; duplicate email remains `ACCOUNT_ALREADY_EXISTS` |
+| `POST /auth/verify-email` | `{token}` | `200 {account}` | Short-lived single-use code; consumes all active verification codes for that account |
+| `POST /auth/resend-verification` | `{email}` | `202 {accepted, deliveryMode, message}` | Enumeration-neutral response; rate-limited |
+| `POST /auth/login` | `{email, password, guestIdentityId?, deviceLabel?}` | `200 {account, session}` | Requires verified email. Unknown/wrong-password stay indistinguishable; unverified is a separate typed state |
+| `POST /auth/refresh` | `{refreshToken}` | `200 {session}` | Atomically compares and rotates both tokens; a concurrent replay of the prior refresh digest loses the compare-and-rotate update |
+| `POST /auth/logout` | `{refreshToken?, accessToken?}` | `200 {revoked, alreadyRevoked, revokedSessions}` | Idempotent |
+| `GET /auth/me` | Bearer access token | `200 {account, session}` | Server is the only account/session authority |
+| `POST /auth/password-reset/request` | `{email}` | `202 {accepted, deliveryMode, message}` | Enumeration-neutral; never returns a code/token |
+| `POST /auth/password-reset/confirm` | `{token, newPassword}` | `200 {reset, revokedSessions}` | Single-use token; revokes all sessions |
+| `POST /auth/password/change` | Bearer access token + `{currentPassword, newPassword}` | `200 {changed, currentSessionRetained, revokedOtherSessions}` | Current session remains; all others are revoked |
+| `GET /auth/sessions` | Bearer access token | `200 {sessions:[…]}` | Safe metadata only: opaque session ID, timestamps, device label, current marker; no fingerprints or credential values |
+| `POST /auth/sessions/revoke` | Bearer + `{sessionId}` | `200 {revoked, alreadyRevoked}` | Cannot revoke the current session through this endpoint |
+| `POST /auth/sessions/revoke-all` | Bearer access token | `200 {revokedSessions, currentSessionRetained:true}` | Retains current session |
+| `POST /auth/guest` | `{guestIdentityId}` | `201 {guest:{guestIdentityId, linked, createdAt}}` | Anonymous identity registration/linking |
+| `GET /health` | — | `200 {status:"ok", service:"craftmind-auth"}` | Reveals no account data |
+| `POST /auth/password-reset` | Legacy `{email}` | `202` neutral recovery receipt | Backward-compatible alias for the request flow; no longer a fake 501 |
 
-Response shapes:
+`account` includes `userId`, `email`, `displayName`, `status`, `createdAt`, `updatedAt`, `emailVerified`, and `emailVerifiedAt`. `session` is the only response containing access/refresh tokens. Verification/recovery endpoints never return one-time token material. Session-list items never contain access/refresh tokens or their digests.
 
-* `account` — `{userId, email, displayName, status, createdAt, updatedAt}`. `userId` is the opaque service identifier; it
-  is never an internal database row id, and the app never renders it.
-* `session` — `{accessToken, refreshToken, accessExpiresAt, refreshExpiresAt}`. The only place a token ever appears.
+Stable typed errors include request/content-type/size/method/CORS/HTTPS/rate-limit codes; input and account codes; `EMAIL_NOT_VERIFIED`; invalid/expired/used verification and reset token codes; current-password/email-delivery errors; session/revocation errors; and the backend/network/unknown codes. The Android `AccountApiErrorCode` mirrors the service vocabulary. Unknown/wrong-password login responses remain indistinguishable; deleted accounts do too during password login.
 
-Error codes, all typed and stable: `INVALID_REQUEST`, `INVALID_EMAIL`, `INVALID_PASSWORD`, `INVALID_DISPLAY_NAME`,
-`INVALID_CREDENTIALS`, `ACCOUNT_ALREADY_EXISTS`, `ACCOUNT_SUSPENDED`, `ACCOUNT_DELETED`, `SESSION_EXPIRED`,
-`SESSION_INVALID`, `REFRESH_FAILED`, `NETWORK_ERROR`, `BACKEND_UNAVAILABLE`, `UNKNOWN_ERROR`, `ACCOUNT_NOT_FOUND`,
-`AUTHENTICATION_REQUIRED`, `INVALID_GUEST_IDENTITY`, `GUEST_IDENTITY_ALREADY_LINKED`, `REQUEST_TOO_LARGE`,
-`METHOD_NOT_ALLOWED`, and `PASSWORD_RESET_NOT_IMPLEMENTED`. Unknown and wrong-password sign-ins share one code and
-message; deleted accounts do too during password login. `NETWORK_ERROR` is recognized as a client/service boundary code,
-while an actual transport failure is represented locally and never forged into an HTTP response.
-
-Limits: request bodies are capped at 16 KiB (`413`), unknown paths answer `400 INVALID_REQUEST`, and a known path with
-the wrong method answers `405 METHOD_NOT_ALLOWED`. The Android client mirrors these codes one-to-one in
-`AccountApiErrorCode`, and a contract test fails if the two vocabularies drift apart.
+Bodies default to a 16 KiB cap (configurable up to 1 MiB). Wrong content types, oversize bodies, unknown paths, and unsupported methods fail with safe typed errors. Sensitive routes have configurable fixed-window limits. Production requires HTTPS as observed at a trusted TLS terminator (`TRUST_PROXY_TLS=true` and `X-Forwarded-Proto: https`), exact HTTPS CORS origins (no wildcard), and a configured absolute `PUBLIC_ORIGIN`. These are deployment gates, not evidence that a service is deployed.
 
 ### What the client is never allowed to send
 
@@ -89,33 +83,19 @@ token; the service decides who that is. A request body that claims an identity i
 
 ## 3. Authentication flows
 
-**Registration.** The app validates the required display name, address, password, and confirmation locally, then sends
-`POST /auth/register` with the typed password and this device's guest identity. The service validates again, normalises
-the address, hashes the password with scrypt, creates the account, links the guest identity if one was supplied and is
-unlinked, and returns the account plus a session. Duplicate emails are rechecked inside a SQLite write transaction so
-two concurrent registrations still produce one account and one stable `ACCOUNT_ALREADY_EXISTS` error. The app stores only
-the session credential, and only if the store accepted it.
+**Registration and verification.** The app validates the required display name, address, password, and confirmation, then sends `POST /auth/register`. The service normalizes email, hashes the password, creates an `ACTIVE` but unverified account, links a supplied unlinked guest identity, and requests delivery of a one-time code. It returns no session. The app enters `VerificationRequired` and persists no credential. Codes are generated by a cryptographic random source, scoped to their purpose, expire (default 24 hours), and are stored only as HMAC digests. Verification consumes the code once; only then may the user sign in. A webhook's successful HTTP response is reported as `PROVIDER_ACCEPTED`, not delivered; it confirms only that the provider accepted the request. Provider failure is `UNAVAILABLE`, and the development sink explicitly says no email was sent.
 
-**Sign-in.** `POST /auth/login` with the address, password, and guest identity. An unreachable service is reported as
-`NETWORK_UNAVAILABLE` — not as a wrong password — so the user is never told their credentials failed when in fact
-nothing was asked. A rejected credential produces `INVALID_CREDENTIALS` with one message for both "no such account" and
-"wrong password".
+**Sign-in.** `POST /auth/login` uses address, password and guest identity. The service requires a verified address before issuing a session. Unknown addresses and wrong passwords share one code/message; `EMAIL_NOT_VERIFIED` is separate. An unreachable service is `NETWORK_UNAVAILABLE`, not a credential failure.
 
-**Sign-out.** The app clears the local session first and always, then asks the service to revoke remotely. The outcome
-is reported as one of `REMOTE_REVOKED`, `REMOTE_REVOCATION_FAILED`, `REMOTE_REVOCATION_SKIPPED`, or `LOCAL_ONLY`.
-Signing out touches nothing else: builds, history, settings, provider keys, and the Minecraft pairing are untouched.
+**Password recovery.** `POST /auth/password-reset/request` gives the same response whether or not the address has an eligible account. The one-time handoff is started without waiting for the provider, and a 150 ms minimum response floor reduces the ordinary timing difference; this is not a formal constant-time guarantee under overloaded storage. The HTTP response and logs do not reveal account existence or provider failure. The in-memory development sink is reported honestly. Email handoff is best-effort and there is no durable mail queue. `POST /auth/password-reset/confirm` consumes the single-use code, updates the scrypt hash, and revokes every session. The user signs in again.
 
-**Restoration.** On launch the app loads the encrypted credential, calls `GET /auth/me`, and adopts the account the
-service returns. If the access token is refused as expired, the refresh token is exchanged for a new pair and the new
-pair is stored. If the service rejects the session outright, the local session is destroyed and the state becomes
-`SessionExpired` with the service's reason. If the service cannot be reached, the session is **kept** and the state stays
-authenticated: an offline device is not a signed-out device.
+**Authenticated password change.** `POST /auth/password/change` requires the current password and a live access token. On success the current session remains active and every other session is revoked. The Android session manager remains the sole owner of the canonical credential.
 
-**Expiry.** A session carries the expiry the service declared, and nothing else. When it passes, refresh is attempted if
-the service supports it; the session is only discarded once the service has actually refused it.
+**Session management.** `GET /auth/sessions` lists non-expired sessions with safe metadata only (device label, timestamps, opaque ID and current marker). It never returns credentials, digests, IPs, user agents, or device fingerprints. A user can revoke an individual *other* session or all other sessions; the current session cannot be revoked by these routes. To end the current session, use sign-out.
 
-**Account switching.** `switchAccount()` signs out first, then signs in. A failed switch cannot leave half of a previous
-identity behind, because there is no code path that adopts a session before it has been confirmed.
+**Sign-out and restoration.** The app clears its local session first, then best-effort revokes remotely; local builds/history/settings/provider keys/Minecraft pairing remain untouched. On launch it loads the encrypted credential and asks `GET /auth/me`; expired credentials may refresh and rotate. An unreachable service keeps the existing local session for later retry; a server rejection clears it.
+
+**Account switching.** Switching signs out first, then signs in. A failed switch cannot leave an unconfirmed identity adopted.
 
 ---
 
@@ -171,15 +151,15 @@ included in an error message, or logged.
 | Transport | Absolute HTTPS only. Plain HTTP is refused before the first request is built, and the manifest keeps cleartext traffic disabled | `AccountServiceConfiguration` (`of` / `fromBuildValue`) and `check_release_config.py` |
 | Service address | Supplied per build (`-PcraftmindAccountBaseUrl` / `CRAFTMIND_ACCOUNT_BASE_URL`), never a literal in the source, never committed | `app/build.gradle.kts` → `BuildConfig.CRAFTMIND_ACCOUNT_BASE_URL`; `AccountSecurityBoundaryTest` |
 | Authority | The service is the only source of account truth. `GET /auth/me` decides who is signed in; no local flag can overrule it | `AccountSessionManager` + the `AccountApi` contract |
-| Passwords | Stored only as scrypt hashes with per-password salts; never logged, never returned, never included in an error; compared in constant time by digest for tokens | `backend/src/passwords.js`, `backend/src/ids.js` |
-| Tokens | Random 256-bit values, stored only as HMAC-SHA256 digests keyed by `AUTH_SECRET`; rotated on every refresh; the client keeps them only in the encrypted store and clears its copies | `backend/src/ids.js`, `AccountSessionTokens` |
-| Client state | No token, password, or internal identifier can reach the UI: `AccountSession` is metadata only, and the projected UI state has no field that could carry a secret | `AccountUiState`, `AccountUiStateTest`, `AccountSecurityBoundaryTest` |
-| Logging | The service's access log records method, path, status, duration, and a request id — never a body, never a header, never an email. The Android account code contains no logging call at all | `backend/src/server.js`, `check_release_config.py` |
+| Passwords | scrypt hashes with per-password salts; never logged/returned; token digest comparisons are constant-time | `backend/src/passwords.js`, `backend/src/ids.js` |
+| Tokens | Session and purpose-specific one-time tokens use cryptographic randomness and keyed HMAC-SHA256 digests; only digests persist; refresh rotates; Android session credentials stay in the Keystore store | `backend/src/ids.js`, `backend/src/accounts.js`, `AccountSessionTokens` |
+| Session metadata | Lists reveal only server-generated labels/timestamps/current flag and an opaque revocation ID; no fingerprint, address, user agent, secret or digest | `backend/src/accounts.js`, `AccountRemoteSession` |
+| Client state | No password or token is held in account state or rendered. The session manager remains the only canonical session truth; temporary input arrays are cleared after use | `AccountSessionManager`, `AccountUiState`, `AccountSecurityBoundaryTest` |
+| Logging | Request logs record method/fixed-safe-route-label/status/duration/request ID only; attacker-controlled paths, query strings, email/token/provider exceptions, and headers are excluded. Android account code contains no logging call | `backend/src/server.js`, source-boundary tests |
 | Failure messages | Typed codes with user-facing wording generated by the app; no raw service message, stack trace, or exception text is ever shown | `AccountAuthErrorCode` → `AccountUiState` |
 | Separation | The account session store and the AI provider key store keep distinct Keystore namespaces and never share a file; provider keys are never attached to an account | `AccountSecurityBoundaryTest` |
 
-`AUTH_SECRET` is the one secret the service needs. It is read from the environment, must be at least 32 characters, and
-is never defaulted, generated, or logged. `.env.example` contains placeholders only, and `.env` is ignored by Git.
+`AUTH_SECRET` must be at least 32 characters, is read only from the environment, and is never generated, defaulted, or logged. Production also requires an HTTPS webhook URL, provider bearer token (at least 24 characters), sender address, HTTPS `PUBLIC_ORIGIN`, `TRUST_PROXY_TLS=true`, and a persistent SQLite file. `.env.example` contains placeholders only; never place production secrets in Git.
 
 ---
 
@@ -192,26 +172,28 @@ npm start                     # reads .env via Node's --env-file; never commit t
 npm test                      # node --no-warnings=ExperimentalWarning --test "test/*.test.js"
 ```
 
-Requires Node.js 22.5 or newer (for the built-in `node:sqlite`); the sandbox this phase was verified in runs 22.22.3.
-There are **no dependencies to install** — no framework, no ORM, no test runner to fetch. The suite is 35 tests across
-the endpoint contract (`test/accounts.test.js`), the security properties (`test/security.test.js`), and the four named
-data-clear/reinstall journeys (`test/scenarios.test.js`). Scenario C uses file-backed SQLite across a service restart.
+Requires Node.js 22.5 or newer for built-in `node:sqlite`; runtime dependencies are zero. `npm test` runs the endpoint, security-hardening, and persistent-SQLite journey suites. Tests use a deterministic local development mail sink; its private mailbox is available only to test code, never by HTTP. It does not deliver mail.
 
-Environment variables (`backend/.env.example`):
+Important environment variables (`backend/.env.example`):
 
 | Variable | Meaning |
 | --- | --- |
-| `DATABASE_URL` | SQLite file path, e.g. `./var/craftmind-auth.db`. In-memory databases are accepted only by the test harness |
-| `AUTH_SECRET` | At least 32 characters; keys the token digests |
-| `HOST`, `PORT` | Listen address and port (defaults `127.0.0.1`, `8787`) |
-| `ACCESS_TOKEN_TTL_SECONDS` | Access-token lifetime (default 3600) |
-| `REFRESH_TOKEN_TTL_SECONDS` | Refresh-token lifetime (default 2592000) |
-| `MAX_BODY_BYTES` | Request body cap (default 16384) |
-| `BACKEND_BASE_URL` | The public base URL, for deployment tooling. Not used by the Android client |
+| `NODE_ENV` | `development` by default; `production` enables strict provider/HTTPS startup gates |
+| `DATABASE_URL` | Persistent SQLite file. `:memory:` is allowed only when an explicit test option is passed |
+| `AUTH_SECRET` | At least 32 characters; keys all session and one-time token digests and limiter subjects |
+| `HOST`, `PORT` | Listen address/port; use `HOST=0.0.0.0` only behind an appropriate network/TLS boundary |
+| `EMAIL_PROVIDER` | Local development defaults to `memory`; production requires `webhook` |
+| `EMAIL_WEBHOOK_URL`, `EMAIL_WEBHOOK_TOKEN`, `EMAIL_FROM` | Production HTTPS JSON webhook URL, bearer token (≥24 characters), validated sender |
+| `PUBLIC_ORIGIN`, `TRUST_PROXY_TLS` | Production HTTPS origin and trusted TLS-terminator setting; requests must arrive with forwarded proto `https` |
+| `CORS_ALLOWED_ORIGINS` | Optional comma-separated exact HTTPS origins; wildcards/paths are rejected |
+| `ACCESS_TOKEN_TTL_SECONDS`, `REFRESH_TOKEN_TTL_SECONDS` | Session token lifetimes; defaults 3600 and 2592000 seconds |
+| `EMAIL_VERIFICATION_TTL_SECONDS`, `PASSWORD_RESET_TTL_SECONDS` | One-time code TTLs; defaults 86400 and 3600 seconds |
+| `MAX_BODY_BYTES` | JSON body limit; defaults to 16 KiB, upper bound 1 MiB |
+| `RATE_*` | Per-route maximums and windows for login/register/verification/resend/recovery/session operations |
 
-Pointing an Android build at it (the address must be HTTPS in a real build; a local service needs a TLS-terminating
-proxy in front of it, because the client refuses plain HTTP by design):
+The fixed-window limiter is process-local and bounded. Login/resend/recovery also use an independent HMAC-keyed email bucket in addition to the client-IP bucket; the bounded cache fails closed rather than evicting still-active buckets. A production deployment must either run one service instance or enforce equivalent/global limits at a trusted edge before horizontal scaling; process restart resets the windows. This implementation does not claim a deployment exists.
 
+Pointing an Android build at it (the app accepts HTTPS only; local HTTP requires a TLS-terminating proxy, and the development service must never be exposed directly):
 ```bash
 ./gradlew :app:assembleDebug -PcraftmindAccountBaseUrl=https://accounts.example.invalid
 # or: CRAFTMIND_ACCOUNT_BASE_URL=https://accounts.example.invalid ./gradlew :app:assembleDebug
@@ -238,16 +220,6 @@ tests on the app side.
 
 ## 9. Deliberately not implemented
 
-Stated here so that nothing above can be read as a promise:
-
-* **Email verification** — no verification email is sent, no verified flag exists, and the sign-up screen says so in
-  those words.
-* **Password reset** — `POST /auth/password-reset` answers `501 PASSWORD_RESET_NOT_IMPLEMENTED`. The endpoint exists so
-  the contract is real and a future phase can implement it without a redesign; it does not pretend to send mail.
-* **Account deletion** — no deletion workflow. The app's deletion request returns `NOT_IMPLEMENTED_BY_SERVICE`, and no
-  "DELETE ACCOUNT" control exists anywhere.
-* **Cloud sync, cross-device history, account-owned builds, creator profiles, marketplace, subscriptions, payments,
-  credits, gifts, bans, entitlements, admin tooling, developer accounts, and any AI-facing account system** — not
-  implemented, not referenced in the UI, and not modelled in the database.
-* **OAuth / social sign-in** — the domain distinguishes sign-in methods and has an authorization-code request type, but
-  no provider is implemented or configured.
+* **Account deletion** remains unavailable. The service/authenticator returns `NOT_IMPLEMENTED_BY_SERVICE`; no deletion is faked, no local data is removed by the request, and users must be told the service did not implement it.
+* **Production email delivery is not deployed/configured by this repository.** The provider-neutral HTTPS webhook adapter exists, and production startup requires it, but no provider account, endpoint, credential, or deployment is included. The development sink is private, in-memory, test-only, and sends no email.
+* **Developer/Admin system, Developer AI, memberships, credits, gifts, bans/Admin moderation, subscriptions, payments, marketplace, public account dashboard, OAuth/social sign-in, sync, cross-device history, and account-owned builds** are **NOT IMPLEMENTED**. No route, entitlement, admin authority, or Minecraft runtime permission is added by sign-in.

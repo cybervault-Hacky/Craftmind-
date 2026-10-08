@@ -4,6 +4,7 @@ import com.craftmind.app.designsystem.CraftMindTone
 import com.craftmind.app.domain.account.AccountAuthErrorCode
 import com.craftmind.app.domain.account.AccountAvailabilityReason
 import com.craftmind.app.domain.account.AccountDeletionOutcome
+import com.craftmind.app.domain.account.AccountEmailDeliveryStatus
 import com.craftmind.app.domain.account.AccountSession
 import com.craftmind.app.domain.account.AccountSessionSource
 import com.craftmind.app.domain.account.AccountState
@@ -76,6 +77,40 @@ class AccountUiStateTest {
         )
         assertEquals(CraftMindTone.INFORMATIVE, unavailableCopy.tone)
         assertEquals(CraftMindTone.NEGATIVE, rejected.tone)
+    }
+
+    @Test
+    fun registrationWaitsForEmailVerificationAndStatesLocalSinkHonestly() {
+        val identity = testIdentity()
+        val ui = accountUiState(
+            state = AccountState.VerificationRequired(identity, AccountEmailDeliveryStatus.DEVELOPMENT_SINK),
+            availability = AccountAuthenticationAvailability.Available,
+            nowMillis = nowMillis,
+            formMode = AccountFormMode.SIGN_UP,
+        )
+
+        assertTrue(ui.emailVerificationRequired)
+        assertEquals(false, ui.emailVerified)
+        assertEquals(AccountFormMode.NONE, ui.formMode)
+        assertTrue(ui.emailVerificationLine.orEmpty().contains("No email was sent"))
+        assertNull(ui.sessionLine)
+    }
+
+    @Test
+    fun emailVerificationAloneOffersSignInButDoesNotCreateASession() {
+        val identity = testIdentity()
+        val ui = accountUiState(
+            state = AccountState.EmailVerified(identity),
+            availability = AccountAuthenticationAvailability.Available,
+            nowMillis = nowMillis,
+        )
+
+        assertEquals("Email verified", ui.modeLabel)
+        assertTrue(ui.emailVerified == true)
+        assertNull(ui.sessionLine)
+        assertEquals(AccountFormMode.NONE, ui.formMode)
+        assertTrue(ui.showsAccountActions)
+        assertTrue(ui.detail.contains("Sign in"))
     }
 
     @Test

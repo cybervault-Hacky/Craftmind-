@@ -5,6 +5,8 @@ import com.craftmind.app.domain.account.AccountAuthErrorCode
 import com.craftmind.app.domain.account.AccountAuthenticationAvailability
 import com.craftmind.app.domain.account.AccountAvailabilityReason
 import com.craftmind.app.domain.account.AccountDeletionOutcome
+import com.craftmind.app.domain.account.AccountEmailDeliveryStatus
+import com.craftmind.app.domain.account.AccountRemoteSession
 import com.craftmind.app.domain.account.AccountSession
 import com.craftmind.app.domain.account.AccountSessionEndReason
 import com.craftmind.app.domain.account.AccountSessionSource
@@ -91,6 +93,14 @@ data class AccountUiState(
     val guestLine: String,
     /** Field-level complaints for the form that is open. Empty when the form is valid or closed. */
     val formIssues: List<AccountFormIssue>,
+    val emailVerified: Boolean? = null,
+    val emailVerificationRequired: Boolean = false,
+    val emailVerificationLine: String? = null,
+    val securityPanel: AccountSecurityPanel = AccountSecurityPanel.NONE,
+    val securityOperationState: AccountSecurityOperationState = AccountSecurityOperationState.IDLE,
+    val securityMessage: String? = null,
+    val securitySessions: List<AccountRemoteSession> = emptyList(),
+    val securityIssues: List<AccountSecurityIssue> = emptyList(),
 )
 
 /** The account form a surface is showing. */
@@ -98,6 +108,14 @@ enum class AccountFormMode {
     NONE,
     SIGN_IN,
     SIGN_UP,
+}
+
+enum class AccountSecurityPanel { NONE, FORGOT_PASSWORD, VERIFY_EMAIL, RESET_PASSWORD, CHANGE_PASSWORD, SESSIONS }
+enum class AccountSecurityField { EMAIL, TOKEN, CURRENT_PASSWORD, NEW_PASSWORD, CONFIRM_PASSWORD }
+data class AccountSecurityIssue(val field: AccountSecurityField, val message: String)
+enum class AccountSecurityOperationState {
+    IDLE, SUBMITTING, SUCCESS, INVALID_INPUT, EXPIRED_TOKEN, INVALID_TOKEN,
+    NETWORK_UNAVAILABLE, BACKEND_UNAVAILABLE, RATE_LIMITED, UNKNOWN_ERROR,
 }
 
 /** Compact projection for the Settings group. */
@@ -124,6 +142,11 @@ fun accountUiState(
     deletionOutcome: AccountDeletionOutcome? = null,
     formMode: AccountFormMode = AccountFormMode.NONE,
     formIssues: List<AccountFormIssue> = emptyList(),
+    securityPanel: AccountSecurityPanel = AccountSecurityPanel.NONE,
+    securityOperationState: AccountSecurityOperationState = AccountSecurityOperationState.IDLE,
+    securityMessage: String? = null,
+    securitySessions: List<AccountRemoteSession> = emptyList(),
+    securityIssues: List<AccountSecurityIssue> = emptyList(),
 ): AccountUiState {
     val unavailableReason = (availability as? AccountAuthenticationAvailability.Unavailable)?.reason
     val base = AccountUiState(
@@ -143,13 +166,16 @@ fun accountUiState(
         secondaryAction = null,
         actionUnavailableReason = unavailableReason?.let(::signInUnavailableReason),
         showsAccountActions = unavailableReason == null,
-        formBusy = state is AccountState.SigningIn,
+        formBusy = state is AccountState.SigningIn || securityOperationState == AccountSecurityOperationState.SUBMITTING,
         accessibilityLabel = "Account status: local mode. CraftMind works on this device without an account.",
         ownershipRecorded = ownershipRecorded,
         deletionLine = deletionOutcome?.let(::deletionOutcomeLine),
         // A form is shown while it can lead somewhere: never without a service, never once signed in, and always while a
         // submission is in flight or has just failed, so the answer lands next to the fields that caused it.
-        formMode = if (unavailableReason == null && state !is AccountState.Authenticated) {
+        formMode = if (
+            unavailableReason == null && state !is AccountState.Authenticated &&
+                state !is AccountState.VerificationRequired && state !is AccountState.EmailVerified
+        ) {
             formMode
         } else {
             AccountFormMode.NONE
@@ -157,6 +183,11 @@ fun accountUiState(
         passwordRuleLine = PASSWORD_RULE_LINE,
         guestLine = GUEST_LINE,
         formIssues = if (unavailableReason == null && formMode != AccountFormMode.NONE) formIssues else emptyList(),
+        securityPanel = securityPanel,
+        securityOperationState = securityOperationState,
+        securityMessage = securityMessage,
+        securitySessions = securitySessions,
+        securityIssues = securityIssues,
     )
     return when (state) {
         AccountState.Guest -> base
@@ -172,6 +203,34 @@ fun accountUiState(
             accessibilityLabel = "Account status: signing in.",
         )
 
+        is AccountState.VerificationRequired -> base.copy(
+            modeLabel = "Verify email",
+            tone = CraftMindTone.CAUTION,
+            headline = "Your account needs email verification",
+            detail = "The account was created, but no sign-in session exists until the email address is verified.",
+            identityName = state.identity.displayName,
+            identityReference = state.identity.maskedEmailAddress,
+            emailVerified = false,
+            emailVerificationRequired = true,
+            emailVerificationLine = verificationDeliveryLine(state.deliveryStatus),
+            primaryAction = null,
+            showsAccountActions = false,
+            accessibilityLabel = "Account status: email verification required for ${state.identity.displayName}.",
+        )
+
+        is AccountState.EmailVerified -> base.copy(
+            modeLabel = "Email verified",
+            tone = CraftMindTone.POSITIVE,
+            headline = "Email verified",
+            detail = "Your email address is verified. Sign in to establish a session on this device.",
+            identityName = state.identity.displayName,
+            identityReference = state.identity.maskedEmailAddress,
+            emailVerified = true,
+            primaryAction = null,
+            showsAccountActions = true,
+            accessibilityLabel = "Account status: email verified. Sign in to continue.",
+        )
+
         is AccountState.Authenticated -> {
             val session = state.session
             base.copy(
@@ -183,6 +242,8 @@ fun accountUiState(
                 identityReference = session.identity.maskedEmailAddress,
                 identityProviderLine = "CraftMind account · ${session.method.name.lowercase().replace('_', ' ')}",
                 sessionLine = describeSession(session, nowMillis),
+                emailVerified = true,
+                emailVerificationLine = "Email verified",
                 primaryAction = AccountAction.SignOut,
                 showsAccountActions = false,
                 accessibilityLabel = "Account status: signed in as ${session.identity.displayName}. " +
@@ -389,6 +450,18 @@ private fun failureCopy(error: AccountAuthErrorCode): FailureCopy = when (error)
         action = AccountAction.SignIn,
     )
 
+    AccountAuthErrorCode.EMAIL_NOT_VERIFIED -> FailureCopy(
+        headline = "Verify your email before signing in",
+        detail = "The credentials were accepted, but this account has no verified email yet. Resend the verification message from the account screen.",
+        action = null,
+    )
+
+    AccountAuthErrorCode.RATE_LIMITED -> FailureCopy(
+        headline = "Too many attempts",
+        detail = "The account service is temporarily limiting sign-in attempts. Wait a while before trying again.",
+        action = null,
+    )
+
     AccountAuthErrorCode.NETWORK_UNAVAILABLE -> FailureCopy(
         headline = "No network connection",
         detail = "The account service could not be reached from this device. Local features are unaffected.",
@@ -455,6 +528,15 @@ private fun failureCopy(error: AccountAuthErrorCode): FailureCopy = when (error)
             "contain credentials. Nothing on this device changed.",
         action = AccountAction.TryAgain,
     )
+}
+
+private fun verificationDeliveryLine(status: AccountEmailDeliveryStatus): String = when (status) {
+    AccountEmailDeliveryStatus.PROVIDER_ACCEPTED,
+    AccountEmailDeliveryStatus.SENT -> "The configured email provider accepted the verification request. It has not confirmed delivery; check your inbox and spam folder."
+    AccountEmailDeliveryStatus.DEVELOPMENT_SINK -> "No email was sent: this build uses a local development sink. Configure a real email provider before production use."
+    AccountEmailDeliveryStatus.PROVIDER_CONFIGURED -> "Email delivery is configured. Request a verification message when ready."
+    AccountEmailDeliveryStatus.UNAVAILABLE -> "The account was created, but email delivery did not complete. You can retry sending the verification message."
+    AccountEmailDeliveryStatus.NOT_APPLICABLE -> "Use the verification action to request a one-time code."
 }
 
 private fun availabilityLine(reason: AccountAvailabilityReason): String = when (reason) {

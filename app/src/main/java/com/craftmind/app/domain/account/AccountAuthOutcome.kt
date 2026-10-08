@@ -11,6 +11,9 @@ enum class AccountAuthErrorCode(val retryable: Boolean) {
     /** The account service rejected the credentials. Distinct from [AUTHENTICATION_UNAVAILABLE]. */
     INVALID_CREDENTIALS(retryable = false),
 
+    /** Credentials were accepted, but the account needs email verification before a session can be issued. */
+    EMAIL_NOT_VERIFIED(retryable = false),
+
     /** The user cancelled. */
     CANCELLED(retryable = true),
 
@@ -19,6 +22,9 @@ enum class AccountAuthErrorCode(val retryable: Boolean) {
 
     /** The account service answered with an error. */
     SERVICE_UNAVAILABLE(retryable = true),
+
+    /** A server-side attempt limit was reached. */
+    RATE_LIMITED(retryable = true),
 
     /** Authentication is not offered by this build. */
     AUTHENTICATION_UNAVAILABLE(retryable = false),
@@ -54,6 +60,12 @@ sealed interface AccountAuthOutcome {
     data class Success(
         val session: AccountSession,
         val credential: AccountSessionCredential,
+    ) : AccountAuthOutcome
+
+    /** Registration completed, but the server did not issue a session until the mailbox is verified. */
+    data class VerificationRequired(
+        val identity: AccountIdentity,
+        val deliveryStatus: AccountEmailDeliveryStatus,
     ) : AccountAuthOutcome
 
     /** The attempt was made and failed. */

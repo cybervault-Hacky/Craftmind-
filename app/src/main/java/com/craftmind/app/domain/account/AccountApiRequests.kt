@@ -18,7 +18,16 @@ object AccountApiRequests {
     const val LOGOUT_PATH = "/auth/logout"
     const val CURRENT_ACCOUNT_PATH = "/auth/me"
     const val GUEST_PATH = "/auth/guest"
-    const val PASSWORD_RESET_PATH = "/auth/password-reset"
+    const val VERIFY_EMAIL_PATH = "/auth/verify-email"
+    const val RESEND_VERIFICATION_PATH = "/auth/resend-verification"
+    const val PASSWORD_RESET_REQUEST_PATH = "/auth/password-reset/request"
+    const val PASSWORD_RESET_CONFIRM_PATH = "/auth/password-reset/confirm"
+    const val PASSWORD_CHANGE_PATH = "/auth/password/change"
+    const val SESSIONS_PATH = "/auth/sessions"
+    const val SESSION_REVOKE_PATH = "/auth/sessions/revoke"
+    const val SESSIONS_REVOKE_ALL_PATH = "/auth/sessions/revoke-all"
+    const val PASSWORD_RESET_PATH = PASSWORD_RESET_REQUEST_PATH
+    const val DEFAULT_DEVICE_LABEL = "CraftMind on Android"
 
     fun register(
         emailAddress: String,
@@ -30,12 +39,14 @@ object AccountApiRequests {
         "password" to String(password),
         "displayName" to displayName,
         "guestIdentityId" to guestIdentityId,
+        "deviceLabel" to DEFAULT_DEVICE_LABEL,
     )
 
     fun login(emailAddress: String, password: CharArray, guestIdentityId: String?): String = buildJsonBody(
         "email" to emailAddress,
         "password" to String(password),
         "guestIdentityId" to guestIdentityId,
+        "deviceLabel" to DEFAULT_DEVICE_LABEL,
     )
 
     fun refresh(refreshToken: CharArray): String = buildJsonBody("refreshToken" to String(refreshToken))
@@ -45,8 +56,21 @@ object AccountApiRequests {
 
     fun guestIdentity(guestIdentityId: String): String = buildJsonBody("guestIdentityId" to guestIdentityId)
 
-    /** Password reset exists as a contract only; calling it is how a client learns it is not implemented. */
-    fun passwordReset(emailAddress: String): String = buildJsonBody("email" to emailAddress)
+    fun verifyEmail(token: CharArray): String = buildJsonBody("token" to String(token))
+    fun resendVerification(emailAddress: String): String = buildJsonBody("email" to emailAddress)
+    fun requestPasswordReset(emailAddress: String): String = buildJsonBody("email" to emailAddress)
+    fun confirmPasswordReset(token: CharArray, newPassword: CharArray): String = buildJsonBody(
+        "token" to String(token),
+        "newPassword" to String(newPassword),
+    )
+    fun changePassword(currentPassword: CharArray, newPassword: CharArray): String = buildJsonBody(
+        "currentPassword" to String(currentPassword),
+        "newPassword" to String(newPassword),
+    )
+    fun revokeSession(sessionId: String): String = buildJsonBody("sessionId" to sessionId)
+
+    /** Backwards-compatible name for callers of the old request-only contract. */
+    fun passwordReset(emailAddress: String): String = requestPasswordReset(emailAddress)
 
     private fun buildJsonBody(vararg members: Pair<String, String?>): String {
         val present = members.filter { (_, value) -> value != null }

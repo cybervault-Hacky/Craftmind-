@@ -65,12 +65,18 @@ fun AccountSignInForm(
             imeAction = ImeAction.Done,
             issue = state.issueFor(AccountFormField.PASSWORD),
         )
-        Text(
-            text = "Forgot password? Password reset is not available yet: CraftMind has no way to send a reset " +
-                "email, and it will not pretend to have sent one.",
-            style = CraftMindType.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(modifier = Modifier.fillMaxWidth()) {
+            CraftMindTertiaryButton(
+                text = "Forgot password?",
+                onClick = { onEvent(AccountUiEvent.SecurityPanelRequested(AccountSecurityPanel.FORGOT_PASSWORD)) },
+                enabled = !busy,
+            )
+            CraftMindTertiaryButton(
+                text = "Resend verification",
+                onClick = { onEvent(AccountUiEvent.SecurityPanelRequested(AccountSecurityPanel.VERIFY_EMAIL)) },
+                enabled = !busy,
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -161,8 +167,8 @@ fun AccountSignUpForm(
             issue = state.issueFor(AccountFormField.CONFIRM_PASSWORD),
         )
         Text(
-            text = "Email verification is not implemented yet: no verification email is sent, and CraftMind will " +
-                "not claim that one was.",
+            text = "Verify your email before signing in. A session is not created until the address is verified; " +
+                "delivery status is shown honestly for this service configuration.",
             style = CraftMindType.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

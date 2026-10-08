@@ -76,6 +76,15 @@ sealed interface AccountState {
         val previousIdentity: AccountIdentity?,
     ) : AccountState
 
+    /** Account created, but no authenticated session exists until the address is verified. */
+    data class VerificationRequired(
+        val identity: AccountIdentity,
+        val deliveryStatus: AccountEmailDeliveryStatus,
+    ) : AccountState
+
+    /** The address has been verified; the user must sign in to establish a session. */
+    data class EmailVerified(val identity: AccountIdentity) : AccountState
+
     /** A session is active. */
     data class Authenticated(val session: AccountSession) : AccountState
 
@@ -105,6 +114,8 @@ sealed interface AccountState {
 fun AccountState.identityOrNull(): AccountIdentity? = when (this) {
     AccountState.Guest -> null
     is AccountState.SigningIn -> previousIdentity
+    is AccountState.VerificationRequired -> identity
+    is AccountState.EmailVerified -> identity
     is AccountState.Authenticated -> session.identity
     is AccountState.SigningOut -> previousIdentity
     is AccountState.SessionExpired -> lastIdentity

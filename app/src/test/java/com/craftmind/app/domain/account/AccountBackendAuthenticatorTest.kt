@@ -72,6 +72,76 @@ class AccountBackendAuthenticatorTest {
     }
 
     @Test
+    fun registrationRequiresEmailVerificationWithoutPersistingAnUnauthenticatedSession() {
+        api.configured = true
+        val response = AccountRegistration(
+            record(AccountServerStatus.ACTIVE).copy(emailVerified = false),
+            session = null,
+            verificationRequired = true,
+            deliveryStatus = AccountEmailDeliveryStatus.DEVELOPMENT_SINK,
+        )
+        api.nextRegistration = AccountApiOutcome.Success(response)
+        val sessionStore = FakeAccountSessionStore()
+        val manager = AccountSessionManager(authenticator, sessionStore, clock)
+
+        val state = manager.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
+
+        assertEquals(
+            AccountState.VerificationRequired(
+                response.record.toIdentity(),
+                AccountEmailDeliveryStatus.DEVELOPMENT_SINK,
+            ),
+            state,
+        )
+        assertEquals("an unverified account must not create a device session", 0, sessionStore.saveCalls)
+    }
+
+    @Test
+    fun successfulEmailVerificationCreatesNoSessionUntilTheUserSignsIn() {
+        api.configured = true
+        val unverifiedRecord = record(AccountServerStatus.ACTIVE).copy(emailVerified = false)
+        api.nextRegistration = AccountApiOutcome.Success(
+            AccountRegistration(unverifiedRecord, null, verificationRequired = true, deliveryStatus = AccountEmailDeliveryStatus.PROVIDER_ACCEPTED),
+        )
+        val store = FakeAccountSessionStore()
+        val manager = AccountSessionManager(authenticator, store, clock)
+        manager.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
+
+        val token = CharArray(43) { 't' }
+        api.nextVerification = AccountApiOutcome.Success(AccountEmailVerificationResult(record(AccountServerStatus.ACTIVE)))
+        assertTrue(manager.verifyEmail(token) is AccountApiOutcome.Success)
+
+        assertTrue(token.all { it == '\u0000' })
+        assertEquals(AccountState.EmailVerified(unverifiedRecord.toIdentity()), manager.state())
+        assertEquals("verification alone cannot persist an authenticated session", 0, store.saveCalls)
+    }
+
+    @Test
+    fun theCanonicalManagerOwnsSecurityTokensAndDelegatesSessionOperations() {
+        api.configured = true
+        api.nextRegistration = AccountApiOutcome.Success(registration(expiresAt = 5_000L))
+        val sessionStore = FakeAccountSessionStore()
+        val manager = AccountSessionManager(authenticator, sessionStore, clock)
+        manager.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
+
+        api.nextPasswordChange = AccountApiOutcome.Success(AccountPasswordChangeResult(true, 2))
+        val currentPassword = "CurrentPass1!".toCharArray()
+        val newPassword = "NewPassw0rd!".toCharArray()
+        assertEquals(AccountPasswordChangeResult(true, 2), (manager.changePassword(currentPassword, newPassword) as AccountApiOutcome.Success).value)
+        assertTrue(currentPassword.all { it == '\u0000' })
+        assertTrue(newPassword.all { it == '\u0000' })
+
+        val remote = AccountRemoteSession("ses-other", 100L, 200L, 300L, "Android device", false)
+        api.nextSessions = AccountApiOutcome.Success(AccountSessionList(listOf(remote)))
+        assertEquals(listOf(remote), (manager.listSessions() as AccountApiOutcome.Success).value.sessions)
+        api.nextSessionRevocation = AccountApiOutcome.Success(Unit)
+        assertTrue(manager.revokeSession(remote.sessionId) is AccountApiOutcome.Success)
+        assertEquals(remote.sessionId, api.lastSessionId)
+        api.nextRevokeSessions = AccountApiOutcome.Success(AccountRevokeSessionsResult(1, true))
+        assertEquals(1, (manager.revokeOtherSessions() as AccountApiOutcome.Success).value.revokedSessions)
+    }
+
+    @Test
     fun registeringReturnsASessionBuiltFromWhatTheServiceReported() {
         api.configured = true
         val serviceResponse = registration(expiresAt = 5_000L)
@@ -87,7 +157,7 @@ class AccountBackendAuthenticatorTest {
         assertNotNull(success.credential)
         assertFalse(
             "the raw tokens in the API response must be destroyed after the encrypted credential is made",
-            runCatching { serviceResponse.session.tokens.useTokens { _, _ -> Unit } }.isSuccess,
+            runCatching { requireNotNull(serviceResponse.session).tokens.useTokens { _, _ -> Unit } }.isSuccess,
         )
         // The anonymous identity is offered so the service can link it; it is never required.
         assertEquals(store.stored, api.lastGuestIdentityId)
@@ -127,15 +197,18 @@ class AccountBackendAuthenticatorTest {
     }
 
     @Test
-    fun aServiceThatAnswersWithASuspendedAccountDoesNotSignAnyoneIn() {
+    fun aServiceThatAnswersWithASuspendedAccountDoesNotSignAnyoneInOrRetainItsTokens() {
         api.configured = true
-        api.nextRegistration = AccountApiOutcome.Success(
-            registration(expiresAt = 5_000L, status = AccountServerStatus.SUSPENDED),
-        )
+        val response = registration(expiresAt = 5_000L, status = AccountServerStatus.SUSPENDED)
+        api.nextRegistration = AccountApiOutcome.Success(response)
 
         val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertEquals(AccountAuthErrorCode.ACCOUNT_SUSPENDED, (outcome as AccountAuthOutcome.Failure).error)
+        assertFalse(
+            "tokens attached to an unusable suspended-account response must be destroyed",
+            runCatching { requireNotNull(response.session).tokens.useTokens { _, _ -> Unit } }.isSuccess,
+        )
     }
 
     // ------------------------------------------------------------------------------------------------ sign in
@@ -525,7 +598,17 @@ class FakeAccountApi : AccountApi {
     var nextRefresh: AccountApiOutcome<AccountServerSession>? = null
     var nextLogout: AccountApiOutcome<Unit>? = null
     var nextGuest: AccountApiOutcome<Unit>? = null
+    var nextVerification: AccountApiOutcome<AccountEmailVerificationResult>? = null
+    var nextOperationReceipt: AccountApiOutcome<AccountOperationReceipt>? = null
+    var nextPasswordChange: AccountApiOutcome<AccountPasswordChangeResult>? = null
+    var nextSessions: AccountApiOutcome<AccountSessionList>? = null
+    var nextRevokeSessions: AccountApiOutcome<AccountRevokeSessionsResult>? = null
+    var nextSessionRevocation: AccountApiOutcome<Unit>? = null
 
+    var lastSecurityToken: CharArray? = null
+        private set
+    var lastSessionId: String? = null
+        private set
     var lastGuestIdentityId: String? = null
         private set
     var lastEmail: String? = null
@@ -581,5 +664,45 @@ class FakeAccountApi : AccountApi {
         calls++
         lastGuestIdentityId = guestIdentityId
         return requireNotNull(nextGuest) { "the test did not queue a guest-identity answer" }
+    }
+
+    override fun verifyEmail(token: CharArray): AccountApiOutcome<AccountEmailVerificationResult> {
+        calls++
+        lastSecurityToken = token
+        return requireNotNull(nextVerification) { "the test did not queue a verification answer" }
+    }
+    override fun resendVerification(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> {
+        calls++
+        lastEmail = emailAddress
+        return requireNotNull(nextOperationReceipt) { "the test did not queue a resend answer" }
+    }
+    override fun requestPasswordReset(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> {
+        calls++
+        lastEmail = emailAddress
+        return requireNotNull(nextOperationReceipt) { "the test did not queue a recovery answer" }
+    }
+    override fun confirmPasswordReset(token: CharArray, newPassword: CharArray): AccountApiOutcome<AccountOperationReceipt> {
+        calls++
+        lastSecurityToken = token
+        lastPassword = newPassword
+        return requireNotNull(nextOperationReceipt) { "the test did not queue a reset answer" }
+    }
+    override fun changePassword(accessToken: CharArray, currentPassword: CharArray, newPassword: CharArray): AccountApiOutcome<AccountPasswordChangeResult> {
+        calls++
+        lastPassword = newPassword
+        return requireNotNull(nextPasswordChange) { "the test did not queue a password-change answer" }
+    }
+    override fun listSessions(accessToken: CharArray): AccountApiOutcome<AccountSessionList> {
+        calls++
+        return requireNotNull(nextSessions) { "the test did not queue a session-list answer" }
+    }
+    override fun revokeSession(accessToken: CharArray, sessionId: String): AccountApiOutcome<Unit> {
+        calls++
+        lastSessionId = sessionId
+        return requireNotNull(nextSessionRevocation) { "the test did not queue a session-revocation answer" }
+    }
+    override fun revokeOtherSessions(accessToken: CharArray): AccountApiOutcome<AccountRevokeSessionsResult> {
+        calls++
+        return requireNotNull(nextRevokeSessions) { "the test did not queue a revoke-other-sessions answer" }
     }
 }

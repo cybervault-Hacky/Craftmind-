@@ -395,9 +395,7 @@ is tested on the JVM:
 
 ### 9.3 Session lifecycle
 
-1. **Launch.** `AccountSessionManager.restoreSession()` reads the encrypted record. An unexpired session is restored
-   with source `RESTORED_ON_DEVICE` and **no network round trip**; the UI says "restored from this device, not
-   re-checked", because that is what happened.
+1. **Launch.** This section records the Phase 16 starting point. Phase 17 changed configured builds to confirm an unexpired encrypted session with `GET /auth/me` before treating it as authenticated; an absent/unavailable service remains an explicit local-mode state. Phase 18 adds verification, recovery, and remote session security. See [`account-authentication.md`](account-authentication.md) for the current service-authoritative lifecycle.
 2. **Expiry.** A session whose service-declared expiry has passed is refreshed when the contract allows it. If refresh
    fails because the service is unreachable, the record is **kept** (the session may still be recoverable); if the
    service rejects it, the record is destroyed. An unreadable record is discarded and reported as such. CraftMind never
@@ -451,10 +449,11 @@ Guest/local mode is first class and explicit, not an error state:
 
 ### 9.7 Website
 
-The website keeps its eight pages and its navigation. Its existing statements about accounts were corrected in this
-phase to match reality: there is no account service to sign in to yet, so no account can be created, nothing is synced,
-and no "coming soon" account feature is advertised. The FAQ answer now states exactly what ships (an account foundation
-with local mode) and what does not.
+The website keeps its eight pages, navigation, and disabled APK download until a signed artifact exists. Phase 18
+corrects its account/privacy copy: the app/repository support account authentication when a service URL is configured,
+but this repository operates no production endpoint or email provider; account data is not used for cloud sync, and
+account deletion is unavailable. Marketplace, payments, subscriptions, and other excluded systems are not advertised as
+implemented.
 
 ### 9.8 Future cloud extension points
 
@@ -501,6 +500,7 @@ The pure account production sources also compile with Kotlin 2.1.10 (one existin
 instrumented tests, and a device-to-service round trip were not compiled or exercised. The full application suite's last
 recorded run remains Phase 15 (358 run, 5 pre-existing failures, 0 errors).
 
-**Phase 17 current verification:** backend `npm test` **PASS (35 tests, 0 failures)**; account JVM methods **PASS
-(163/163; temporary assertion runner)**; design/navigation methods **PASS (19/19; temporary assertion runner)**;
-`ANDROID_BUILD = NOT_RUN`.
+**Phase 17 verification record (historical baseline):** backend `npm test` **PASS (35 tests, 0 failures)**; account JVM
+methods **PASS (163/163; temporary assertion runner)**; design/navigation methods **PASS (19/19; temporary assertion
+runner)**; `ANDROID_BUILD = NOT_RUN`. Phase 18 verification and current limitations are recorded in
+[`account-authentication.md`](account-authentication.md) and the root README.

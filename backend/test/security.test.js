@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { call, guestIdentity, loginCall, register, VALID_PASSWORD, startService, TEST_SECRET } from "./helpers.js";
+import { call, guestIdentity, loginCall, register, registerVerified, VALID_PASSWORD, startService, TEST_SECRET } from "./helpers.js";
 
 describe("account service security", () => {
   let service;
@@ -38,7 +38,7 @@ describe("account service security", () => {
   });
 
   it("stores session tokens only as keyed digests, never as the raw token", async () => {
-    const created = await register(service.baseUrl, { email: "digest@example.com" });
+    const created = await registerVerified(service, { email: "digest@example.com" });
     const { accessToken, refreshToken } = created.body.session;
 
     const row = service.database
@@ -54,7 +54,7 @@ describe("account service security", () => {
   });
 
   it("derives a different digest for the same token under a different service secret", async () => {
-    const created = await register(service.baseUrl, { email: "rotate@example.com" });
+    const created = await registerVerified(service, { email: "rotate@example.com" });
     const anotherService = await startService({ AUTH_SECRET: `${TEST_SECRET}-rotated` });
     try {
       // The same token, presented to a service with a different AUTH_SECRET, matches nothing: the digest is keyed.
@@ -71,7 +71,7 @@ describe("account service security", () => {
     const password = "Echo Me 4Never";
     const wrong = await loginCall(service.baseUrl, { email: "echo@example.com", password });
     await register(service.baseUrl, { email: "echo2@example.com" });
-    const created = await register(service.baseUrl, { email: "echo3@example.com" });
+    const created = await registerVerified(service, { email: "echo3@example.com" });
     const badRefresh = await call(service.baseUrl, "POST", "/auth/refresh", {
       body: { refreshToken: created.body.session.refreshToken, password: VALID_PASSWORD, accessToken: "should-not-be-needed" },
     });
@@ -88,17 +88,21 @@ describe("account service security", () => {
 
   it("never writes a credential to the service log", async () => {
     const password = "Log Never 9Seen";
-    const created = await register(service.baseUrl, { email: "log@example.com" });
+    const created = await registerVerified(service, { email: "log@example.com" });
     await loginCall(service.baseUrl, { email: "log@example.com", password });
     await call(service.baseUrl, "POST", "/auth/refresh", { body: { refreshToken: created.body.session.refreshToken } });
     await call(service.baseUrl, "POST", "/auth/logout", { body: { accessToken: created.body.session.accessToken } });
+    const tokenInUnknownPath = "path-secret-".repeat(5);
+    await call(service.baseUrl, "GET", `/auth/${tokenInUnknownPath}`);
 
     const logged = service.logs.join("\n");
     assert.equal(logged.includes(password), false);
     assert.equal(logged.includes(VALID_PASSWORD), false);
     assert.equal(logged.includes(created.body.session.accessToken), false);
     assert.equal(logged.includes(created.body.session.refreshToken), false);
-    assert.ok(logged.includes("POST /auth/login"), "the access log still records the route");
+    assert.equal(logged.includes(tokenInUnknownPath), false, "an attacker-controlled path must not be reflected in logs");
+    assert.ok(logged.includes('"route":"/auth/login"'), "the structured access log still records the route");
+    assert.ok(logged.includes('"route":"/unmatched"'), "unknown paths are represented by a fixed safe label");
   });
 
   it("does not accept a client-asserted session or status", async () => {
@@ -133,11 +137,13 @@ describe("account service security", () => {
     assert.equal(wrongMethod.body.error.code, "METHOD_NOT_ALLOWED");
   });
 
-  it("declares password reset as not implemented rather than pretending", async () => {
+  it("keeps the legacy password-reset request route enumeration-safe while using the recovery flow", async () => {
     const response = await call(service.baseUrl, "POST", "/auth/password-reset", { body: { email: "anyone@example.com" } });
 
-    assert.equal(response.status, 501);
-    assert.equal(response.body.error.code, "PASSWORD_RESET_NOT_IMPLEMENTED");
+    assert.equal(response.status, 202);
+    assert.equal(response.body.accepted, true);
+    assert.equal(JSON.stringify(response.body).includes("anyone@example.com"), false);
+    assert.equal(JSON.stringify(response.body).includes("token"), false);
   });
 
   it("changes nothing for an unauthenticated caller and creates no account it was not asked to create", async () => {
@@ -171,7 +177,14 @@ describe("account service security", () => {
       .filter((name) => !name.startsWith("sqlite_"))
       .sort();
 
-    assert.deepEqual(tables, ["guest_identities", "schema_migrations", "sessions", "users"]);
+    assert.deepEqual(tables, [
+      "email_verification_tokens",
+      "guest_identities",
+      "password_recovery_tokens",
+      "schema_migrations",
+      "sessions",
+      "users",
+    ]);
     for (const forbidden of ["subscription", "payment", "credit", "gift", "ban", "marketplace", "admin", "developer", "entitlement"]) {
       assert.equal(
         tables.some((name) => name.includes(forbidden)),

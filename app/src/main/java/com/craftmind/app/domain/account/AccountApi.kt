@@ -37,6 +37,15 @@ interface AccountApi {
 
     /** Introduces an anonymous guest identity to the service so it can be linked at registration. */
     fun registerGuestIdentity(guestIdentityId: String): AccountApiOutcome<Unit>
+
+    fun verifyEmail(token: CharArray): AccountApiOutcome<AccountEmailVerificationResult>
+    fun resendVerification(emailAddress: String): AccountApiOutcome<AccountOperationReceipt>
+    fun requestPasswordReset(emailAddress: String): AccountApiOutcome<AccountOperationReceipt>
+    fun confirmPasswordReset(token: CharArray, newPassword: CharArray): AccountApiOutcome<AccountOperationReceipt>
+    fun changePassword(accessToken: CharArray, currentPassword: CharArray, newPassword: CharArray): AccountApiOutcome<AccountPasswordChangeResult>
+    fun listSessions(accessToken: CharArray): AccountApiOutcome<AccountSessionList>
+    fun revokeSession(accessToken: CharArray, sessionId: String): AccountApiOutcome<Unit>
+    fun revokeOtherSessions(accessToken: CharArray): AccountApiOutcome<AccountRevokeSessionsResult>
 }
 
 /** What an account-service call produced. */
@@ -77,6 +86,22 @@ enum class AccountApiErrorCode(val wireValue: String, val retryable: Boolean) {
     AUTHENTICATION_REQUIRED("AUTHENTICATION_REQUIRED", retryable = false),
     INVALID_GUEST_IDENTITY("INVALID_GUEST_IDENTITY", retryable = false),
     GUEST_IDENTITY_ALREADY_LINKED("GUEST_IDENTITY_ALREADY_LINKED", retryable = false),
+    EMAIL_NOT_VERIFIED("EMAIL_NOT_VERIFIED", retryable = false),
+    EMAIL_VERIFICATION_TOKEN_INVALID("EMAIL_VERIFICATION_TOKEN_INVALID", retryable = false),
+    EMAIL_VERIFICATION_TOKEN_EXPIRED("EMAIL_VERIFICATION_TOKEN_EXPIRED", retryable = false),
+    EMAIL_VERIFICATION_TOKEN_USED("EMAIL_VERIFICATION_TOKEN_USED", retryable = false),
+    PASSWORD_RESET_TOKEN_INVALID("PASSWORD_RESET_TOKEN_INVALID", retryable = false),
+    PASSWORD_RESET_TOKEN_EXPIRED("PASSWORD_RESET_TOKEN_EXPIRED", retryable = false),
+    PASSWORD_RESET_TOKEN_USED("PASSWORD_RESET_TOKEN_USED", retryable = false),
+    CURRENT_PASSWORD_INVALID("CURRENT_PASSWORD_INVALID", retryable = false),
+    INVALID_DEVICE_LABEL("INVALID_DEVICE_LABEL", retryable = false),
+    SESSION_NOT_FOUND("SESSION_NOT_FOUND", retryable = false),
+    CURRENT_SESSION_REVOKE_NOT_ALLOWED("CURRENT_SESSION_REVOKE_NOT_ALLOWED", retryable = false),
+    INVALID_CONTENT_TYPE("INVALID_CONTENT_TYPE", retryable = false),
+    CORS_ORIGIN_NOT_ALLOWED("CORS_ORIGIN_NOT_ALLOWED", retryable = false),
+    HTTPS_REQUIRED("HTTPS_REQUIRED", retryable = false),
+    RATE_LIMITED("RATE_LIMITED", retryable = true),
+    EMAIL_DELIVERY_UNAVAILABLE("EMAIL_DELIVERY_UNAVAILABLE", retryable = true),
     PASSWORD_RESET_NOT_IMPLEMENTED("PASSWORD_RESET_NOT_IMPLEMENTED", retryable = false),
     NETWORK_ERROR("NETWORK_ERROR", retryable = true),
     BACKEND_UNAVAILABLE("BACKEND_UNAVAILABLE", retryable = true),
@@ -100,6 +125,8 @@ data class AccountServerRecord(
     val status: AccountServerStatus,
     val createdAtEpochMillis: Long?,
     val updatedAtEpochMillis: Long?,
+    val emailVerified: Boolean = true,
+    val emailVerifiedAtEpochMillis: Long? = null,
 ) {
     /**
      * The app's own identity model. The server's account identifier is carried through unchanged; the display name and
@@ -216,8 +243,27 @@ class AccountSessionTokens private constructor(
 /** What a successful registration or sign-in produced. */
 data class AccountRegistration(
     val record: AccountServerRecord,
-    val session: AccountServerSession,
+    val session: AccountServerSession?,
+    val verificationRequired: Boolean = false,
+    val deliveryStatus: AccountEmailDeliveryStatus = AccountEmailDeliveryStatus.NOT_APPLICABLE,
 )
+
+enum class AccountEmailDeliveryStatus { SENT, PROVIDER_ACCEPTED, DEVELOPMENT_SINK, PROVIDER_CONFIGURED, UNAVAILABLE, NOT_APPLICABLE }
+
+data class AccountEmailVerificationResult(val record: AccountServerRecord)
+data class AccountOperationReceipt(val accepted: Boolean, val deliveryMode: AccountEmailDeliveryStatus)
+data class AccountPasswordChangeResult(val currentSessionRetained: Boolean, val revokedOtherSessions: Int)
+data class AccountRevokeSessionsResult(val revokedSessions: Int, val currentSessionRetained: Boolean)
+
+data class AccountRemoteSession(
+    val sessionId: String,
+    val createdAtEpochMillis: Long?,
+    val lastUsedAtEpochMillis: Long?,
+    val expiresAtEpochMillis: Long?,
+    val deviceLabel: String,
+    val isCurrent: Boolean,
+)
+data class AccountSessionList(val sessions: List<AccountRemoteSession>)
 
 /** The session half of a refresh response, without an account record. */
 data class AccountServerSession(

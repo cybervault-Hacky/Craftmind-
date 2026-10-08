@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { call, guestIdentity, loginCall, register, registrationBody, startService, VALID_PASSWORD } from "./helpers.js";
+import { call, guestIdentity, loginCall, register, registerVerified, registrationBody, startService, VALID_PASSWORD } from "./helpers.js";
 
 describe("account service", () => {
   let service;
@@ -18,24 +18,38 @@ describe("account service", () => {
     await service.close();
   });
 
-  it("registers an account, returns a real session, and never returns a password hash", async () => {
+  it("registers an unverified account, sends only through the development sink, and requires verification before login", async () => {
     const response = await register(service.baseUrl, { email: "first@example.com", displayName: "First Builder" });
 
     assert.equal(response.status, 201);
-    const { account, session } = response.body;
+    const { account } = response.body;
+    assert.equal(response.body.verificationRequired, true);
+    assert.equal(response.body.deliveryStatus, "DEVELOPMENT_SINK");
+    assert.equal(Object.hasOwn(response.body, "session"), false);
     assert.match(account.userId, /^usr_[0-9a-f-]{36}$/);
     assert.equal(account.email, "first@example.com");
     assert.equal(account.displayName, "First Builder");
     assert.equal(account.status, "ACTIVE");
+    assert.equal(account.emailVerified, false);
+    assert.equal(account.emailVerifiedAt, null);
     assert.ok(Date.parse(account.createdAt) > 0);
     assert.equal(account.updatedAt, account.createdAt);
-    assert.equal(typeof session.accessToken, "string");
-    assert.equal(typeof session.refreshToken, "string");
-    assert.notEqual(session.accessToken, session.refreshToken);
-    assert.ok(Date.parse(session.accessExpiresAt) > Date.now());
-    assert.ok(Date.parse(session.refreshExpiresAt) > Date.parse(session.accessExpiresAt));
     assert.equal(JSON.stringify(response.body).includes("scrypt"), false);
-    assert.equal(JSON.stringify(response.body).includes("password"), false);
+    assert.equal(JSON.stringify(response.body).includes(VALID_PASSWORD), false);
+    const message = service.emailDelivery.takeMessage("verification", "first@example.com");
+    assert.ok(message);
+    assert.equal(JSON.stringify(response.body).includes(message.token), false, "the API must not return the verification token");
+    const before = await loginCall(service.baseUrl, { email: "first@example.com" });
+    assert.equal(before.status, 403);
+    assert.equal(before.body.error.code, "EMAIL_NOT_VERIFIED");
+    const verified = await call(service.baseUrl, "POST", "/auth/verify-email", { body: { token: message.token } });
+    assert.equal(verified.status, 200);
+    assert.equal(verified.body.account.emailVerified, true);
+    const duplicateUse = await call(service.baseUrl, "POST", "/auth/verify-email", { body: { token: message.token } });
+    assert.equal(duplicateUse.body.error.code, "EMAIL_VERIFICATION_TOKEN_USED");
+    const signedIn = await loginCall(service.baseUrl, { email: "first@example.com" });
+    assert.equal(signedIn.status, 200);
+    assert.equal(typeof signedIn.body.session.accessToken, "string");
   });
 
   it("refuses a duplicate email address", async () => {
@@ -85,7 +99,7 @@ describe("account service", () => {
   });
 
   it("signs in with correct credentials and refuses incorrect ones without revealing whether the address exists", async () => {
-    await register(service.baseUrl, { email: "signin@example.com" });
+    await registerVerified(service, { email: "signin@example.com" });
 
     const good = await loginCall(service.baseUrl, { email: "signin@example.com" });
     const wrongPassword = await loginCall(service.baseUrl, { email: "signin@example.com", password: "Wrong Horse 7Battery" });
@@ -101,7 +115,7 @@ describe("account service", () => {
   });
 
   it("rejects a suspended account at sign-in and ends its existing sessions", async () => {
-    const created = await register(service.baseUrl, { email: "suspended@example.com" });
+    const created = await registerVerified(service, { email: "suspended@example.com" });
     const accessToken = created.body.session.accessToken;
     service.database.prepare("UPDATE users SET status = 'SUSPENDED' WHERE email_canonical = ?").run("suspended@example.com");
 
@@ -121,7 +135,7 @@ describe("account service", () => {
   });
 
   it("never authenticates a deleted account and does not reveal deletion during password login", async () => {
-    const created = await register(service.baseUrl, { email: "deleted@example.com" });
+    const created = await registerVerified(service, { email: "deleted@example.com" });
     const accessToken = created.body.session.accessToken;
     const refreshToken = created.body.session.refreshToken;
     service.database.prepare("UPDATE users SET status = 'DELETED' WHERE email_canonical = ?").run("deleted@example.com");
@@ -141,7 +155,7 @@ describe("account service", () => {
   });
 
   it("returns the current account for a valid access token only", async () => {
-    const created = await register(service.baseUrl, { email: "me@example.com" });
+    const created = await registerVerified(service, { email: "me@example.com" });
     const accessToken = created.body.session.accessToken;
 
     const valid = await call(service.baseUrl, "GET", "/auth/me", { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -157,7 +171,7 @@ describe("account service", () => {
   });
 
   it("expires an access token but lets the refresh token mint a new pair, rotating both", async () => {
-    const created = await register(service.baseUrl, { email: "refresh@example.com" });
+    const created = await registerVerified(service, { email: "refresh@example.com" });
     const { accessToken, refreshToken } = created.body.session;
     service.database.prepare("UPDATE sessions SET access_expires_at = ?").run(new Date(Date.now() - 1000).toISOString());
 
@@ -179,7 +193,7 @@ describe("account service", () => {
   });
 
   it("refuses an expired refresh token", async () => {
-    const created = await register(service.baseUrl, { email: "stagerefresh@example.com" });
+    const created = await registerVerified(service, { email: "stagerefresh@example.com" });
     const { refreshToken } = created.body.session;
     service.database.prepare("UPDATE sessions SET refresh_expires_at = ?").run(new Date(Date.now() - 1000).toISOString());
 
@@ -190,7 +204,7 @@ describe("account service", () => {
   });
 
   it("revokes the session on logout and answers a repeated logout idempotently", async () => {
-    const created = await register(service.baseUrl, { email: "logout@example.com" });
+    const created = await registerVerified(service, { email: "logout@example.com" });
     const { accessToken, refreshToken } = created.body.session;
 
     const first = await call(service.baseUrl, "POST", "/auth/logout", { body: { accessToken, refreshToken } });
@@ -212,7 +226,7 @@ describe("account service", () => {
   });
 
   it("keeps the same account across logout and sign-in again", async () => {
-    const created = await register(service.baseUrl, { email: "roundtrip@example.com" });
+    const created = await registerVerified(service, { email: "roundtrip@example.com" });
     const originalUserId = created.body.account.userId;
 
     await call(service.baseUrl, "POST", "/auth/logout", { body: { accessToken: created.body.session.accessToken } });
@@ -242,7 +256,7 @@ describe("account service", () => {
     const identity = guestIdentity("guest-convert");
     await call(service.baseUrl, "POST", "/auth/guest", { body: { guestIdentityId: identity } });
 
-    const created = await register(service.baseUrl, { email: "convert@example.com", guestIdentityId: identity });
+    const created = await registerVerified(service, { email: "convert@example.com", guestIdentityId: identity });
     const link = service.database
       .prepare("SELECT linked_user_id FROM guest_identities WHERE guest_identity_id = ?")
       .get(identity);
@@ -278,7 +292,7 @@ describe("account service", () => {
 
   it("links a guest identity when a guest device signs in to an existing account", async () => {
     const identity = guestIdentity("guest-signin");
-    await register(service.baseUrl, { email: "existing@example.com" });
+    await registerVerified(service, { email: "existing@example.com" });
 
     const signedIn = await loginCall(service.baseUrl, { email: "existing@example.com", guestIdentityId: identity });
     const link = service.database

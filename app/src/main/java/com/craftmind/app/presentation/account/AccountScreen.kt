@@ -81,6 +81,23 @@ fun AccountScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (state.emailVerified == true && state.sessionLine != null) {
+                CraftMindNotice(tone = CraftMindTone.POSITIVE, title = "Email verified", message = "The account service reports this address as verified.")
+            }
+            if (state.emailVerificationRequired) {
+                state.emailVerificationLine?.let { line -> CraftMindNotice(tone = CraftMindTone.INFORMATIVE, message = line) }
+                Row(horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm)) {
+                    CraftMindPrimaryButton(
+                        text = "Enter verification code",
+                        onClick = { onEvent(AccountUiEvent.SecurityPanelRequested(AccountSecurityPanel.VERIFY_EMAIL)) },
+                        fullWidth = false,
+                    )
+                    CraftMindSecondaryButton(
+                        text = "Resend verification",
+                        onClick = { onEvent(AccountUiEvent.SecurityPanelRequested(AccountSecurityPanel.VERIFY_EMAIL)) },
+                    )
+                }
+            }
             state.availabilityLine?.let { line ->
                 CraftMindNotice(tone = CraftMindTone.INFORMATIVE, message = line)
             }
@@ -101,7 +118,10 @@ fun AccountScreen(
                         text = state.primaryAction.label,
                         onClick = { onEvent(AccountUiEvent.SignOutRequested) },
                     )
-
+                    AccountAction.SignIn -> CraftMindPrimaryButton(
+                        text = state.primaryAction.label,
+                        onClick = { onEvent(AccountUiEvent.SignInFormRequested) },
+                    )
                     else -> CraftMindPrimaryButton(
                         text = state.primaryAction.label,
                         onClick = { onEvent(AccountUiEvent.RetryRequested) },
@@ -114,16 +134,18 @@ fun AccountScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
                 ) {
-                    CraftMindSecondaryButton(
-                        text = "Sign in",
-                        onClick = { onEvent(AccountUiEvent.SignInFormRequested) },
-                    )
+                    if (state.primaryAction != AccountAction.SignIn) {
+                        CraftMindSecondaryButton(
+                            text = "Sign in",
+                            onClick = { onEvent(AccountUiEvent.SignInFormRequested) },
+                        )
+                    }
                     CraftMindSecondaryButton(
                         text = "Create account",
                         onClick = { onEvent(AccountUiEvent.SignUpFormRequested) },
                     )
                 }
-            } else {
+            } else if (!state.emailVerificationRequired) {
                 // Guest mode is a complete way to use CraftMind, and the screen says so rather than nagging.
                 Text(
                     text = state.guestLine,
@@ -141,18 +163,22 @@ fun AccountScreen(
             AccountSignUpForm(state = state, onEvent = onEvent)
         }
 
+        if (state.emailVerified == true && state.sessionLine != null) {
+            AccountSecurityActions(onEvent)
+        }
+        AccountSecurityPanelContent(state = state, onEvent = onEvent)
+
         CraftMindCard {
             CraftMindSectionHeader(
-                eyebrow = "What an account is for",
-                title = "The foundation for cloud features",
-                subtitle = "Accounts are the identity layer future CraftMind features are built on.",
+                eyebrow = "Account scope",
+                title = "Identity and security only",
+                subtitle = "Your CraftMind account manages sign-in and account-security settings.",
             )
             CraftMindNotice(
-                tone = CraftMindTone.CAUTION,
-                title = "No cloud feature is switched on by signing in",
-                message = "CraftMind does not synchronise anything today. Syncing builds across devices, an " +
-                    "account-owned history, creator profiles, and the marketplace do not exist yet, and signing in " +
-                    "cannot enable them.",
+                tone = CraftMindTone.INFORMATIVE,
+                title = "Your builds stay local",
+                message = "Signing in does not sync builds, settings, AI provider keys, or Minecraft pairing. Account " +
+                    "authentication is separate from those data and permission boundaries.",
             )
         }
 
@@ -194,27 +220,14 @@ fun AccountScreen(
                     "Sign out clears the account session on this device only. Builds, settings, provider keys, and " +
                         "Minecraft pairing are not touched.",
                     "Deleting local data removes builds or settings on this device. It does not affect an account.",
-                    "Requesting account deletion asks the account service to remove the account. It does not delete " +
-                        "anything on this device.",
                 ),
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
-            ) {
-                CraftMindSecondaryButton(
-                    text = AccountAction.RequestDeletion.label,
-                    onClick = { onEvent(AccountUiEvent.AccountDeletionRequested) },
-                )
-            }
-            if (state.availabilityLine != null || state.actionUnavailableReason != null) {
-                Text(
-                    text = "Account deletion requests need an account service. Without one, CraftMind says so " +
-                        "instead of pretending a request was filed.",
-                    style = CraftMindType.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            CraftMindNotice(
+                tone = CraftMindTone.CAUTION,
+                title = "Account deletion is unavailable",
+                message = "The account service has no secure deletion operation. No request is filed and no account or " +
+                    "device data is deleted here.",
+            )
         }
 
         CraftMindCard {

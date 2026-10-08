@@ -9,7 +9,14 @@ import com.craftmind.app.domain.account.AccountAuthenticationAvailability
 import com.craftmind.app.domain.account.AccountAuthenticator
 import com.craftmind.app.domain.account.AccountAvailabilityReason
 import com.craftmind.app.domain.account.AccountDeletionOutcome
+import com.craftmind.app.domain.account.AccountEmailVerificationResult
+import com.craftmind.app.domain.account.AccountOperationReceipt
+import com.craftmind.app.domain.account.AccountPasswordChangeResult
 import com.craftmind.app.domain.account.AccountProviderId
+import com.craftmind.app.domain.account.AccountRemoteSession
+import com.craftmind.app.domain.account.AccountRevokeSessionsResult
+import com.craftmind.app.domain.account.AccountSecurityCapable
+import com.craftmind.app.domain.account.AccountSessionList
 import com.craftmind.app.domain.account.AccountRegistrationCapable
 import com.craftmind.app.domain.account.AccountRegistration
 import com.craftmind.app.domain.account.AccountServerRecord
@@ -45,7 +52,7 @@ class CraftMindAccountAuthenticator(
     private val api: AccountApi,
     private val guestIdentityManager: GuestIdentityManager,
     private val clock: () -> Long = { System.currentTimeMillis() },
-) : AccountAuthenticator, AccountRegistrationCapable {
+) : AccountAuthenticator, AccountRegistrationCapable, AccountSecurityCapable {
     override val providerId: AccountProviderId = AccountProviderId.CRAFTMIND
 
     override fun availability(): AccountAuthenticationAvailability =
@@ -163,6 +170,44 @@ class CraftMindAccountAuthenticator(
     /** Introduces this device's anonymous identity to the service. Best effort: failure never blocks anything. */
     fun announceGuestIdentity(): AccountApiOutcome<Unit> = api.registerGuestIdentity(currentGuestIdentityId())
 
+    override fun verifyEmail(token: CharArray): AccountApiOutcome<AccountEmailVerificationResult> = api.verifyEmail(token)
+    override fun resendVerification(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> = api.resendVerification(emailAddress)
+    override fun requestPasswordReset(emailAddress: String): AccountApiOutcome<AccountOperationReceipt> = api.requestPasswordReset(emailAddress)
+    override fun confirmPasswordReset(token: CharArray, newPassword: CharArray): AccountApiOutcome<AccountOperationReceipt> =
+        api.confirmPasswordReset(token, newPassword)
+
+    override fun changePassword(
+        credential: AccountSessionCredential,
+        currentPassword: CharArray,
+        newPassword: CharArray,
+    ): AccountApiOutcome<AccountPasswordChangeResult> = withAccessToken(credential) { access ->
+        api.changePassword(access, currentPassword, newPassword)
+    }
+
+    override fun listSessions(credential: AccountSessionCredential): AccountApiOutcome<AccountSessionList> =
+        withAccessToken(credential, api::listSessions)
+
+    override fun revokeSession(credential: AccountSessionCredential, sessionId: String): AccountApiOutcome<Unit> =
+        withAccessToken(credential) { access -> api.revokeSession(access, sessionId) }
+
+    override fun revokeOtherSessions(credential: AccountSessionCredential): AccountApiOutcome<AccountRevokeSessionsResult> =
+        withAccessToken(credential, api::revokeOtherSessions)
+
+    private inline fun <T> withAccessToken(
+        credential: AccountSessionCredential,
+        operation: (CharArray) -> AccountApiOutcome<T>,
+    ): AccountApiOutcome<T> {
+        val tokens = decodeTokens(credential)
+            ?: return AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_INVALID)
+        val access = tokenOf(tokens, access = true)
+        return try {
+            operation(access)
+        } finally {
+            access.fill('\u0000')
+            tokens.close()
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------------- internals
 
     private fun currentGuestIdentityId(): String = guestIdentityManager.current().value
@@ -170,25 +215,44 @@ class CraftMindAccountAuthenticator(
     private fun mapRegistration(outcome: AccountApiOutcome<AccountRegistration>): AccountAuthOutcome = when (outcome) {
         is AccountApiOutcome.Success -> {
             val registration = outcome.value
-            val tokens = registration.session.tokens
-            try {
-                when (registration.record.status) {
-                    AccountServerStatus.ACTIVE -> AccountAuthOutcome.Success(
-                        session = sessionFrom(
-                            record = registration.record,
-                            source = AccountSessionSource.LIVE_SIGN_IN,
-                            expiresAtEpochMillis = registration.session.accessExpiresAtEpochMillis,
-                        ),
-                        credential = credentialOf(tokens),
-                    )
-
-                    // A service that hands back a suspended (or deleted) account is not a sign-in: the app stays local.
-                    AccountServerStatus.SUSPENDED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
-                    AccountServerStatus.DELETED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS)
+            val record = registration.record
+            when (record.status) {
+                AccountServerStatus.SUSPENDED -> {
+                    registration.session?.tokens?.close()
+                    AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
                 }
-            } finally {
-                // The credential now owns an encrypted-storage representation. Destroy the response's clear token arrays.
-                tokens.close()
+                AccountServerStatus.DELETED -> {
+                    registration.session?.tokens?.close()
+                    AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS)
+                }
+                AccountServerStatus.ACTIVE -> {
+                    val sessionResponse = registration.session
+                    if (sessionResponse == null) {
+                        if (registration.verificationRequired && !record.emailVerified) {
+                            AccountAuthOutcome.VerificationRequired(record.toIdentity(), registration.deliveryStatus)
+                        } else {
+                            AccountAuthOutcome.Failure(AccountAuthErrorCode.MALFORMED_RESPONSE)
+                        }
+                    } else if (!record.emailVerified) {
+                        sessionResponse.tokens.close()
+                        AccountAuthOutcome.Failure(AccountAuthErrorCode.MALFORMED_RESPONSE)
+                    } else {
+                        val tokens = sessionResponse.tokens
+                        try {
+                            AccountAuthOutcome.Success(
+                                session = sessionFrom(
+                                    record = record,
+                                    source = AccountSessionSource.LIVE_SIGN_IN,
+                                    expiresAtEpochMillis = sessionResponse.accessExpiresAtEpochMillis,
+                                ),
+                                credential = credentialOf(tokens),
+                            )
+                        } finally {
+                            // The credential now owns an encrypted-storage representation. Destroy clear response tokens.
+                            tokens.close()
+                        }
+                    }
+                }
             }
         }
 
@@ -308,6 +372,8 @@ class CraftMindAccountAuthenticator(
 
         AccountApiErrorCode.ACCOUNT_ALREADY_EXISTS -> AccountAuthErrorCode.ACCOUNT_ALREADY_EXISTS
         AccountApiErrorCode.ACCOUNT_SUSPENDED -> AccountAuthErrorCode.ACCOUNT_SUSPENDED
+        AccountApiErrorCode.EMAIL_NOT_VERIFIED -> AccountAuthErrorCode.EMAIL_NOT_VERIFIED
+        AccountApiErrorCode.RATE_LIMITED -> AccountAuthErrorCode.RATE_LIMITED
 
         AccountApiErrorCode.SESSION_EXPIRED,
         AccountApiErrorCode.SESSION_INVALID,
@@ -324,11 +390,26 @@ class CraftMindAccountAuthenticator(
         AccountApiErrorCode.METHOD_NOT_ALLOWED,
         AccountApiErrorCode.INVALID_GUEST_IDENTITY,
         AccountApiErrorCode.GUEST_IDENTITY_ALREADY_LINKED,
+        AccountApiErrorCode.INVALID_DEVICE_LABEL,
+        AccountApiErrorCode.INVALID_CONTENT_TYPE,
+        AccountApiErrorCode.EMAIL_VERIFICATION_TOKEN_INVALID,
+        AccountApiErrorCode.EMAIL_VERIFICATION_TOKEN_EXPIRED,
+        AccountApiErrorCode.EMAIL_VERIFICATION_TOKEN_USED,
+        AccountApiErrorCode.PASSWORD_RESET_TOKEN_INVALID,
+        AccountApiErrorCode.PASSWORD_RESET_TOKEN_EXPIRED,
+        AccountApiErrorCode.PASSWORD_RESET_TOKEN_USED,
         -> AccountAuthErrorCode.INVALID_REQUEST
 
         AccountApiErrorCode.NETWORK_ERROR -> AccountAuthErrorCode.NETWORK_UNAVAILABLE
-        AccountApiErrorCode.BACKEND_UNAVAILABLE -> AccountAuthErrorCode.SERVICE_UNAVAILABLE
+        AccountApiErrorCode.BACKEND_UNAVAILABLE,
+        AccountApiErrorCode.EMAIL_DELIVERY_UNAVAILABLE,
+        AccountApiErrorCode.HTTPS_REQUIRED,
+        AccountApiErrorCode.CORS_ORIGIN_NOT_ALLOWED,
+        -> AccountAuthErrorCode.SERVICE_UNAVAILABLE
         AccountApiErrorCode.PASSWORD_RESET_NOT_IMPLEMENTED,
+        AccountApiErrorCode.CURRENT_PASSWORD_INVALID,
+        AccountApiErrorCode.SESSION_NOT_FOUND,
+        AccountApiErrorCode.CURRENT_SESSION_REVOKE_NOT_ALLOWED,
         AccountApiErrorCode.UNKNOWN_ERROR,
         -> AccountAuthErrorCode.UNEXPECTED_FAILURE
     }

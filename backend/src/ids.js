@@ -32,6 +32,14 @@ export function tokenDigest(authSecret, token) {
   return createHmac("sha256", authSecret).update(token, "utf8").digest("base64url");
 }
 
+/** Purpose-separated digest for email verification and password-recovery tokens. */
+export function oneTimeTokenDigest(authSecret, purpose, token) {
+  return createHmac("sha256", authSecret)
+    .update(`craftmind:${purpose}:`, "utf8")
+    .update(token, "utf8")
+    .digest("base64url");
+}
+
 /** Compares two digests without leaking where they differ. */
 export function digestsMatch(left, right) {
   const a = Buffer.from(String(left), "base64url");
@@ -52,8 +60,8 @@ export function canonicalizeEmail(email) {
 
 /**
  * A deliberately simple address shape check: one `@`, a non-empty local part, a dotted domain, no whitespace, and a
- * bounded length. CraftMind does not pretend this proves the mailbox exists — nothing in this phase can, because there
- * is no email delivery, and the service says so rather than claiming a verified address.
+ * bounded length. CraftMind does not pretend this proves the mailbox exists; only a successfully consumed verification
+ * challenge can mark an address verified. The local development sink sends no mail.
  */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 

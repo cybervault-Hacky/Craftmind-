@@ -8,6 +8,7 @@ import org.junit.function.ThrowingRunnable
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * The contract the app and the service share (Phase 17).
@@ -86,32 +87,34 @@ class AccountApiContractTest {
     @Test
     fun everyServiceErrorCodeMapsToAKnownClientCode() {
         val wireValues = listOf(
-            "INVALID_EMAIL",
-            "INVALID_PASSWORD",
-            "INVALID_DISPLAY_NAME",
-            "INVALID_CREDENTIALS",
-            "ACCOUNT_NOT_FOUND",
-            "ACCOUNT_ALREADY_EXISTS",
-            "ACCOUNT_SUSPENDED",
-            "ACCOUNT_DELETED",
-            "SESSION_EXPIRED",
-            "SESSION_INVALID",
-            "REFRESH_FAILED",
-            "AUTHENTICATION_REQUIRED",
-            "NETWORK_ERROR",
-            "INVALID_GUEST_IDENTITY",
-            "GUEST_IDENTITY_ALREADY_LINKED",
-            "INVALID_REQUEST",
-            "REQUEST_TOO_LARGE",
-            "METHOD_NOT_ALLOWED",
-            "PASSWORD_RESET_NOT_IMPLEMENTED",
-            "BACKEND_UNAVAILABLE",
-            "UNKNOWN_ERROR",
+            "INVALID_REQUEST", "INVALID_CONTENT_TYPE", "REQUEST_TOO_LARGE", "METHOD_NOT_ALLOWED",
+            "CORS_ORIGIN_NOT_ALLOWED", "HTTPS_REQUIRED", "RATE_LIMITED", "INVALID_EMAIL",
+            "INVALID_DISPLAY_NAME", "INVALID_PASSWORD", "INVALID_DEVICE_LABEL", "ACCOUNT_ALREADY_EXISTS",
+            "ACCOUNT_NOT_FOUND", "INVALID_CREDENTIALS", "ACCOUNT_SUSPENDED", "ACCOUNT_DELETED",
+            "EMAIL_NOT_VERIFIED", "EMAIL_VERIFICATION_TOKEN_INVALID", "EMAIL_VERIFICATION_TOKEN_EXPIRED",
+            "EMAIL_VERIFICATION_TOKEN_USED", "PASSWORD_RESET_TOKEN_INVALID", "PASSWORD_RESET_TOKEN_EXPIRED",
+            "PASSWORD_RESET_TOKEN_USED", "CURRENT_PASSWORD_INVALID", "EMAIL_DELIVERY_UNAVAILABLE",
+            "SESSION_EXPIRED", "SESSION_INVALID", "REFRESH_FAILED", "AUTHENTICATION_REQUIRED",
+            "SESSION_NOT_FOUND", "CURRENT_SESSION_REVOKE_NOT_ALLOWED", "INVALID_GUEST_IDENTITY",
+            "GUEST_IDENTITY_ALREADY_LINKED", "PASSWORD_RESET_NOT_IMPLEMENTED", "NETWORK_ERROR",
+            "BACKEND_UNAVAILABLE", "UNKNOWN_ERROR",
         )
 
         for (value in wireValues) {
             assertTrue("$value must map to a typed client code", AccountApiErrorCode.fromWireValue(value) != AccountApiErrorCode.UNKNOWN_ERROR || value == "UNKNOWN_ERROR")
         }
+    }
+
+    @Test
+    fun androidAndBackendErrorVocabulariesStayInExactParity() {
+        val backendSource = File("../backend/src/errors.js").readText()
+        val backendCodes = Regex("""^\s+([A-Z][A-Z0-9_]+): "([A-Z][A-Z0-9_]+)",?$""", RegexOption.MULTILINE)
+            .findAll(backendSource)
+            .map { it.groupValues[2] }
+            .toSet()
+
+        assertTrue("the backend error vocabulary must be readable from the app test", backendCodes.isNotEmpty())
+        assertEquals(backendCodes, AccountApiErrorCode.entries.map { it.wireValue }.toSet())
     }
 
     @Test

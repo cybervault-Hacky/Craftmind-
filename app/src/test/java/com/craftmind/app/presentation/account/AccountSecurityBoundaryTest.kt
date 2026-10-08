@@ -109,6 +109,22 @@ class AccountSecurityBoundaryTest {
     }
 
     @Test
+    fun signInValidatesThePasswordBeforeCreatingTheRequestAndWipingTheEventArray() {
+        val viewModel = sourceText("presentation/account/AccountViewModel.kt")
+        val start = viewModel.indexOf("private fun submitSignIn(")
+        val end = viewModel.indexOf("\n    private fun background(", start)
+        assertTrue("the sign-in handler must be present", start >= 0 && end > start)
+        val handler = viewModel.substring(start, end)
+        val validation = handler.indexOf("AccountFormValidator.validateSignIn")
+        val request = handler.indexOf("AccountSignInRequest.emailPassword")
+        val wipe = handler.indexOf("password.fill")
+
+        assertTrue("the password must be validated while its characters are intact", validation >= 0 && validation < request)
+        assertTrue("the event array is wiped only after the typed request owns a defensive copy", request < wipe)
+        assertTrue("wiping must run from finally even on local validation failure", handler.contains("finally"))
+    }
+
+    @Test
     fun aClearedSecretCannotBeReadAgain() {
         val credential = AccountSessionCredential.fromCharacters("short-lived".toCharArray())
         credential.close()
