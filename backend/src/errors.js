@@ -69,6 +69,15 @@ export const ErrorCode = Object.freeze({
   DEVELOPER_AI_UNAVAILABLE: "DEVELOPER_AI_UNAVAILABLE",
   DEVELOPER_AI_RESPONSE_INVALID: "DEVELOPER_AI_RESPONSE_INVALID",
 
+  // Phase 22 membership, entitlement, and build-credit engine
+  INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
+  ENTITLEMENT_REQUIRED: "ENTITLEMENT_REQUIRED",
+  MEMBERSHIP_UNAVAILABLE: "MEMBERSHIP_UNAVAILABLE",
+  CREDIT_OPERATION_INVALID: "CREDIT_OPERATION_INVALID",
+  CREDIT_OPERATION_DUPLICATE: "CREDIT_OPERATION_DUPLICATE",
+  CREDIT_OPERATION_CONFLICT: "CREDIT_OPERATION_CONFLICT",
+  CREDIT_LEDGER_BUSY: "CREDIT_LEDGER_BUSY",
+
   // Phase 20 security event, incident, and automated response layer
   SECURITY_EVENT_INVALID: "SECURITY_EVENT_INVALID",
   SECURITY_ACTION_UNKNOWN: "SECURITY_ACTION_UNKNOWN",
@@ -140,6 +149,16 @@ const STATUS_BY_CODE = Object.freeze({
   [ErrorCode.SECURITY_ACTION_ARGUMENTS_INVALID]: 400,
   [ErrorCode.SECURITY_INCIDENT_NOT_FOUND]: 404,
   [ErrorCode.SECURITY_ENGINE_UNAVAILABLE]: 503,
+  // A credit shortfall and an unavailable plan are conflicts with current account state, not transport or server faults.
+  [ErrorCode.INSUFFICIENT_CREDITS]: 409,
+  [ErrorCode.ENTITLEMENT_REQUIRED]: 403,
+  [ErrorCode.MEMBERSHIP_UNAVAILABLE]: 409,
+  [ErrorCode.CREDIT_OPERATION_INVALID]: 400,
+  [ErrorCode.CREDIT_OPERATION_DUPLICATE]: 409,
+  [ErrorCode.CREDIT_OPERATION_CONFLICT]: 409,
+  // Another writer holds the ledger lock past the busy timeout. Nothing was written; a retry with the same idempotency
+  // key is always safe.
+  [ErrorCode.CREDIT_LEDGER_BUSY]: 503,
   [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
@@ -202,6 +221,13 @@ const SAFE_MESSAGES = Object.freeze({
   [ErrorCode.SECURITY_ACTION_ARGUMENTS_INVALID]: "The security response arguments are outside their bounded schema.",
   [ErrorCode.SECURITY_INCIDENT_NOT_FOUND]: "That security incident is not available.",
   [ErrorCode.SECURITY_ENGINE_UNAVAILABLE]: "The security engine cannot be reached right now; existing protections still apply.",
+  [ErrorCode.INSUFFICIENT_CREDITS]: "There are not enough build credits for this operation. Nothing was consumed.",
+  [ErrorCode.ENTITLEMENT_REQUIRED]: "This account does not have the entitlement required for that operation.",
+  [ErrorCode.MEMBERSHIP_UNAVAILABLE]: "That membership plan is not available on this deployment.",
+  [ErrorCode.CREDIT_OPERATION_INVALID]: "The credit operation is not in the accepted form.",
+  [ErrorCode.CREDIT_OPERATION_DUPLICATE]: "That idempotency key was already used for a different credit operation.",
+  [ErrorCode.CREDIT_OPERATION_CONFLICT]: "The credit operation conflicts with the current ledger state and was refused.",
+  [ErrorCode.CREDIT_LEDGER_BUSY]: "The credit ledger is busy with another operation. Nothing was charged; retry shortly.",
   [ErrorCode.NETWORK_ERROR]: "The account service could not complete the network request.",
   [ErrorCode.BACKEND_UNAVAILABLE]: "The account service cannot serve this request right now.",
   [ErrorCode.UNKNOWN_ERROR]: "The account service could not complete this request.",

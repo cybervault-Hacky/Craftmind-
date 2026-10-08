@@ -98,9 +98,9 @@ export function initAccountOverview(root = document.querySelector('[data-page="a
   if (summary) {
     summary.innerHTML = metricsMarkup([
       { value: requestValue(adapters), label: "Account service", note: "Whether this deployment is connected." },
-      { value: null, label: "Membership", note: "No plan system exists." },
+      { value: null, label: "Membership", note: "Read from the service on the membership page." },
+      { value: null, label: "Build credits", note: "Credit balance unavailable until a session is active." },
       { value: null, label: "Purchases", note: "No marketplace exists." },
-      { value: null, label: "Saved builds", note: "Saving is local to a page visit." },
     ]);
   }
   if (!requireSession(region, adapters.account)) return;
@@ -318,27 +318,82 @@ export function initAccountSaved(root = document.querySelector('[data-page="acco
   });
 }
 
-export function initAccountMembership(root = document.querySelector('[data-page="account-membership"]')) {
+/**
+ * The membership section of the account area.
+ *
+ * With a configured service and an active session this reads the account's own membership, entitlements, and credit
+ * balance from the server, and says plainly which plan is in effect. Without one, it keeps the Phase 21 honest state:
+ * nothing is claimed, no billing date is invented, and no balance is shown that the page cannot substantiate.
+ */
+export async function initAccountMembership(root = document.querySelector('[data-page="account-membership"]')) {
   if (!root) return;
   const region = root.querySelector("[data-account-region]");
   const metrics = root.querySelector("[data-membership-account-metrics]");
+  const adapters = createAdapters();
   if (metrics) {
     metrics.innerHTML = metricsMarkup([
-      { value: "Free", label: "Current plan", note: "No paid plan exists; nothing is charged." },
-      { value: null, label: "Renewal", note: "No subscription exists." },
+      { value: "Free", label: "Baseline plan", note: "Every account starts on the free baseline." },
+      { value: null, label: "Plan end", note: "Reported by the service when a plan has an end date." },
+      { value: null, label: "Build credits", note: "Credit balance unavailable until a session is active." },
       { value: null, label: "Billing history", note: "No billing exists." },
     ]);
   }
   if (!region) return;
-  unavailableState(region, {
-    title: "No plan is attached to this account",
-    message: "Membership plans, entitlements, billing, and renewals are not implemented. There is no plan to upgrade, downgrade, or cancel, and this page will not show a billing date it cannot justify.",
-    details: [
-      "CraftMind is free to use today. No paid tier exists and no payment method can be entered.",
-      "Upgrade and downgrade controls will appear here once a membership and entitlement service exists.",
-    ],
-    action: { label: "Compare planned plans", href: "../membership/index.html" },
-  });
+  if (!requireSession(region, adapters.account)) return;
+  region.dataset.state = STATE.LOADING;
+  const [membershipResult, entitlementsResult, creditsResult] = await Promise.all([
+    adapters.account.loadMembership(),
+    adapters.account.loadEntitlements(),
+    adapters.account.loadCredits(),
+  ]);
+  if (membershipResult.status !== RESULT.OK || entitlementsResult.status !== RESULT.OK || creditsResult.status !== RESULT.OK) {
+    const unauthorized = [membershipResult, entitlementsResult, creditsResult].some((result) => result.status === RESULT.UNAUTHORIZED);
+    renderState(region, {
+      kind: unauthorized ? STATE.UNAUTHORIZED : STATE.ERROR,
+      title: unauthorized ? "Sign in again to read your plan" : "Your membership could not be read",
+      message: unauthorized
+        ? "The account session ended, so no plan, entitlement, or balance is shown."
+        : (membershipResult.message ?? "The account service did not answer."),
+    });
+    return;
+  }
+  const plan = membershipResult.payload?.membership ?? {};
+  const catalogue = membershipResult.payload?.plan ?? {};
+  const entitlements = entitlementsResult.payload?.entitlements ?? [];
+  const grants = entitlementsResult.payload?.administrativeGrants ?? [];
+  const credits = creditsResult.payload?.credits ?? {};
+  const balance = Number.isFinite(credits.available) ? `${credits.available} credits` : "Credit balance unavailable";
+  region.dataset.state = STATE.POPULATED;
+  region.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h3>${escapeText(plan.planName ?? plan.plan ?? "Your plan")}</h3>
+          <p class="small muted">These values come from the configured account service for this account. Plans, entitlements, and balances are decided by the server.</p>
+        </div>
+        <span class="badge ${plan.plan === "FREE" ? "badge--current" : "badge--planned"}">${escapeText(plan.status ?? "UNKNOWN")}</span>
+      </div>
+      ${keyValueMarkup([
+        ["Plan", plan.plan],
+        ["Plan status", plan.status],
+        ["Plan source", plan.source],
+        ["Plan ends", plan.endsAt ? formatTimestamp(plan.endsAt) : "No end date — the plan does not expire"],
+        ["Availability", catalogue.availabilityLabel],
+        ["Purchasable", catalogue.purchasable === true ? "Yes" : "No — no payment is implemented"],
+        ["Credit balance", balance],
+        ["Entitlements", entitlements.map((entry) => entry.key).join(", ") || null],
+        ["Administrative grants", grants.map((grant) => grant.entitlementKey).join(", ") || "None active"],
+      ])}
+      <p class="price-note">Nothing on this page is purchasable, and no billing date is shown because no billing exists. Upgrading, downgrading, and cancelling arrive with a payment phase, not before it.</p>
+    </div>`;
+  if (metrics) {
+    metrics.innerHTML = metricsMarkup([
+      { value: plan.plan ?? null, label: "Current plan", note: "Reported by the account service." },
+      { value: plan.endsAt ? formatTimestamp(plan.endsAt) : "No end date", label: "Plan end", note: "Expiry is applied by the server." },
+      { value: balance, label: "Build credits", note: "Read-only display of the authoritative balance." },
+      { value: entitlements.length > 0 ? String(entitlements.length) : null, label: "Entitlements", note: "Resolved by the server for every request." },
+    ]);
+  }
 }
 
 /** Dispatches to the controller for whichever account page this document is. */

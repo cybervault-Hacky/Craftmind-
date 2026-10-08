@@ -211,14 +211,14 @@ human, no AI provider, and no external service in the detection or response path
   (8 pages) and `python3 scripts/check_release_config.py` passed. No live deployment, external security review,
   multi-instance/shared-state test, or live AI/email provider call is claimed.
 
-## Phase 21 — marketplace, creator, membership, and account UI foundation
-
-Phase 21 builds the complete interface and state architecture for the marketplace, creator studio, membership, and
+Phase 21 built the complete interface and state architecture for the marketplace, creator studio, membership, and
 account center **before** any service exists behind them. It adds no marketplace backend, listing storage, search index,
 checkout, subscription, commission, payout, entitlement, or payment provider. Nothing can be bought, sold, published, or
 subscribed to, and every page says so. Full contracts:
 [`docs/marketplace-ui-foundation.md`](docs/marketplace-ui-foundation.md) and §10 of
 [`docs/premium-ui-ux-architecture.md`](docs/premium-ui-ux-architecture.md).
+
+## Phase 21 — marketplace, creator, membership, and account UI foundation
 
 - **Thirty pages on one shell.** Phase 15's eight product pages now share their navigation, footer, and `data-page`
   controller key with the marketplace (`/marketplace`, `/marketplace/build`), membership (`/membership`), creators
@@ -259,6 +259,35 @@ subscribed to, and every page says so. Full contracts:
   → PASS; `node --check` on all ten website modules → PASS; `git diff --check` → clean.
   `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution in this environment), and the Android test suite was
   therefore not re-run — no Kotlin source changed, so its last recorded results stand.
+
+## Phase 22 — membership, entitlements, and build credits
+
+Phase 22 turns the Phase 21 membership screens into a real, server-authoritative foundation: normalized plans,
+plan entitlements, a deterministic free baseline for every registered account, an append-only credit ledger with
+grants, consumption, expiration, and reversal, typed entitlement checks, audited authenticated APIs, idempotency, and
+database-level concurrency safety. It integrates **no payment provider at all** — no Razorpay, Stripe, PayPal, UPI,
+cards, checkout, subscription billing, webhooks, invoices, payouts, or tax — and no plan is purchasable. Pro, Creator,
+and Server are defined, granted internally, and deliberately not for sale. Full contracts:
+[`docs/membership-entitlements-and-credits.md`](docs/membership-entitlements-and-credits.md).
+
+- **The server decides.** Membership state, entitlements, and the credit balance are resolved by the backend from its own
+  database. No endpoint accepts an account id, a plan, a status, a balance, or an entitlement from a client, so a
+  fabricated `{"plan":"PRO"}` or `{"credits":500}` has no path to travel. Credits are never a column on `users`: the
+  balance is derived from a ledger the database refuses to update or delete.
+- **Idempotent and atomic.** Every credit operation carries an idempotency key stored as an HMAC digest scoped to the
+  account and the operation, so a retry returns the original transaction instead of spending twice, and a reused key with
+  a different request is a typed conflict. Consumption runs inside `BEGIN IMMEDIATE`: of two simultaneous spends of 7
+  against a balance of 10, exactly one succeeds.
+- **Honest by construction.** Expired credits stop counting immediately and are reconciled in bounded batches on read
+  (no background job); an expired plan falls back to the free baseline rather than losing the product; the website shows
+  a real balance only when a service and a session exist and says "Credit balance unavailable" otherwise.
+- **One audit log, one rate limiter, one control plane.** Membership and credit events join the existing Phase 19/20
+  audit table; the five new developer tools (`inspectMembership`, `listCreditTransactions`, and the confirmable
+  `grantMembership`, `grantCredits`, `reverseCreditGrant`) reuse the existing registry, roles, and single confirmation
+  boundary. The Developer AI may inspect and propose a grant, but only a human confirmation executes one.
+- **Verification status:** `cd backend && npm test` → 125/125 passed across 16 suites; `python3 scripts/check_website.py`
+  → PASS (30 pages, 884 links); a jsdom check of the membership and credit states; `ANDROID_BUILD = NOT_RUN` (no Android
+  toolchain here). No live deployment, external security review, payment provider call, or live AI call is claimed.
 
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 

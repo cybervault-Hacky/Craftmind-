@@ -25,6 +25,13 @@ import {
 } from "./accounts.js";
 import { createEmailDelivery } from "./email-delivery.js";
 import { AccountApiError, ErrorCode } from "./errors.js";
+import {
+  consumeCreditsForSession,
+  creditTransactionsForSession,
+  creditsForSession,
+  entitlementsForSession,
+  membershipForSession,
+} from "./account-membership.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -191,6 +198,23 @@ function consumeLimit(rateLimiter, operation, request, subject, limits) {
   }
 }
 
+/**
+ * Reads a query string strictly: an unparseable URL yields the typed invalid-request failure rather than an exception
+ * from the URL parser, and callers validate the keys they accept. Query values never reach SQL as-is.
+ */
+function safeQuery(request) {
+  try {
+    const parsed = new URL(String(request.url ?? "/"), "http://account.invalid");
+    if ([...parsed.searchParams.keys()].some((key) => key.length > 32)) {
+      throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
+    }
+    return parsed.searchParams;
+  } catch (error) {
+    if (error instanceof AccountApiError) throw error;
+    throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
+  }
+}
+
 async function enforceNonEnumeratingResponseFloor(startedAt) {
   const remaining = startedAt + NON_ENUMERATING_RESPONSE_FLOOR_MS - Date.now();
   if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
@@ -201,8 +225,14 @@ function statusForEmailDelivery(result, emailDelivery) {
   return emailDelivery.mode === "DEVELOPMENT_SINK" ? "DEVELOPMENT_SINK" : "PROVIDER_ACCEPTED";
 }
 
-/** Route → protection/event category. Security-sensitive routes are the only ones with autonomous protections. */
-const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/developer/"];
+/**
+ * Route → protection/event category. Security-sensitive routes are the only ones with autonomous protections.
+ *
+ * Phase 22 adds `/account/`: reading one's own membership and spending one's own credits are authenticated state
+ * changes, so a source or session already under an active Phase 20 protection is throttled here too — the controls are
+ * reused exactly as they are, not duplicated.
+ */
+const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/"];
 
 function isSecuritySensitiveRoute(pathKey) {
   return SECURITY_SENSITIVE_PREFIXES.some((prefix) => pathKey.startsWith(prefix));
@@ -218,6 +248,8 @@ function routeSecurityCategory(pathKey) {
   // (verification, password reset) stay in the user-auth category so a session protection never blocks recovery.
   if (pathKey === "/auth/refresh" || pathKey === "/auth/logout" || pathKey === "/auth/me") return "SESSION";
   if (pathKey.startsWith("/auth")) return "USER_AUTH";
+  // A credit consumption is a credential-bearing state change: an active session protection applies to it as well.
+  if (pathKey === "/account/credits/consume") return "SESSION";
   return "REQUEST";
 }
 
@@ -518,6 +550,51 @@ export function createAccountService({ database, configuration, logger = console
       if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
       consumeLimit(limits, "session", request, "", configuration.rateLimit.session);
       return { status: 200, payload: revokeOtherSessions(database, configuration, token) };
+    }],
+    // Phase 22 account surface. Every route identifies the caller from the bearer session alone; none accepts an
+    // account id, a plan, a status, or a balance from the request.
+    ["GET /account/membership", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "credits", request, "", configuration.rateLimit.credits);
+      return { status: 200, payload: membershipForSession(database, configuration, token) };
+    }],
+    ["GET /account/entitlements", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "credits", request, "", configuration.rateLimit.credits);
+      return { status: 200, payload: entitlementsForSession(database, configuration, token) };
+    }],
+    ["GET /account/credits", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "credits", request, "", configuration.rateLimit.credits);
+      return { status: 200, payload: creditsForSession(database, configuration, token) };
+    }],
+    ["GET /account/credits/transactions", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "credits", request, "", configuration.rateLimit.credits);
+      const query = safeQuery(request);
+      // Strict, bounded paging: an unknown key, a non-numeric limit, or a limit outside 1..100 is refused rather than
+      // silently interpreted.
+      for (const key of query.keys()) {
+        if (!["limit", "type"].includes(key)) throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
+      }
+      const rawLimit = query.get("limit");
+      if (rawLimit !== null && !/^[0-9]{1,3}$/.test(rawLimit)) throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
+      const limit = rawLimit === null ? 25 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
+      const type = query.get("type");
+      return { status: 200, payload: creditTransactionsForSession(database, configuration, token, { limit, type }) };
+    }],
+    ["POST /account/credits/consume", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "credit-consume", request, "", configuration.rateLimit.creditConsume);
+      const headerKey = typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"].trim() : null;
+      return { status: 200, payload: consumeCreditsForSession(database, configuration, token, body, headerKey) };
     }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],

@@ -8,23 +8,40 @@ import { canonicalizeEmail, developerTokenDigest, digestsMatch, isWellFormedEmai
 import { ACCOUNT_STATUS } from "./db.js";
 import { AUDIT_ACTOR_KIND, appendAuditRecord } from "./audit.js";
 import { SECURITY_CENTER_TOOLS } from "./security-center-tools.js";
+import { assignMembership, getAccountEntitlementsInTransaction } from "./entitlements.js";
+import { planCatalog } from "./membership-plans.js";
+import {
+  creditBalanceInTransaction,
+  grantCreditsInTransaction,
+  grantPlanAllocation,
+  listCreditTransactionsInTransaction,
+  reverseCreditGrantInTransaction,
+} from "./credits.js";
 
 const GRANT_TYPES = new Set(["BETA_ACCESS", "PREVIEW_ACCESS", "PROMOTIONAL_ACCESS"]);
+/** Phase 22 tools are OWNER/ADMIN only: a promotional grant of membership or credits is a high-impact action. */
+const MEMBERSHIP_TOOL_ROLES = Object.freeze({
+  READ: ["OWNER", "ADMIN", "DEVELOPER"],
+  WRITE: ["OWNER", "ADMIN"],
+});
 const MAX_AUDIT_PAGE_SIZE = 100;
 const SECURITY_CENTER_READ_TOOLS = Object.keys(SECURITY_CENTER_TOOLS);
 const ALLOWED_ROLES = Object.freeze({
   OWNER: new Set([
     "overview", "inspectUser", "listUserSessions", "revokeUserSessions", "suspendUser", "restoreUser",
     "listEntitlements", "grantEntitlement", "revokeEntitlement", "listAuditLog", "configurationStatus",
+    "inspectMembership", "grantMembership", "grantCredits", "reverseCreditGrant", "listCreditTransactions",
     ...SECURITY_CENTER_READ_TOOLS,
   ]),
   ADMIN: new Set([
     "overview", "inspectUser", "listUserSessions", "revokeUserSessions", "suspendUser", "restoreUser",
     "listEntitlements", "grantEntitlement", "revokeEntitlement", "listAuditLog",
+    "inspectMembership", "grantMembership", "grantCredits", "reverseCreditGrant", "listCreditTransactions",
     ...SECURITY_CENTER_READ_TOOLS,
   ]),
   DEVELOPER: new Set([
     "overview", "inspectUser", "listUserSessions", "listEntitlements", "listAuditLog",
+    "inspectMembership", "listCreditTransactions",
     ...SECURITY_CENTER_READ_TOOLS,
   ]),
 });
@@ -237,6 +254,68 @@ function noArguments(input) {
   return {};
 }
 
+/** A bounded, human-readable justification. It is mandatory: an unexplained credit movement is not auditable. */
+function validateReason(value) {
+  const reason = typeof value === "string" ? value.trim() : "";
+  if (reason.length < 3 || reason.length > 200 || /[\u0000-\u001f\u007f]/.test(reason)) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return reason;
+}
+
+function validateIdempotencyKey(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(value.trim())) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return value.trim();
+}
+
+function validateCreditAmount(value, maximum) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return value;
+}
+
+function validateDays(value, maximum) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return value;
+}
+
+function validatePlanId(value, catalog) {
+  if (typeof value !== "string" || !catalog.byId[value] || !catalog.byId[value].grantable) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return value;
+}
+
+function validateTransactionReference(value) {
+  if (typeof value !== "string" || !/^crd_[0-9a-f-]{36}$/.test(value)) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return value;
+}
+
+/**
+ * The optional developer-supplied idempotency key, or a generated one.
+ *
+ * The confirmation flow already makes a developer action execute at most once, so the ledger key is the second layer:
+ * it protects a *client-side* retry of the confirmation, and it lets a developer deliberately repeat a grant intent
+ * without creating a second ledger row.
+ */
+function creditOperationKey(input, developerId, purpose) {
+  const supplied = validateIdempotencyKey(input);
+  return supplied ?? `devtool-${purpose}-${developerId}-${newToken().slice(0, 32)}`;
+}
+
+/** The entitlement view for one account, read inside the caller's transaction (never a second one). */
+function membershipContext(database, configuration, userId, { history = false } = {}) {
+  return getAccountEntitlementsInTransaction(database, configuration, userId, { includeHistory: history });
+}
+
 const ADMIN_TOOLS = Object.freeze({
   overview: {
     audit: "overview", mutating: false, roles: ["OWNER", "ADMIN", "DEVELOPER"],
@@ -443,6 +522,313 @@ const ADMIN_TOOLS = Object.freeze({
       return { result: { events }, auditMetadata: { returned: events.length, limit: args.limit } };
     },
   },
+  inspectMembership: {
+    audit: "inspect_membership", mutating: false, roles: MEMBERSHIP_TOOL_ROLES.READ,
+    description: "Inspect one account's membership state, entitlements, and credit balance summary by exact email.",
+    schema: {
+      type: "object",
+      properties: { email: { type: "string", format: "email" }, includeHistory: { type: "boolean" } },
+      required: ["email"], additionalProperties: false,
+    },
+    resolve(input, database) {
+      strictObject(input, ["email"], ["includeHistory"]);
+      const user = getUserByEmail(database, emailInput({ email: input.email }));
+      if (input.includeHistory !== undefined && typeof input.includeHistory !== "boolean") {
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+      return { userId: user.user_id, includeHistory: input.includeHistory === true };
+    },
+    execute(database, args, actor, context) {
+      const user = getUserById(database, args.userId);
+      const view = membershipContext(database, context.configuration, user.user_id, { history: args.includeHistory });
+      const balance = view.credits;
+      const recent = listCreditTransactionsInTransaction(database, user.user_id, { limit: 5 });
+      return {
+        result: {
+          email: user.email,
+          membership: view.membership,
+          plan: view.plan,
+          entitlements: view.entitlements.map((entry) => entry.key),
+          administrativeGrants: view.administrativeGrants,
+          credits: balance
+            ? { available: balance.available, expiring: balance.expiring, expired: balance.expired, expiringInDays: balance.expiringInDays }
+            : null,
+          recentTransactions: recent.map((entry) => ({
+            transactionId: entry.transactionId, type: entry.type, amount: entry.amount, createdAt: entry.createdAt,
+          })),
+          history: view.history,
+        },
+        targetUserId: user.user_id,
+        auditMetadata: {
+          plan: view.membership.plan, status: view.membership.status,
+          entitlements: view.entitlements.length, available: balance?.available ?? null,
+        },
+      };
+    },
+  },
+  grantMembership: {
+    audit: "grant_membership", mutating: true, roles: MEMBERSHIP_TOOL_ROLES.WRITE,
+    description: "Assign a Pro, Creator, or Server membership for a bounded number of days, with its internal promotional credit allocation. No payment is processed and the plan stays non-purchasable.",
+    schema: {
+      type: "object",
+      properties: {
+        email: { type: "string", format: "email" },
+        plan: { type: "string", enum: ["PRO", "CREATOR", "SERVER"] },
+        days: { type: "integer", minimum: 1 },
+        reason: { type: "string", minLength: 3, maxLength: 200 },
+        idempotencyKey: { type: "string", minLength: 8, maxLength: 128 },
+      },
+      required: ["email", "plan", "days", "reason"], additionalProperties: false,
+    },
+    resolve(input, database) {
+      strictObject(input, ["email", "plan", "days", "reason"], ["idempotencyKey"]);
+      const user = getUserByEmail(database, emailInput({ email: input.email }));
+      const catalog = planCatalog();
+      return {
+        userId: user.user_id,
+        plan: validatePlanId(input.plan, catalog),
+        days: validateDays(input.days, catalog.maximumPlanGrantDays),
+        reason: validateReason(input.reason),
+        idempotencyKey: validateIdempotencyKey(input.idempotencyKey),
+      };
+    },
+    validateResolved(database, args, context) {
+      const user = getUserById(database, args.userId);
+      const catalog = planCatalog(context?.configuration);
+      return {
+        ...args,
+        plan: validatePlanId(args.plan, catalog),
+        days: validateDays(args.days, catalog.maximumPlanGrantDays),
+        reason: validateReason(args.reason),
+        idempotencyKey: validateIdempotencyKey(args.idempotencyKey),
+        email: user.email,
+      };
+    },
+    summary(database, args) {
+      const user = getUserById(database, args.userId);
+      return `Grant the ${args.plan} plan to ${user.email} for ${args.days} day(s), with its promotional credit allocation. No payment is involved.`;
+    },
+    execute(database, args, actor, context) {
+      const configuration = context.configuration;
+      const user = getUserById(database, args.userId);
+      const key = creditOperationKey(args.idempotencyKey, actor.developer_id, `membership-${args.plan}`);
+      const granted = assignMembership(database, configuration, {
+        userId: user.user_id,
+        planId: args.plan,
+        reason: args.reason,
+        days: args.days,
+        actorDeveloperId: actor.developer_id,
+      });
+      const allocation = grantPlanAllocation(database, configuration, {
+        userId: user.user_id,
+        planId: granted.plan,
+        allocation: granted.promotionalCredits,
+        expiresInDays: granted.expiresInDays,
+        idempotencyKey: `${key}-allocation`,
+        actorDeveloperId: actor.developer_id,
+      });
+      return {
+        result: {
+          email: user.email,
+          plan: granted.plan,
+          previousPlan: granted.previousPlan,
+          status: granted.status,
+          endsAt: granted.endsAt,
+          promotionalCreditsGranted: allocation?.transaction?.amount ?? 0,
+        },
+        targetUserId: user.user_id,
+        auditMetadata: {
+          plan: granted.plan, days: args.days, endsAt: granted.endsAt,
+          promotionalCredits: allocation?.transaction?.amount ?? 0, availability: "NOT_PURCHASABLE",
+        },
+      };
+    },
+  },
+  grantCredits: {
+    audit: "grant_credits", mutating: true, roles: MEMBERSHIP_TOOL_ROLES.WRITE,
+    description: "Grant a bounded number of promotional build credits to one account, with a mandatory reason and an optional expiry. Credits are internal: no payment, purchase, or subscription is involved.",
+    schema: {
+      type: "object",
+      properties: {
+        email: { type: "string", format: "email" },
+        amount: { type: "integer", minimum: 1 },
+        reason: { type: "string", minLength: 3, maxLength: 200 },
+        expiresInDays: { type: "integer", minimum: 1 },
+        idempotencyKey: { type: "string", minLength: 8, maxLength: 128 },
+      },
+      required: ["email", "amount", "reason"], additionalProperties: false,
+    },
+    resolve(input, database, context) {
+      strictObject(input, ["email", "amount", "reason"], ["expiresInDays", "idempotencyKey"]);
+      const user = getUserByEmail(database, emailInput({ email: input.email }));
+      const maximum = context?.configuration?.membership?.maximumGrantCredits ?? 10_000;
+      const maximumDays = context?.configuration?.membership?.creditExpiryDays ?? 90;
+      return {
+        userId: user.user_id,
+        amount: validateCreditAmount(input.amount, maximum),
+        reason: validateReason(input.reason),
+        expiresInDays: input.expiresInDays === undefined ? null : validateDays(input.expiresInDays, maximumDays),
+        idempotencyKey: validateIdempotencyKey(input.idempotencyKey),
+      };
+    },
+    validateResolved(database, args, context) {
+      const user = getUserById(database, args.userId);
+      const maximum = context?.configuration?.membership?.maximumGrantCredits ?? 10_000;
+      const maximumDays = context?.configuration?.membership?.creditExpiryDays ?? 90;
+      return {
+        ...args,
+        email: user.email,
+        amount: validateCreditAmount(args.amount, maximum),
+        reason: validateReason(args.reason),
+        expiresInDays: args.expiresInDays === null || args.expiresInDays === undefined
+          ? null
+          : validateDays(args.expiresInDays, maximumDays),
+        idempotencyKey: validateIdempotencyKey(args.idempotencyKey),
+      };
+    },
+    summary(database, args) {
+      const user = getUserById(database, args.userId);
+      const expiry = args.expiresInDays === null ? "no expiry" : `expiring in ${args.expiresInDays} day(s)`;
+      return `Grant ${args.amount} promotional build credits to ${user.email} (${expiry}). No payment is involved.`;
+    },
+    execute(database, args, actor, context) {
+      const user = getUserById(database, args.userId);
+      const granted = grantCreditsInTransaction(database, context.configuration, {
+        userId: user.user_id,
+        amount: args.amount,
+        reason: args.reason,
+        idempotencyKey: creditOperationKey(args.idempotencyKey, actor.developer_id, "grant"),
+        expiresInDays: args.expiresInDays,
+        actorDeveloperId: actor.developer_id,
+      });
+      return {
+        result: {
+          email: user.email,
+          transactionId: granted.transaction.transactionId,
+          amount: granted.transaction.amount,
+          expiresAt: granted.transaction.expiresAt,
+          availableAfter: granted.available,
+        },
+        targetUserId: user.user_id,
+        auditMetadata: {
+          amount: granted.transaction.amount, expiresAt: granted.transaction.expiresAt,
+          availableAfter: granted.available,
+        },
+      };
+    },
+  },
+  reverseCreditGrant: {
+    audit: "reverse_credit_grant", mutating: true, roles: MEMBERSHIP_TOOL_ROLES.WRITE,
+    description: "Reverse part or all of a still-standing credit grant by its transaction reference. The original ledger entry is never edited or deleted.",
+    schema: {
+      type: "object",
+      properties: {
+        email: { type: "string", format: "email" },
+        transactionId: { type: "string", pattern: "^crd_[0-9a-f-]{36}$" },
+        amount: { type: "integer", minimum: 1 },
+        reason: { type: "string", minLength: 3, maxLength: 200 },
+        idempotencyKey: { type: "string", minLength: 8, maxLength: 128 },
+      },
+      required: ["email", "transactionId", "reason"], additionalProperties: false,
+    },
+    resolve(input, database, context) {
+      strictObject(input, ["email", "transactionId", "reason"], ["amount", "idempotencyKey"]);
+      const user = getUserByEmail(database, emailInput({ email: input.email }));
+      const maximum = context?.configuration?.membership?.maximumGrantCredits ?? 10_000;
+      const transactionId = validateTransactionReference(input.transactionId);
+      // Resolve first: a grant belonging to another account simply does not exist here, so the tool cannot be used to
+      // probe another ledger.
+      const row = database.prepare("SELECT user_id FROM credit_ledger WHERE transaction_id = ?").get(transactionId);
+      if (!row || row.user_id !== user.user_id) throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      return {
+        userId: user.user_id,
+        transactionId,
+        amount: input.amount === undefined ? null : validateCreditAmount(input.amount, maximum),
+        reason: validateReason(input.reason),
+        idempotencyKey: validateIdempotencyKey(input.idempotencyKey),
+      };
+    },
+    validateResolved(database, args, context) {
+      const user = getUserById(database, args.userId);
+      const maximum = context?.configuration?.membership?.maximumGrantCredits ?? 10_000;
+      const transactionId = validateTransactionReference(args.transactionId);
+      const row = database.prepare("SELECT user_id FROM credit_ledger WHERE transaction_id = ?").get(transactionId);
+      if (!row || row.user_id !== user.user_id) throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      return {
+        ...args,
+        email: user.email,
+        transactionId,
+        amount: args.amount === null || args.amount === undefined ? null : validateCreditAmount(args.amount, maximum),
+        reason: validateReason(args.reason),
+        idempotencyKey: validateIdempotencyKey(args.idempotencyKey),
+      };
+    },
+    summary(database, args) {
+      const user = getUserById(database, args.userId);
+      const scope = args.amount === null ? "the remaining credits of" : `${args.amount} credits from`;
+      return `Reverse ${scope} grant ${args.transactionId} for ${user.email}.`;
+    },
+    execute(database, args, actor, context) {
+      const user = getUserById(database, args.userId);
+      const reversed = reverseCreditGrantInTransaction(database, context.configuration, {
+        userId: user.user_id,
+        transactionId: args.transactionId,
+        amount: args.amount,
+        reason: args.reason,
+        idempotencyKey: creditOperationKey(args.idempotencyKey, actor.developer_id, "reverse"),
+        actorDeveloperId: actor.developer_id,
+      });
+      return {
+        result: {
+          email: user.email,
+          transactionId: reversed.transaction.transactionId,
+          originalTransactionId: args.transactionId,
+          amount: reversed.transaction.amount,
+          availableAfter: reversed.available,
+        },
+        targetUserId: user.user_id,
+        auditMetadata: { amount: reversed.transaction.amount, originalTransactionId: args.transactionId, availableAfter: reversed.available },
+      };
+    },
+  },
+  listCreditTransactions: {
+    audit: "list_credit_transactions", mutating: false, roles: MEMBERSHIP_TOOL_ROLES.READ,
+    description: "Read the newest ledger entries for one account: grants, consumptions, expirations, and reversals.",
+    schema: {
+      type: "object",
+      properties: {
+        email: { type: "string", format: "email" },
+        limit: { type: "integer", minimum: 1, maximum: MAX_AUDIT_PAGE_SIZE },
+      },
+      required: ["email"], additionalProperties: false,
+    },
+    resolve(input, database) {
+      strictObject(input, ["email"], ["limit"]);
+      const user = getUserByEmail(database, emailInput({ email: input.email }));
+      const limit = input.limit ?? 25;
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_AUDIT_PAGE_SIZE) {
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+      return { userId: user.user_id, limit };
+    },
+    execute(database, args, actor, context) {
+      const user = getUserById(database, args.userId);
+      const transactions = listCreditTransactionsInTransaction(database, user.user_id, { limit: args.limit });
+      const balance = creditBalanceInTransaction(database, context.configuration, user.user_id, { reconcile: false });
+      return {
+        result: {
+          email: user.email,
+          transactions: transactions.map((entry) => ({
+            transactionId: entry.transactionId, type: entry.type, amount: entry.amount, reason: entry.reason,
+            source: entry.source, referenceId: entry.referenceId, createdAt: entry.createdAt, expiresAt: entry.expiresAt,
+          })),
+          credits: { available: balance.available, expiring: balance.expiring, expired: balance.expired },
+        },
+        targetUserId: user.user_id,
+        auditMetadata: { returned: transactions.length, available: balance.available },
+      };
+    },
+  },
   configurationStatus: {
     audit: "configuration_status", mutating: false, roles: ["OWNER"],
     description: "Read non-secret service and provider-availability metadata.",
@@ -606,6 +992,10 @@ export function confirmDeveloperAction(database, configuration, actor, body) {
   if (!tool) return auditConfirmationRejection(database, actor, ErrorCode.DEVELOPER_CONFIRMATION_INVALID);
   const toolName = Object.keys(TOOLS).find((name) => TOOLS[name] === tool);
 
+  // The execution context is rebuilt here from the service configuration, so a confirmed action is validated and
+  // executed against the same configured bounds as the original proposal.
+  const context = { configuration };
+
   return audited(database, actor, confirmation.action_type, (setTargetUserId) => {
     setTargetUserId(confirmation.target_user_id);
     if (!tool.roles.includes(actor.role) || !roleAllowed(actor, toolName)) throw new AccountApiError(ErrorCode.DEVELOPER_ACCESS_DENIED);
@@ -622,11 +1012,11 @@ export function confirmDeveloperAction(database, configuration, actor, body) {
     let args;
     try { args = JSON.parse(latest.arguments_json); }
     catch { throw new AccountApiError(ErrorCode.DEVELOPER_CONFIRMATION_INVALID); }
-    const validated = tool.validateResolved(database, args);
+    const validated = tool.validateResolved(database, args, context);
     const targetUserId = latest.target_user_id ?? resolvedTargetUserId(validated, database);
     database.prepare("UPDATE developer_action_confirmations SET consumed_at = ? WHERE confirmation_digest = ? AND consumed_at IS NULL")
       .run(nowIso(), digest);
-    const operation = tool.execute(database, validated, actor);
+    const operation = tool.execute(database, validated, actor, context);
     return { result: operation.result, targetUserId, auditMetadata: operation.auditMetadata ?? {} };
   }, {
     onFailure: () => database.prepare("UPDATE developer_action_confirmations SET consumed_at = ? WHERE confirmation_digest = ? AND developer_id = ? AND consumed_at IS NULL")

@@ -60,6 +60,18 @@ export function newSecurityProtectionId() {
   return `prt_${randomUUID()}`;
 }
 
+export function newMembershipId() {
+  return `mbr_${randomUUID()}`;
+}
+
+export function newMembershipTransitionId() {
+  return `mtr_${randomUUID()}`;
+}
+
+export function newCreditTransactionId() {
+  return `crd_${randomUUID()}`;
+}
+
 /**
  * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
  * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.
@@ -105,6 +117,25 @@ export function developerTokenDigest(authSecret, purpose, token) {
     .update(`craftmind:developer:${purpose}:`, "utf8")
     .update(token, "utf8")
     .digest("base64url");
+}
+
+/**
+ * Idempotency handle for a credit operation.
+ *
+ * A client-supplied idempotency key is never stored as presented: the database keeps `HMAC(AUTH_SECRET, user ‖
+ * operation ‖ key)`, exactly like session and one-time tokens. A stolen database copy therefore cannot be used to
+ * replay a credit operation or to learn the key a client sent, and the same key from a different account or for a
+ * different operation can never collide.
+ */
+export function creditOperationDigest(authSecret, { userId, operation, idempotencyKey }) {
+  return `cred_${createHmac("sha256", authSecret)
+    .update("craftmind:credit-operation-v1:", "utf8")
+    .update(String(userId ?? ""), "utf8")
+    .update("\u0000", "utf8")
+    .update(String(operation ?? ""), "utf8")
+    .update("\u0000", "utf8")
+    .update(String(idempotencyKey ?? ""), "utf8")
+    .digest("hex")}`;
 }
 
 /** Purpose-separated digest for email verification and password-recovery tokens. */

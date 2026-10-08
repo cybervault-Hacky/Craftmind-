@@ -9,12 +9,20 @@
  */
 
 import { newAuditId } from "./ids.js";
+import { REGISTERED_AUDIT_ACTION_TYPES } from "./db.js";
 import { AccountApiError, ErrorCode } from "./errors.js";
 
 export const AUDIT_ACTOR_KIND = Object.freeze({
   DEVELOPER: "DEVELOPER",
   SYSTEM_SECURITY: "SYSTEM_SECURITY",
   AI: "AI",
+  /**
+   * Engine-initiated domain bookkeeping that belongs to no operator and to no security response: assigning an account
+   * its free membership baseline, expiring a plan, recording the lapse of promotional credits, or refusing a
+   * consumption for lack of credits. A `SYSTEM` actor always has a null developer identity, so a domain event can never
+   * be mistaken for a decision by a person.
+   */
+  SYSTEM: "SYSTEM",
 });
 
 export const AUDIT_OUTCOME = Object.freeze({
@@ -45,6 +53,15 @@ export function appendAuditRecord(database, {
   if (!Object.values(AUDIT_OUTCOME).includes(outcome)) throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
   if (actorKind === AUDIT_ACTOR_KIND.SYSTEM_SECURITY && actorDeveloperId !== null) {
     // An automated security action must never be attributed to a developer identity.
+    throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
+  }
+  if (actorKind === AUDIT_ACTOR_KIND.SYSTEM && actorDeveloperId !== null) {
+    // Neither can engine bookkeeping.
+    throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
+  }
+  if (!REGISTERED_AUDIT_ACTION_TYPES.has(actionType)) {
+    // Fail closed on an action type the log does not declare: the check keeps this table's CHECK constraint and this
+    // module in step, so a new action is registered in `db.js` (and therefore in the schema) before it can be written.
     throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
   }
   const encoded = JSON.stringify(metadata ?? {});

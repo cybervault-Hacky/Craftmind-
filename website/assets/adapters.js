@@ -8,9 +8,18 @@
  * `configure()`, and the pages that consume these adapters switch from honest unavailable states to real data without
  * any markup change.
  *
- * The one adapter that is fully specified is the account adapter, because the account service already exists in
- * `backend/`. It is still inactive until a deployer deliberately configures an origin, and it only ever calls the
- * endpoints that exist (see ACCOUNT_ENDPOINTS).
+ * The two adapters that are fully specified are the account adapter, because the account service already exists in
+ * `backend/`, and — since Phase 22 — a read-only membership/entitlement view over it, because that service now owns
+ * membership state, plan entitlements, and build credits. Both stay inactive until a deployer deliberately configures
+ * an origin, and both only ever call the endpoints that exist (see ACCOUNT_ENDPOINTS).
+ *
+ * Two rules that Phase 22 makes explicit:
+ *
+ *   * **The server decides.** This module may *read* a plan, an entitlement list, and a credit balance for the signed-in
+ *     account. It never computes a balance, never decides an entitlement, never accepts a plan from the browser, and
+ *     never stores a balance anywhere — the figures below exist only as the response of one request.
+ *   * **Nothing here spends.** No website feature consumes credits in this phase, so no method here calls the
+ *     server's consumption endpoint. When a real build flow needs it, that phase adds the call deliberately.
  */
 
 import { STATE } from "./state.js";
@@ -82,13 +91,26 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "GET /auth/sessions",
   "POST /auth/sessions/revoke",
   "POST /auth/sessions/revoke-all",
+  // Phase 22: membership, entitlement, and credit reads. The server also exposes POST /account/credits/consume for
+  // clients that perform a real credit-consuming operation; no website feature does, so this module never calls it.
+  "GET /account/membership",
+  "GET /account/entitlements",
+  "GET /account/credits",
+  "GET /account/credits/transactions",
 ]);
 
 /** The method names the configured account adapter exposes; also the contract reported by describeIntegrationBoundary. */
 const ACCOUNT_METHODS = Object.freeze([
   "signIn", "signOut", "loadAccount", "loadSessions", "revokeSession", "revokeOtherSessions",
   "requestPasswordReset", "confirmPasswordReset", "changePassword", "resendVerification",
+  "loadMembership", "loadEntitlements", "loadCredits",
 ]);
+
+/** The read-only membership surface. Every method is a read; nothing here starts a purchase or a charge. */
+const MEMBERSHIP_METHODS = Object.freeze(["loadMembership", "loadEntitlements", "loadCredits"]);
+
+/** The entitlement surface. `checkAccess` is deliberately absent: access is decided by the server, never in a browser. */
+const ENTITLEMENT_METHODS = Object.freeze(["listEntitlements", "loadCredits"]);
 
 async function requestJson(baseUrl, path, { method = "GET", body, token } = {}) {
   const headers = {};
@@ -124,8 +146,18 @@ async function requestJson(baseUrl, path, { method = "GET", body, token } = {}) 
  * before the site modules load. Even then it only calls the endpoints listed in `ACCOUNT_ENDPOINTS`, holds the access
  * token in memory for the current page only, and never writes to browser storage.
  */
+/**
+ * The in-memory session, shared by every adapter instance created during this page visit.
+ *
+ * It is deliberately module-scoped rather than per-instance so that two controllers on one page — the account area's
+ * sign-in form and the membership panel, for example — agree about who is signed in. It is still nothing more than a
+ * page-local variable: it is never written to any browser persistence (no web-storage key, no cookie, no client-side
+ * database), it does not survive a reload, and the access token is never rendered.
+ */
+const pageSession = { accessToken: null, refreshToken: null, account: null };
+
 export function createAccountAdapter({ origin = null } = {}) {
-  const session = { accessToken: null, refreshToken: null, account: null };
+  const session = pageSession;
   const base = {
     name: "account",
     configured: Boolean(origin),
@@ -169,6 +201,71 @@ export function createAccountAdapter({ origin = null } = {}) {
     confirmPasswordReset({ email, code, newPassword }) { return requestJson(origin, "/auth/password-reset/confirm", { method: "POST", body: { email, code, newPassword } }); },
     changePassword({ currentPassword, newPassword }) { return requestJson(origin, "/auth/password/change", { method: "POST", body: { currentPassword, newPassword }, token: session.accessToken }); },
     resendVerification({ email }) { return requestJson(origin, "/auth/resend-verification", { method: "POST", body: { email } }); },
+    // Phase 22 read-only account state. Each call returns the server's own answer for the signed-in account; the
+    // response carries no internal identifier, and no value is cached beyond the page.
+    loadMembership() { return requestJson(origin, "/account/membership", { token: session.accessToken }); },
+    loadEntitlements() { return requestJson(origin, "/account/entitlements", { token: session.accessToken }); },
+    loadCredits() { return requestJson(origin, "/account/credits", { token: session.accessToken }); },
+  });
+}
+
+/**
+ * A read-only membership and entitlement view over the account adapter.
+ *
+ * It exists so pages can ask "is a membership service connected, and what does the server say about my plan?" without
+ * owning a network call of their own, and it deliberately has no write method: there is nothing to upgrade, downgrade,
+ * cancel, or purchase, because no payment provider exists in this phase. When no origin is configured, or no session is
+ * active, the answers are the same honest states the pages already render.
+ */
+function createMembershipAdapter(account) {
+  const contract = [...MEMBERSHIP_METHODS];
+  if (!account.configured) {
+    return unconfigured("membership", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  const signedInOnly = (method) => async () => {
+    if (!account.signedIn) {
+      return Object.freeze({
+        status: RESULT.UNAUTHORIZED,
+        reason: REASON.NOT_SIGNED_IN,
+        message: "Sign in to read your plan, entitlements, and credit balance from the account service.",
+      });
+    }
+    return account[method]();
+  };
+  return Object.freeze({
+    configured: true,
+    name: "membership",
+    contract,
+    get signedIn() { return account.signedIn; },
+    loadMembership: signedInOnly("loadMembership"),
+    loadEntitlements: signedInOnly("loadEntitlements"),
+    loadCredits: signedInOnly("loadCredits"),
+  });
+}
+
+/** The entitlement view: the same server answers, under the name the entitlement surfaces use. */
+function createEntitlementsAdapter(account) {
+  const contract = [...ENTITLEMENT_METHODS];
+  if (!account.configured) {
+    return unconfigured("entitlements", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  const signedInOnly = (method) => async () => {
+    if (!account.signedIn) {
+      return Object.freeze({
+        status: RESULT.UNAUTHORIZED,
+        reason: REASON.NOT_SIGNED_IN,
+        message: "Sign in to read which capabilities the server grants this account.",
+      });
+    }
+    return account[method]();
+  };
+  return Object.freeze({
+    configured: true,
+    name: "entitlements",
+    contract,
+    get signedIn() { return account.signedIn; },
+    listEntitlements: signedInOnly("loadEntitlements"),
+    loadCredits: signedInOnly("loadCredits"),
   });
 }
 
@@ -187,16 +284,20 @@ function siteConfiguration() {
 /** The integration boundary consumed by the page controllers. */
 export function createAdapters() {
   const config = siteConfiguration();
+  const account = createAccountAdapter({ origin: config.accountServiceOrigin || null });
   return Object.freeze({
-    account: createAccountAdapter({ origin: config.accountServiceOrigin || null }),
+    account,
+    // Phase 22: membership and entitlements read the real account service when one is configured, and render the same
+    // honest unavailable states as before when one is not.
+    membership: createMembershipAdapter(account),
+    entitlements: createEntitlementsAdapter(account),
     // Documented, unimplemented, and intentionally inert. Each list is the exact method set a later phase must provide.
     marketplace: unconfigured("marketplace", ["searchListings", "getListing", "listCategories", "listFeatured", "listSaved", "setSaved"]),
     creator: unconfigured("creator", ["listMyListings", "createDraft", "updateDraft", "publishListing", "unpublishListing", "duplicateListing", "deleteDraft", "listMedia", "uploadMedia"]),
     orders: unconfigured("orders", ["listSalesOrders", "listPurchases", "getOrder"]),
     reviews: unconfigured("reviews", ["listReviewsForListing", "listReviewsForCreator", "submitReview"]),
     analytics: unconfigured("analytics", ["listingViews", "listingSaves", "conversion", "revenue", "topListings", "trafficSources"]),
-    membership: unconfigured("membership", ["listPlans", "getCurrentMembership", "startUpgrade", "startDowngrade", "cancelRenewal"]),
-    entitlements: unconfigured("entitlements", ["listEntitlements", "checkAccess"]),
+    // Payments stay inert in this phase. There is no checkout, no billing portal, and no payout surface to call.
     payments: unconfigured("payments", ["listPayoutMethods", "listPayouts", "startCheckout", "openBillingPortal"]),
   });
 }

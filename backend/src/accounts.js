@@ -27,6 +27,18 @@ const MAX_DEVICE_LABEL_LENGTH = 80;
 const TOKEN_RETENTION_MILLIS = 30 * 24 * 60 * 60 * 1000;
 const DUMMY_TOKEN_DIGEST = Buffer.alloc(32).toString("base64url");
 
+/**
+ * Resolves a bearer token to the account it belongs to, or throws the same typed failures as every other authenticated
+ * route (expired session, revoked session, suspended or deleted account, unverified email).
+ *
+ * Phase 22 routes identify the caller by this function alone. That is what makes a client-supplied account id
+ * meaningless: no endpoint in this family accepts one.
+ */
+export function requireAccountIdForToken(database, configuration, accessToken) {
+  const { user } = loadLiveSession(database, configuration, { accessToken });
+  return user.user_id;
+}
+
 function toPublicAccount(row) {
   return {
     userId: row.user_id,
@@ -263,6 +275,9 @@ export async function registerAccount(database, configuration, body) {
       `INSERT INTO users (user_id, email, email_canonical, display_name, password_hash, status, created_at, updated_at, email_verified_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     ).run(userId, emailRecord, canonicalEmail, displayName, passwordHash, ACCOUNT_STATUS.ACTIVE, timestamp, timestamp);
+    // Phase 22: membership state is created with the account, so every registered user has a deterministic free
+    // baseline from that moment. It is created inside this same transaction: an account can never exist without it.
+    ensureMembershipBaseline(database, userId, { now: Date.parse(timestamp) });
     const guestLinked = linkGuestIdentity(database, guestIdentityId, userId);
     const challenge = issueOneTimeToken(database, configuration, {
       table: VERIFICATION_TABLE,
@@ -562,5 +577,7 @@ export function currentAccount(database, configuration, accessToken) {
     },
   };
 }
+
+import { ensureMembershipBaseline } from "./entitlements.js";
 
 export { issueSession, revokeAllSessionsForUser, toPublicAccount };

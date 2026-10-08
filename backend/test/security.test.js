@@ -179,6 +179,8 @@ describe("account service security", () => {
 
     assert.deepEqual(tables, [
       "admin_audit_log",
+      "credit_ledger",
+      "credit_operation_keys",
       "developer_access_grants",
       "developer_accounts",
       "developer_action_confirmations",
@@ -186,6 +188,8 @@ describe("account service security", () => {
       "developer_sessions",
       "email_verification_tokens",
       "guest_identities",
+      "membership_accounts",
+      "membership_transitions",
       "password_recovery_tokens",
       "schema_migrations",
       "security_actions",
@@ -196,7 +200,10 @@ describe("account service security", () => {
       "sessions",
       "users",
     ]);
-    for (const forbidden of ["subscription", "payment", "credit", "gift", "ban", "marketplace"]) {
+    // Phase 22 added an internal membership and build-credit ledger, so `credit` is no longer a forbidden substring —
+    // the ban exists to stop a *payment or marketplace* system appearing without its phase. Those remain forbidden, and
+    // the credit tables are internal allocations with no purchase, price, or settlement behind them.
+    for (const forbidden of ["subscription", "payment", "gift", "ban", "marketplace", "invoice", "price", "payout"]) {
       assert.equal(
         tables.some((name) => name.includes(forbidden)),
         false,

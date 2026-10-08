@@ -300,11 +300,175 @@ const MIGRATIONS = [
          (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
        SELECT audit_id, 'DEVELOPER', actor_developer_id, action_type, target_user_id, NULL, occurred_at, outcome, metadata_json
          FROM admin_audit_log`,
+      // The confirmation challenge records the tool's action type, so its CHECK list is widened in the same migration.
+      // Its rows are pending proposals only: while one is being copied it cannot be consumed, and the copy happens
+      // inside this migration's own transaction, so no challenge is ever in flight across the rebuild.
+      `CREATE TABLE developer_action_confirmations_v5 (
+         confirmation_digest TEXT PRIMARY KEY,
+         developer_id TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE CASCADE,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'revoke_user_sessions', 'suspend_user', 'restore_user', 'grant_entitlement', 'revoke_entitlement',
+           'grant_membership', 'grant_credits', 'reverse_credit_grant'
+         )),
+         target_user_id TEXT,
+         arguments_json TEXT NOT NULL CHECK (length(arguments_json) <= 4096),
+         created_at TEXT NOT NULL,
+         expires_at TEXT NOT NULL,
+         consumed_at TEXT
+       )`,
+      `INSERT INTO developer_action_confirmations_v5
+         (confirmation_digest, developer_id, action_type, target_user_id, arguments_json, created_at, expires_at, consumed_at)
+       SELECT confirmation_digest, developer_id, action_type, target_user_id, arguments_json, created_at, expires_at, consumed_at
+         FROM developer_action_confirmations`,
+      `DROP TABLE developer_action_confirmations`,
+      `ALTER TABLE developer_action_confirmations_v5 RENAME TO developer_action_confirmations`,
+      `CREATE INDEX developer_confirmations_by_developer ON developer_action_confirmations(developer_id, created_at DESC)`,
+      `CREATE INDEX developer_confirmations_by_expiry ON developer_action_confirmations(expires_at)`,
       `DROP TRIGGER admin_audit_log_no_update`,
       `DROP TRIGGER admin_audit_log_no_delete`,
       `DROP TRIGGER admin_audit_log_no_replacement`,
       `DROP TABLE admin_audit_log`,
       `ALTER TABLE admin_audit_log_v4 RENAME TO admin_audit_log`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_incident ON admin_audit_log(incident_id, occurred_at DESC)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+    ],
+  },
+  {
+    // Phase 22 is additive: membership state, an append-only credit ledger, and an idempotency key table. Two
+    // extensions are made to the *existing* structures rather than adding competing ones:
+    //
+    //   * `admin_audit_log` is rebuilt with the Phase 22 tool and domain action types, and with a `SYSTEM` actor
+    //     category for engine-initiated domain events (a baseline assignment, an expiration, a consumption). Every
+    //     existing row, its actor, and its incident reference are copied across; the append-only triggers are recreated.
+    //     There is still exactly one audit log.
+    //   * Nothing is dropped: `users`, `sessions`, `guest_identities`, the developer tables, the Phase 20 security
+    //     tables, and every Phase 21 website artefact are untouched.
+    //
+    // The credit ledger is append-only and immutable (enforced by triggers). Balances are always derived from it, so
+    // `users` never carries a mutable credit column and no code path can assign a balance directly.
+    version: 5,
+    statements: [
+      `CREATE TABLE membership_accounts (
+         membership_id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+         plan TEXT NOT NULL CHECK (plan IN ('FREE', 'PRO', 'CREATOR', 'SERVER')),
+         status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'EXPIRED', 'CANCELLED', 'PENDING', 'UNAVAILABLE')),
+         source TEXT NOT NULL CHECK (source IN ('DEFAULT_BASELINE', 'DEVELOPER_GRANT', 'BASELINE_FALLBACK')),
+         starts_at TEXT NOT NULL,
+         ends_at TEXT,
+         granted_by TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         CHECK (status <> 'ACTIVE' OR plan = 'FREE' OR ends_at IS NOT NULL),
+         CHECK (ends_at IS NULL OR ends_at > starts_at)
+       )`,
+      `CREATE INDEX membership_accounts_by_plan ON membership_accounts(plan, status)`,
+      `CREATE INDEX membership_accounts_by_expiry ON membership_accounts(ends_at) WHERE ends_at IS NOT NULL`,
+      `CREATE TABLE membership_transitions (
+         transition_id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         from_plan TEXT NOT NULL,
+         to_plan TEXT NOT NULL,
+         from_status TEXT NOT NULL,
+         to_status TEXT NOT NULL,
+         reason TEXT NOT NULL CHECK (length(reason) <= 200),
+         source TEXT NOT NULL CHECK (source IN ('DEFAULT_BASELINE', 'DEVELOPER_GRANT', 'BASELINE_FALLBACK')),
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         occurred_at TEXT NOT NULL,
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL),
+         CHECK (actor_kind = 'SYSTEM' OR actor_developer_id IS NOT NULL)
+       )`,
+      `CREATE INDEX membership_transitions_by_user ON membership_transitions(user_id, occurred_at DESC, transition_id)`,
+      `CREATE TRIGGER membership_transitions_no_update BEFORE UPDATE ON membership_transitions
+         BEGIN SELECT RAISE(ABORT, 'membership history is append-only'); END`,
+      `CREATE TRIGGER membership_transitions_no_delete BEFORE DELETE ON membership_transitions
+         BEGIN SELECT RAISE(ABORT, 'membership history is append-only'); END`,
+      `CREATE TABLE credit_ledger (
+         transaction_id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         type TEXT NOT NULL CHECK (type IN ('GRANT', 'CONSUME', 'EXPIRE', 'ADJUSTMENT', 'REVERSAL')),
+         amount INTEGER NOT NULL CHECK (amount <> 0 AND amount >= -1000000000 AND amount <= 1000000000),
+         reason TEXT NOT NULL CHECK (length(reason) <= 200),
+         source TEXT NOT NULL CHECK (source IN (
+           'DEVELOPER_GRANT', 'PLAN_ALLOCATION', 'BUILD_CONSUMPTION', 'EXPIRATION', 'REVERSAL'
+         )),
+         reference_id TEXT,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         created_at TEXT NOT NULL,
+         expires_at TEXT,
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL),
+         CHECK (actor_kind = 'SYSTEM' OR actor_developer_id IS NOT NULL),
+         CHECK (actor_kind <> 'AI' OR type <> 'GRANT'),
+         CHECK (type IN ('GRANT', 'ADJUSTMENT') OR expires_at IS NULL),
+         CHECK (type <> 'GRANT' OR amount > 0),
+         CHECK (type NOT IN ('CONSUME', 'EXPIRE', 'REVERSAL') OR amount < 0),
+         CHECK (type <> 'REVERSAL' OR reference_id IS NOT NULL)
+       )`,
+      `CREATE INDEX credit_ledger_by_user ON credit_ledger(user_id, created_at DESC, transaction_id)`,
+      `CREATE INDEX credit_ledger_by_expiry ON credit_ledger(expires_at) WHERE expires_at IS NOT NULL`,
+      `CREATE INDEX credit_ledger_by_reference ON credit_ledger(reference_id) WHERE reference_id IS NOT NULL`,
+      `CREATE TRIGGER credit_ledger_no_update BEFORE UPDATE ON credit_ledger
+         BEGIN SELECT RAISE(ABORT, 'the credit ledger is append-only'); END`,
+      `CREATE TRIGGER credit_ledger_no_delete BEFORE DELETE ON credit_ledger
+         BEGIN SELECT RAISE(ABORT, 'the credit ledger is append-only'); END`,
+      `CREATE TRIGGER credit_ledger_no_replacement BEFORE INSERT ON credit_ledger
+         WHEN EXISTS (SELECT 1 FROM credit_ledger WHERE transaction_id = NEW.transaction_id)
+         BEGIN SELECT RAISE(ABORT, 'credit transactions cannot be replaced'); END`,
+      `CREATE TABLE credit_operation_keys (
+         operation_digest TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         operation TEXT NOT NULL CHECK (operation IN ('GRANT', 'CONSUME', 'EXPIRE', 'ADJUSTMENT', 'REVERSAL')),
+         request_digest TEXT NOT NULL,
+         transaction_id TEXT REFERENCES credit_ledger(transaction_id) ON DELETE RESTRICT,
+         created_at TEXT NOT NULL
+       )`,
+      `CREATE INDEX credit_operation_keys_by_user ON credit_operation_keys(user_id, created_at DESC)`,
+      `CREATE TABLE admin_audit_log_v5 (
+         audit_id TEXT PRIMARY KEY,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke',
+           'security_overview', 'list_security_incidents', 'get_security_incident', 'list_security_events',
+           'list_security_actions', 'list_security_notifications', 'developer_ai_security_summary',
+           'SECURITY_INCIDENT_CREATED', 'SECURITY_RATE_LIMIT_APPLIED', 'SECURITY_REQUEST_REJECTED',
+           'SECURITY_SESSION_REVOKED', 'SECURITY_ACCOUNT_PROTECTED', 'SECURITY_ALERT_CREATED',
+           'SECURITY_PROTECTION_RELEASED', 'SECURITY_INCIDENT_RESOLVED',
+           'inspect_membership', 'grant_membership', 'grant_credits', 'reverse_credit_grant', 'list_credit_transactions',
+           'MEMBERSHIP_BASELINE_ASSIGNED', 'MEMBERSHIP_GRANTED', 'MEMBERSHIP_EXPIRED',
+           'CREDIT_GRANTED', 'CREDIT_CONSUMED', 'CREDIT_EXPIRED', 'CREDIT_REVERSED',
+           'CREDIT_OPERATION_REJECTED', 'ENTITLEMENT_DENIED'
+         )),
+         target_user_id TEXT,
+         incident_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `INSERT INTO admin_audit_log_v5
+         (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+       SELECT audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json
+         FROM admin_audit_log`,
+      `DROP TRIGGER admin_audit_log_no_update`,
+      `DROP TRIGGER admin_audit_log_no_delete`,
+      `DROP TRIGGER admin_audit_log_no_replacement`,
+      `DROP TABLE admin_audit_log`,
+      `ALTER TABLE admin_audit_log_v5 RENAME TO admin_audit_log`,
       `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
       `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC)`,
       `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC)`,
@@ -330,12 +494,30 @@ export const AUDIT_ACTION_TYPES = Object.freeze({
     "security_overview", "list_security_incidents", "get_security_incident", "list_security_events",
     "list_security_actions", "list_security_notifications", "developer_ai_security_summary",
   ]),
+  /** The subset of Phase 22 tool names that a mutating action may be confirmed for. */
+  CONFIRMABLE_MEMBERSHIP_TOOLS: Object.freeze(["grant_membership", "grant_credits", "reverse_credit_grant"]),
+  MEMBERSHIP_AND_CREDIT_TOOLS: Object.freeze([
+    "inspect_membership", "grant_membership", "grant_credits", "reverse_credit_grant", "list_credit_transactions",
+  ]),
+  MEMBERSHIP_AND_CREDIT_EVENTS: Object.freeze([
+    "MEMBERSHIP_BASELINE_ASSIGNED", "MEMBERSHIP_GRANTED", "MEMBERSHIP_EXPIRED",
+    "CREDIT_GRANTED", "CREDIT_CONSUMED", "CREDIT_EXPIRED", "CREDIT_REVERSED",
+    "CREDIT_OPERATION_REJECTED", "ENTITLEMENT_DENIED",
+  ]),
   AUTOMATED_SECURITY_ACTIONS: Object.freeze([
     "SECURITY_INCIDENT_CREATED", "SECURITY_RATE_LIMIT_APPLIED", "SECURITY_REQUEST_REJECTED",
     "SECURITY_SESSION_REVOKED", "SECURITY_ACCOUNT_PROTECTED", "SECURITY_ALERT_CREATED",
     "SECURITY_PROTECTION_RELEASED", "SECURITY_INCIDENT_RESOLVED",
   ]),
 });
+
+/**
+ * Every action type the audit log accepts, derived from the groups above so a new action type cannot be added in one
+ * place only. `appendAuditRecord` checks membership before writing, so an unregistered action fails closed.
+ */
+export const REGISTERED_AUDIT_ACTION_TYPES = Object.freeze(
+  new Set(Object.values(AUDIT_ACTION_TYPES).flatMap((group) => [...group])),
+);
 
 /** @param {string} databaseUrl path to the SQLite file (`:memory:` is accepted only by tests) */
 export function openDatabase(databaseUrl) {

@@ -17,13 +17,16 @@ export class ConfigurationError extends Error {
   }
 }
 
-function positiveInteger(environment, name, fallback, maximum = Number.MAX_SAFE_INTEGER) {
+function positiveInteger(environment, name, fallback, maximum = Number.MAX_SAFE_INTEGER, allowZero = false) {
   const raw = environment[name];
   if (raw === undefined || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw)) throw new ConfigurationError(`${name} must be a positive integer`);
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new ConfigurationError(`${name} must be a positive integer within its supported range`);
+  const floor = allowZero ? 0 : 1;
+  if (!Number.isSafeInteger(value) || value < floor || value > maximum) {
+    throw new ConfigurationError(
+      `${name} must be ${allowZero ? "a non-negative" : "a positive"} integer within its supported range`,
+    );
   }
   return value;
 }
@@ -131,6 +134,36 @@ function securityConfiguration(environment) {
       maximumIncidentsPerQuery: 100,
     }),
   });
+}
+
+/**
+ * Phase 22 membership, entitlement, and credit configuration.
+ *
+ * Every number the entitlement engine and the credit ledger enforce lives here, so no route handler contains a limit of
+ * its own. Plan credit allowances are internal (promotional) allocations — they are not prices, they are not advertised
+ * in the interface, and they can only be applied by an authorized backend tool or a plan grant.
+ */
+function membershipConfiguration(environment) {
+  const catalog = {
+    freeDailyGenerations: positiveInteger(environment, "MEMBERSHIP_FREE_DAILY_GENERATIONS", 10, 1_000_000),
+    freePromotionalCredits: positiveInteger(environment, "MEMBERSHIP_FREE_PROMOTIONAL_CREDITS", 0, 1_000_000, true),
+    proPromotionalCredits: positiveInteger(environment, "MEMBERSHIP_PRO_PROMOTIONAL_CREDITS", 200, 1_000_000),
+    creatorPromotionalCredits: positiveInteger(environment, "MEMBERSHIP_CREATOR_PROMOTIONAL_CREDITS", 500, 1_000_000),
+    serverPromotionalCredits: positiveInteger(environment, "MEMBERSHIP_SERVER_PROMOTIONAL_CREDITS", 1_000, 1_000_000),
+    creditExpiryDays: positiveInteger(environment, "MEMBERSHIP_CREDIT_EXPIRY_DAYS", 90, 3_650),
+    maximumGrantCredits: positiveInteger(environment, "MEMBERSHIP_MAX_GRANT_CREDITS", 10_000, 1_000_000),
+    maximumConsumeCredits: positiveInteger(environment, "MEMBERSHIP_MAX_CONSUME_CREDITS", 100, 1_000_000),
+    maximumPlanGrantDays: positiveInteger(environment, "MEMBERSHIP_MAX_PLAN_GRANT_DAYS", 365, 3_650),
+    maximumTransactionPageSize: positiveInteger(environment, "MEMBERSHIP_MAX_TRANSACTION_PAGE", 100, 1_000),
+    reconciliationBatch: positiveInteger(environment, "MEMBERSHIP_RECONCILIATION_BATCH", 50, 10_000),
+  };
+  if (catalog.freePromotionalCredits > catalog.maximumGrantCredits ||
+      catalog.proPromotionalCredits > catalog.maximumGrantCredits ||
+      catalog.creatorPromotionalCredits > catalog.maximumGrantCredits ||
+      catalog.serverPromotionalCredits > catalog.maximumGrantCredits) {
+    throw new ConfigurationError("a plan's promotional credit allocation cannot exceed MEMBERSHIP_MAX_GRANT_CREDITS");
+  }
+  return Object.freeze(catalog);
 }
 
 /** @param {NodeJS.ProcessEnv} environment */
@@ -242,6 +275,7 @@ export function loadConfiguration(environment = process.env, options = {}) {
     publicOrigin,
     trustProxyTls,
     corsAllowedOrigins,
+    membership: membershipConfiguration(environment),
     security: securityConfiguration(environment),
     rateLimit: Object.freeze({
       login: Object.freeze({ maximum: positiveInteger(environment, "RATE_LOGIN_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_LOGIN_WINDOW_MS", 900_000, 86_400_000) }),
@@ -256,6 +290,9 @@ export function loadConfiguration(environment = process.env, options = {}) {
       developerSession: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_SESSION_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_SESSION_WINDOW_MS", 900_000, 86_400_000) }),
       developerAdmin: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_ADMIN_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_ADMIN_WINDOW_MS", 900_000, 86_400_000) }),
       developerAi: Object.freeze({ maximum: positiveInteger(environment, "RATE_DEV_AI_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_DEV_AI_WINDOW_MS", 60_000, 86_400_000) }),
+      // Phase 22: reading entitlement state is cheap; consuming credits is a state change and is limited far more tightly.
+      credits: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREDITS_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_CREDITS_WINDOW_MS", 900_000, 86_400_000) }),
+      creditConsume: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREDIT_CONSUME_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_CREDIT_CONSUME_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);
