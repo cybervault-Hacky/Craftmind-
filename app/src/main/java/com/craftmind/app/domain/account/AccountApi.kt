@@ -17,7 +17,7 @@ interface AccountApi {
     fun register(
         emailAddress: String,
         password: CharArray,
-        displayName: String?,
+        displayName: String,
         guestIdentityId: String?,
     ): AccountApiOutcome<AccountRegistration>
 
@@ -60,7 +60,7 @@ sealed interface AccountApiOutcome<out T> {
  * silently becoming UNKNOWN_ERROR at runtime.
  */
 enum class AccountApiErrorCode(val wireValue: String, val retryable: Boolean) {
-    MALFORMED_REQUEST("MALFORMED_REQUEST", retryable = false),
+    INVALID_REQUEST("INVALID_REQUEST", retryable = false),
     REQUEST_TOO_LARGE("REQUEST_TOO_LARGE", retryable = false),
     METHOD_NOT_ALLOWED("METHOD_NOT_ALLOWED", retryable = false),
     INVALID_EMAIL("INVALID_EMAIL", retryable = false),
@@ -70,12 +70,15 @@ enum class AccountApiErrorCode(val wireValue: String, val retryable: Boolean) {
     ACCOUNT_NOT_FOUND("ACCOUNT_NOT_FOUND", retryable = false),
     INVALID_CREDENTIALS("INVALID_CREDENTIALS", retryable = false),
     ACCOUNT_SUSPENDED("ACCOUNT_SUSPENDED", retryable = false),
+    ACCOUNT_DELETED("ACCOUNT_DELETED", retryable = false),
     SESSION_EXPIRED("SESSION_EXPIRED", retryable = false),
-    SESSION_NOT_FOUND("SESSION_NOT_FOUND", retryable = false),
+    SESSION_INVALID("SESSION_INVALID", retryable = false),
+    REFRESH_FAILED("REFRESH_FAILED", retryable = false),
     AUTHENTICATION_REQUIRED("AUTHENTICATION_REQUIRED", retryable = false),
     INVALID_GUEST_IDENTITY("INVALID_GUEST_IDENTITY", retryable = false),
     GUEST_IDENTITY_ALREADY_LINKED("GUEST_IDENTITY_ALREADY_LINKED", retryable = false),
     PASSWORD_RESET_NOT_IMPLEMENTED("PASSWORD_RESET_NOT_IMPLEMENTED", retryable = false),
+    NETWORK_ERROR("NETWORK_ERROR", retryable = true),
     BACKEND_UNAVAILABLE("BACKEND_UNAVAILABLE", retryable = true),
     UNKNOWN_ERROR("UNKNOWN_ERROR", retryable = true);
 
@@ -114,8 +117,8 @@ enum class AccountServerStatus(val wireValue: String) {
     DELETED("DELETED");
 
     companion object {
-        fun fromWireValue(value: String?): AccountServerStatus =
-            entries.firstOrNull { it.wireValue == value } ?: ACTIVE
+        fun fromWireValue(value: String?): AccountServerStatus? =
+            entries.firstOrNull { it.wireValue == value }
     }
 }
 

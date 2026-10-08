@@ -23,19 +23,19 @@ One technology, one process, no frameworks: a small **Node.js** service using on
 | Errors | `backend/src/errors.js` | The closed error vocabulary, the HTTP status for each code, and the one exception type the server throws |
 | Passwords | `backend/src/passwords.js` | scrypt hashing and verification (`N=16384, r=8, p=1`, 64-byte key, per-password salt), the password policy, and a dummy verification used to keep "unknown account" and "wrong password" indistinguishable in cost |
 | Identifiers and tokens | `backend/src/ids.js` | `usr_`/`ses_` identifiers, 256-bit random tokens, HMAC-SHA256 digests, digest comparison, and the email/display-name/guest-identity validation rules |
-| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL, foreign keys, a busy timeout, and a migration that creates **exactly three tables** |
+| Storage | `backend/src/db.js` | SQLite (`node:sqlite`) with WAL, foreign keys, a busy timeout, and a migration for exactly three account-domain tables plus migration metadata |
 | Account logic | `backend/src/accounts.js` | Registration, sign-in, refresh, sign-out, current account, guest registration, and guest linking |
 | HTTP | `backend/src/server.js` | Routing, bounded request bodies, JSON parsing, authentication, `Cache-Control: no-store`, and request ids |
 | Entry point | `backend/src/index.js` | Configuration → database → listen → graceful shutdown |
 
-**Storage schema (migration v1).** Three tables, and nothing else:
+**Storage schema (migration v1).** Three account-domain tables, plus the standard `schema_migrations` version ledger:
 
-* `users` — `user_id` (primary key), `email`, `email_normalized` (unique, case/space-insensitive), `display_name`,
+* `users` — `user_id` (primary key), `email`, `email_canonical` (unique, case/space-insensitive), `display_name`,
   `password_hash`, `status` (`ACTIVE` / `SUSPENDED` / `DELETED`), `created_at`, `updated_at`.
-* `sessions` — `session_id` (primary key), `user_id` (foreign key), `access_token_digest`, `refresh_token_digest`,
-  `created_at`, `access_expires_at`, `refresh_expires_at`, `revoked_at`. Indexed on both digests and on `user_id`.
-* `guest_identities` — `guest_identity_id` (primary key), `user_id` (nullable, set when the identity is linked),
-  `created_at`, `linked_at`. Indexed on `user_id`.
+* `sessions` — `session_id` (primary key), `user_id` (foreign key), `access_digest`, `refresh_digest`,
+  `issued_at`, `access_expires_at`, `refresh_expires_at`, `revoked_at`, and nullable `guest_identity_id`. Indexed on both digests and on `user_id`.
+* `guest_identities` — `guest_identity_id` (primary key), `linked_user_id` (nullable, set when the identity is linked),
+  `created_at`, `last_seen_at`, `linked_at`. Indexed on `linked_user_id`.
 
 There is no account-subscription, credit, entitlement, gift, ban, marketplace, or admin table, and the test suite fails
 if one ever appears.
@@ -48,18 +48,18 @@ network, and needs no second service to run: the smallest thing that genuinely p
 ## 2. API contracts
 
 Every endpoint is `POST /auth/…` except the two `GET`s. Request and response bodies are JSON with string members; a
-missing optional member is omitted rather than sent as `null`. Every response carries `Cache-Control: no-store`, and every
+missing optional member is omitted rather than sent as `null`; registration requires a non-empty `displayName`. Every response carries `Cache-Control: no-store`, and every
 error is `{"error": {"code": "...", "message": "...", "requestId": "..."}}` with a stable `code`.
 
 | Endpoint | Request | Success | Notes |
 | --- | --- | --- | --- |
-| `POST /auth/register` | `{email, password, displayName?, guestIdentityId?}` | `201 {account, session, guestLinked?}` | Rejects a duplicate address with `ACCOUNT_ALREADY_EXISTS` (case- and space-insensitive). A guest identity is linked when one is supplied |
-| `POST /auth/login` | `{email, password, guestIdentityId?}` | `200 {account, session, guestLinked?}` | The same answer shape as registration, so a client has one path. An unknown address and a wrong password produce the same code and message |
+| `POST /auth/register` | `{email, password, displayName, guestIdentityId?}` | `201 {account, session, guestLinked}` | Rejects a duplicate address with `ACCOUNT_ALREADY_EXISTS` (case- and space-insensitive). A guest identity is linked when one is supplied |
+| `POST /auth/login` | `{email, password, guestIdentityId?}` | `200 {account, session}` | The same account-plus-session core as registration. Unknown addresses and wrong passwords share one code and message. An unknown address and a wrong password produce the same code and message |
 | `POST /auth/refresh` | `{refreshToken}` | `200 {session}` | Rotates **both** tokens; the previous pair stops working immediately |
 | `POST /auth/logout` | `{refreshToken?, accessToken?}` | `200 {revoked, alreadyRevoked, revokedSessions}` | Idempotent: signing out twice is a success, and the answer says which case it was |
 | `GET /auth/me` | `Authorization: Bearer <accessToken>` | `200 {account}` | The **only** source of account truth. The service answers with the account its own session belongs to |
 | `POST /auth/guest` | `{guestIdentityId}` | `201 {guest: {guestIdentityId, linked, createdAt}}` | Records an anonymous identity so a later registration can be linked. Idempotent |
-| `GET /health` | — | `200 {status, schemaVersion}` | Availability probe. Reveals nothing about accounts |
+| `GET /health` | — | `200 {status: "ok", service: "craftmind-auth"}` | Availability probe. Reveals nothing about accounts |
 | `POST /auth/password-reset` | `{email}` | `501 PASSWORD_RESET_NOT_IMPLEMENTED` | An explicit future contract |
 
 Response shapes:
@@ -68,12 +68,15 @@ Response shapes:
   is never an internal database row id, and the app never renders it.
 * `session` — `{accessToken, refreshToken, accessExpiresAt, refreshExpiresAt}`. The only place a token ever appears.
 
-Error codes, all typed and stable: `INVALID_EMAIL`, `INVALID_PASSWORD`, `INVALID_DISPLAY_NAME`, `INVALID_CREDENTIALS`,
-`ACCOUNT_NOT_FOUND`, `ACCOUNT_ALREADY_EXISTS`, `ACCOUNT_SUSPENDED`, `SESSION_EXPIRED`, `SESSION_NOT_FOUND`,
-`AUTHENTICATION_REQUIRED`, `INVALID_GUEST_IDENTITY`, `GUEST_IDENTITY_ALREADY_LINKED`, `MALFORMED_REQUEST`,
-`REQUEST_TOO_LARGE`, `METHOD_NOT_ALLOWED`, `PASSWORD_RESET_NOT_IMPLEMENTED`, `BACKEND_UNAVAILABLE`, `UNKNOWN_ERROR`.
+Error codes, all typed and stable: `INVALID_REQUEST`, `INVALID_EMAIL`, `INVALID_PASSWORD`, `INVALID_DISPLAY_NAME`,
+`INVALID_CREDENTIALS`, `ACCOUNT_ALREADY_EXISTS`, `ACCOUNT_SUSPENDED`, `ACCOUNT_DELETED`, `SESSION_EXPIRED`,
+`SESSION_INVALID`, `REFRESH_FAILED`, `NETWORK_ERROR`, `BACKEND_UNAVAILABLE`, `UNKNOWN_ERROR`, `ACCOUNT_NOT_FOUND`,
+`AUTHENTICATION_REQUIRED`, `INVALID_GUEST_IDENTITY`, `GUEST_IDENTITY_ALREADY_LINKED`, `REQUEST_TOO_LARGE`,
+`METHOD_NOT_ALLOWED`, and `PASSWORD_RESET_NOT_IMPLEMENTED`. Unknown and wrong-password sign-ins share one code and
+message; deleted accounts do too during password login. `NETWORK_ERROR` is recognized as a client/service boundary code,
+while an actual transport failure is represented locally and never forged into an HTTP response.
 
-Limits: request bodies are capped at 16 KiB (`413`), unknown paths answer `400 MALFORMED_REQUEST`, and a known path with
+Limits: request bodies are capped at 16 KiB (`413`), unknown paths answer `400 INVALID_REQUEST`, and a known path with
 the wrong method answers `405 METHOD_NOT_ALLOWED`. The Android client mirrors these codes one-to-one in
 `AccountApiErrorCode`, and a contract test fails if the two vocabularies drift apart.
 
@@ -86,10 +89,12 @@ token; the service decides who that is. A request body that claims an identity i
 
 ## 3. Authentication flows
 
-**Registration.** The app validates the form locally, then sends `POST /auth/register` with the typed password and this
-device's guest identity. The service validates again, normalises the address, hashes the password with scrypt, creates
-the account, links the guest identity if one was supplied and is unlinked, and returns the account plus a session. The
-app stores only the session credential, and only if the store accepted it.
+**Registration.** The app validates the required display name, address, password, and confirmation locally, then sends
+`POST /auth/register` with the typed password and this device's guest identity. The service validates again, normalises
+the address, hashes the password with scrypt, creates the account, links the guest identity if one was supplied and is
+unlinked, and returns the account plus a session. Duplicate emails are rechecked inside a SQLite write transaction so
+two concurrent registrations still produce one account and one stable `ACCOUNT_ALREADY_EXISTS` error. The app stores only
+the session credential, and only if the store accepted it.
 
 **Sign-in.** `POST /auth/login` with the address, password, and guest identity. An unreachable service is reported as
 `NETWORK_UNAVAILABLE` — not as a wrong password — so the user is never told their credentials failed when in fact
@@ -182,19 +187,21 @@ is never defaulted, generated, or logged. `.env.example` contains placeholders o
 
 ```bash
 cd backend
-cp .env.example .env          # then edit AUTH_SECRET and DATABASE_URL
-npm start                     # node --no-warnings=ExperimentalWarning src/index.js
+cp .env.example .env          # then set a real local AUTH_SECRET and DATABASE_URL
+npm start                     # reads .env via Node's --env-file; never commit that file
 npm test                      # node --no-warnings=ExperimentalWarning --test "test/*.test.js"
 ```
 
 Requires Node.js 22.5 or newer (for the built-in `node:sqlite`); the sandbox this phase was verified in runs 22.22.3.
-There are **no dependencies to install** — no framework, no ORM, no test runner to fetch. The suite is 32 tests across three files: the endpoint contract (`test/accounts.test.js`), the security properties (`test/security.test.js`), and the four data-clear/reinstall journeys named in §8 (`test/scenarios.test.js`).
+There are **no dependencies to install** — no framework, no ORM, no test runner to fetch. The suite is 35 tests across
+the endpoint contract (`test/accounts.test.js`), the security properties (`test/security.test.js`), and the four named
+data-clear/reinstall journeys (`test/scenarios.test.js`). Scenario C uses file-backed SQLite across a service restart.
 
 Environment variables (`backend/.env.example`):
 
 | Variable | Meaning |
 | --- | --- |
-| `DATABASE_URL` | SQLite file path, e.g. `./craftmind-accounts.db`. `:memory:` is accepted only when `NODE_ENV=test` |
+| `DATABASE_URL` | SQLite file path, e.g. `./var/craftmind-auth.db`. In-memory databases are accepted only by the test harness |
 | `AUTH_SECRET` | At least 32 characters; keys the token digests |
 | `HOST`, `PORT` | Listen address and port (defaults `127.0.0.1`, `8787`) |
 | `ACCESS_TOKEN_TTL_SECONDS` | Access-token lifetime (default 3600) |
@@ -221,7 +228,7 @@ sign-in, and every local feature is unaffected.
 | --- | --- |
 | A — register, sign out, sign in again | The same server account. Sign-out revoked the session; the account row was never touched |
 | B — sign in, close the app, reopen | The encrypted session is loaded and confirmed with `GET /auth/me`; the device is signed in without typing anything |
-| C — sign in, clear app data, reinstall, sign in | The same server account, because the account lives on the service. The device's guest identity is new, which only affects guest linking, not the account |
+| C — sign in, clear app data, reinstall, sign in | The same server account and display name after the file-backed SQLite service is restarted. The new installation gets a new guest identity; it does not create a new account |
 | D — use as a guest, then create an account | The guest identity is linked to the new account exactly once; it is not consumed by a refused registration, and no local data is lost |
 
 These four are covered as real integration tests against the service (`backend/test/accounts.test.js`) and as state-machine

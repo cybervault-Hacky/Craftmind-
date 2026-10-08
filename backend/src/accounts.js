@@ -14,7 +14,6 @@ import { AccountApiError, ErrorCode } from "./errors.js";
 import {
   canonicalizeEmail,
   digestsMatch,
-  displayNameFromEmail,
   isWellFormedDisplayName,
   isWellFormedEmail,
   isWellFormedGuestIdentity,
@@ -61,7 +60,7 @@ function isPast(isoTimestamp) {
 
 function requireString(body, field) {
   const value = body?.[field];
-  if (typeof value !== "string") throw new AccountApiError(ErrorCode.MALFORMED_REQUEST, `${field} must be a string`);
+  if (typeof value !== "string") throw new AccountApiError(ErrorCode.INVALID_REQUEST, `${field} must be a string`);
   return value;
 }
 
@@ -168,13 +167,14 @@ function loadLiveSession(database, configuration, { accessToken, refreshToken })
   }
   const digest = tokenDigest(configuration.authSecret, token);
   const row = database.prepare(`SELECT * FROM sessions WHERE ${column} = ?`).get(digest);
-  if (!row) throw new AccountApiError(ErrorCode.SESSION_NOT_FOUND);
-  if (!digestsMatch(row[column], digest)) throw new AccountApiError(ErrorCode.SESSION_NOT_FOUND);
-  if (row.revoked_at !== null) throw new AccountApiError(ErrorCode.SESSION_NOT_FOUND);
+  if (!row) throw new AccountApiError(ErrorCode.SESSION_INVALID);
+  if (!digestsMatch(row[column], digest)) throw new AccountApiError(ErrorCode.SESSION_INVALID);
+  if (row.revoked_at !== null) throw new AccountApiError(ErrorCode.SESSION_INVALID);
   const expiresAt = accessToken !== undefined ? row.access_expires_at : row.refresh_expires_at;
   if (isPast(expiresAt)) throw new AccountApiError(ErrorCode.SESSION_EXPIRED);
   const user = database.prepare("SELECT * FROM users WHERE user_id = ?").get(row.user_id);
-  if (!user || user.status === ACCOUNT_STATUS.DELETED) throw new AccountApiError(ErrorCode.SESSION_NOT_FOUND);
+  if (!user) throw new AccountApiError(ErrorCode.SESSION_INVALID);
+  if (user.status === ACCOUNT_STATUS.DELETED) throw new AccountApiError(ErrorCode.ACCOUNT_DELETED);
   if (user.status === ACCOUNT_STATUS.SUSPENDED) {
     revokeSession(database, row.session_id);
     throw new AccountApiError(ErrorCode.ACCOUNT_SUSPENDED);
@@ -207,7 +207,7 @@ export async function registerAccount(database, configuration, body) {
   const passwordCheck = validatePassword(password);
   if (!passwordCheck.valid) throw new AccountApiError(ErrorCode.INVALID_PASSWORD);
   const requestedName = body.displayName;
-  if (requestedName !== undefined && requestedName !== null && !isWellFormedDisplayName(requestedName)) {
+  if (!isWellFormedDisplayName(requestedName)) {
     throw new AccountApiError(ErrorCode.INVALID_DISPLAY_NAME);
   }
 
@@ -220,12 +220,14 @@ export async function registerAccount(database, configuration, body) {
   const passwordHash = await hashPassword(password);
   const userId = newAccountId();
   const timestamp = nowIso();
-  const displayName = requestedName ? requestedName.trim() : displayNameFromEmail(canonicalEmail);
+  const displayName = requestedName.trim();
 
   database.exec("BEGIN IMMEDIATE");
   let tokens;
   let guestLinked = false;
   try {
+    const duplicateAfterLock = database.prepare("SELECT user_id FROM users WHERE email_canonical = ?").get(canonicalEmail);
+    if (duplicateAfterLock) throw new AccountApiError(ErrorCode.ACCOUNT_ALREADY_EXISTS);
     database
       .prepare(
         `INSERT INTO users (user_id, email, email_canonical, display_name, password_hash, status, created_at, updated_at)
@@ -254,7 +256,7 @@ export async function login(database, configuration, body) {
     throw new AccountApiError(ErrorCode.INVALID_GUEST_IDENTITY);
   }
   if (!isWellFormedEmail(email)) throw new AccountApiError(ErrorCode.INVALID_EMAIL);
-  if (password.length === 0) throw new AccountApiError(ErrorCode.MALFORMED_REQUEST, "password must not be empty");
+  if (password.length === 0) throw new AccountApiError(ErrorCode.INVALID_REQUEST, "password must not be empty");
 
   const user = database.prepare("SELECT * FROM users WHERE email_canonical = ?").get(canonicalizeEmail(email));
   if (!user || user.status === ACCOUNT_STATUS.DELETED) {
@@ -291,7 +293,15 @@ export async function login(database, configuration, body) {
 /** Rotates a refresh token into a fresh pair, and is the only way a session outlives its access token. */
 export function refreshSession(database, configuration, body) {
   const refreshToken = requireString(body, "refreshToken");
-  const { row } = loadLiveSession(database, configuration, { refreshToken });
+  let row;
+  try {
+    ({ row } = loadLiveSession(database, configuration, { refreshToken }));
+  } catch (error) {
+    if (error instanceof AccountApiError && error.code === ErrorCode.SESSION_INVALID) {
+      throw new AccountApiError(ErrorCode.REFRESH_FAILED);
+    }
+    throw error;
+  }
 
   const accessToken = newToken();
   const nextRefreshToken = newToken();
@@ -310,7 +320,7 @@ export function refreshSession(database, configuration, body) {
       refreshExpiresAt,
       row.session_id,
     );
-  if (Number(result.changes ?? 0) === 0) throw new AccountApiError(ErrorCode.SESSION_NOT_FOUND);
+  if (Number(result.changes ?? 0) === 0) throw new AccountApiError(ErrorCode.REFRESH_FAILED);
 
   const updated = database.prepare("SELECT * FROM sessions WHERE session_id = ?").get(row.session_id);
   return {
@@ -335,7 +345,7 @@ export function logout(database, configuration, body) {
   const accessToken = typeof body?.accessToken === "string" ? body.accessToken : undefined;
   const refreshToken = typeof body?.refreshToken === "string" ? body.refreshToken : undefined;
   if (accessToken === undefined && refreshToken === undefined) {
-    throw new AccountApiError(ErrorCode.MALFORMED_REQUEST, "accessToken or refreshToken is required");
+    throw new AccountApiError(ErrorCode.INVALID_REQUEST, "accessToken or refreshToken is required");
   }
   const digest = tokenDigest(configuration.authSecret, accessToken ?? refreshToken);
   const column = accessToken !== undefined ? "access_digest" : "refresh_digest";

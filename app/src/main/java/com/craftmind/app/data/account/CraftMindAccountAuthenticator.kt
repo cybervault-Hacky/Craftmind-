@@ -10,6 +10,7 @@ import com.craftmind.app.domain.account.AccountAuthenticator
 import com.craftmind.app.domain.account.AccountAvailabilityReason
 import com.craftmind.app.domain.account.AccountDeletionOutcome
 import com.craftmind.app.domain.account.AccountProviderId
+import com.craftmind.app.domain.account.AccountRegistrationCapable
 import com.craftmind.app.domain.account.AccountRegistration
 import com.craftmind.app.domain.account.AccountServerRecord
 import com.craftmind.app.domain.account.AccountServerStatus
@@ -44,7 +45,7 @@ class CraftMindAccountAuthenticator(
     private val api: AccountApi,
     private val guestIdentityManager: GuestIdentityManager,
     private val clock: () -> Long = { System.currentTimeMillis() },
-) : AccountAuthenticator {
+) : AccountAuthenticator, AccountRegistrationCapable {
     override val providerId: AccountProviderId = AccountProviderId.CRAFTMIND
 
     override fun availability(): AccountAuthenticationAvailability =
@@ -67,7 +68,7 @@ class CraftMindAccountAuthenticator(
      * A separate entry point because it is a separate endpoint, but the mapping is shared with [signIn] so registration
      * and sign-in cannot diverge in what they store or how they fail.
      */
-    fun signUp(emailAddress: String, password: CharArray, displayName: String?): AccountAuthOutcome =
+    override fun signUp(emailAddress: String, password: CharArray, displayName: String): AccountAuthOutcome =
         mapRegistration(api.register(emailAddress, password, displayName, currentGuestIdentityId()))
 
     /**
@@ -88,7 +89,7 @@ class CraftMindAccountAuthenticator(
                         AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
                     } else {
                         AccountAuthOutcome.Success(
-                            session = sessionFrom(record = record, tokens = tokens, source = AccountSessionSource.RESTORED_ON_DEVICE),
+                            session = sessionFrom(record = record, source = AccountSessionSource.RESTORED_ON_DEVICE),
                             credential = credentialOf(tokens),
                         )
                     }
@@ -98,11 +99,16 @@ class CraftMindAccountAuthenticator(
                 is AccountApiOutcome.Malformed -> AccountAuthOutcome.Failure(AccountAuthErrorCode.MALFORMED_RESPONSE)
                 is AccountApiOutcome.Rejected -> when (current.code) {
                     AccountApiErrorCode.SESSION_EXPIRED,
-                    AccountApiErrorCode.SESSION_NOT_FOUND,
+                    AccountApiErrorCode.SESSION_INVALID,
                     AccountApiErrorCode.AUTHENTICATION_REQUIRED,
                     -> refreshInto(tokens, session)
 
                     AccountApiErrorCode.ACCOUNT_SUSPENDED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
+                    AccountApiErrorCode.NETWORK_ERROR ->
+                        AccountAuthOutcome.Unavailable(AccountAvailabilityReason.NETWORK_UNAVAILABLE)
+                    AccountApiErrorCode.BACKEND_UNAVAILABLE,
+                    AccountApiErrorCode.UNKNOWN_ERROR,
+                    -> AccountAuthOutcome.Unavailable(AccountAvailabilityReason.MAINTENANCE)
                     else -> AccountAuthOutcome.Failure(AccountAuthErrorCode.SESSION_REJECTED)
                 }
             }
@@ -163,21 +169,26 @@ class CraftMindAccountAuthenticator(
 
     private fun mapRegistration(outcome: AccountApiOutcome<AccountRegistration>): AccountAuthOutcome = when (outcome) {
         is AccountApiOutcome.Success -> {
-            val record = outcome.value.record
-            when (record.status) {
-                AccountServerStatus.ACTIVE -> AccountAuthOutcome.Success(
-                    session = sessionFrom(
-                        record = record,
-                        tokens = outcome.value.session.tokens,
-                        source = AccountSessionSource.LIVE_SIGN_IN,
-                        expiresAtEpochMillis = outcome.value.session.accessExpiresAtEpochMillis,
-                    ),
-                    credential = credentialOf(outcome.value.session.tokens),
-                )
+            val registration = outcome.value
+            val tokens = registration.session.tokens
+            try {
+                when (registration.record.status) {
+                    AccountServerStatus.ACTIVE -> AccountAuthOutcome.Success(
+                        session = sessionFrom(
+                            record = registration.record,
+                            source = AccountSessionSource.LIVE_SIGN_IN,
+                            expiresAtEpochMillis = registration.session.accessExpiresAtEpochMillis,
+                        ),
+                        credential = credentialOf(tokens),
+                    )
 
-                // A service that hands back a suspended (or deleted) account is not a sign-in: the app stays local.
-                AccountServerStatus.SUSPENDED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
-                AccountServerStatus.DELETED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS)
+                    // A service that hands back a suspended (or deleted) account is not a sign-in: the app stays local.
+                    AccountServerStatus.SUSPENDED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
+                    AccountServerStatus.DELETED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS)
+                }
+            } finally {
+                // The credential now owns an encrypted-storage representation. Destroy the response's clear token arrays.
+                tokens.close()
             }
         }
 
@@ -190,24 +201,37 @@ class CraftMindAccountAuthenticator(
         val refreshToken = tokenOf(tokens, access = false)
         return try {
             when (val outcome = api.refresh(refreshToken)) {
-                is AccountApiOutcome.Success -> AccountAuthOutcome.Success(
-                    session = sessionFrom(
-                        record = null,
-                        tokens = outcome.value.tokens,
-                        source = AccountSessionSource.RESTORED_ON_DEVICE,
-                        expiresAtEpochMillis = outcome.value.accessExpiresAtEpochMillis,
-                        existing = session,
-                    ),
-                    credential = credentialOf(outcome.value.tokens),
-                )
+                is AccountApiOutcome.Success -> {
+                    val rotatedTokens = outcome.value.tokens
+                    try {
+                        AccountAuthOutcome.Success(
+                            session = sessionFrom(
+                                record = null,
+                                source = AccountSessionSource.RESTORED_ON_DEVICE,
+                                expiresAtEpochMillis = outcome.value.accessExpiresAtEpochMillis,
+                                existing = session,
+                            ),
+                            credential = credentialOf(rotatedTokens),
+                        )
+                    } finally {
+                        rotatedTokens.close()
+                    }
+                }
 
                 is AccountApiOutcome.Rejected -> when (outcome.code) {
                     AccountApiErrorCode.SESSION_EXPIRED,
-                    AccountApiErrorCode.SESSION_NOT_FOUND,
+                    AccountApiErrorCode.SESSION_INVALID,
+                    AccountApiErrorCode.REFRESH_FAILED,
+                    AccountApiErrorCode.ACCOUNT_DELETED,
                     AccountApiErrorCode.AUTHENTICATION_REQUIRED,
                     -> AccountAuthOutcome.Failure(AccountAuthErrorCode.SESSION_REJECTED)
 
                     AccountApiErrorCode.ACCOUNT_SUSPENDED -> AccountAuthOutcome.Failure(AccountAuthErrorCode.ACCOUNT_SUSPENDED)
+                    AccountApiErrorCode.NETWORK_ERROR ->
+                        AccountAuthOutcome.Unavailable(AccountAvailabilityReason.NETWORK_UNAVAILABLE)
+                    AccountApiErrorCode.BACKEND_UNAVAILABLE,
+                    AccountApiErrorCode.UNKNOWN_ERROR,
+                    -> AccountAuthOutcome.Unavailable(AccountAvailabilityReason.MAINTENANCE)
                     else -> AccountAuthOutcome.Failure(AccountAuthErrorCode.SESSION_REJECTED)
                 }
 
@@ -250,7 +274,6 @@ class CraftMindAccountAuthenticator(
      */
     private fun sessionFrom(
         record: AccountServerRecord?,
-        tokens: AccountSessionTokens,
         source: AccountSessionSource,
         expiresAtEpochMillis: Long? = null,
         existing: AccountSession? = null,
@@ -287,20 +310,23 @@ class CraftMindAccountAuthenticator(
         AccountApiErrorCode.ACCOUNT_SUSPENDED -> AccountAuthErrorCode.ACCOUNT_SUSPENDED
 
         AccountApiErrorCode.SESSION_EXPIRED,
-        AccountApiErrorCode.SESSION_NOT_FOUND,
+        AccountApiErrorCode.SESSION_INVALID,
+        AccountApiErrorCode.REFRESH_FAILED,
+        AccountApiErrorCode.ACCOUNT_DELETED,
         AccountApiErrorCode.AUTHENTICATION_REQUIRED,
         -> AccountAuthErrorCode.SESSION_REJECTED
 
         AccountApiErrorCode.INVALID_EMAIL,
         AccountApiErrorCode.INVALID_DISPLAY_NAME,
         AccountApiErrorCode.INVALID_PASSWORD,
-        AccountApiErrorCode.MALFORMED_REQUEST,
+        AccountApiErrorCode.INVALID_REQUEST,
         AccountApiErrorCode.REQUEST_TOO_LARGE,
         AccountApiErrorCode.METHOD_NOT_ALLOWED,
         AccountApiErrorCode.INVALID_GUEST_IDENTITY,
         AccountApiErrorCode.GUEST_IDENTITY_ALREADY_LINKED,
         -> AccountAuthErrorCode.INVALID_REQUEST
 
+        AccountApiErrorCode.NETWORK_ERROR -> AccountAuthErrorCode.NETWORK_UNAVAILABLE
         AccountApiErrorCode.BACKEND_UNAVAILABLE -> AccountAuthErrorCode.SERVICE_UNAVAILABLE
         AccountApiErrorCode.PASSWORD_RESET_NOT_IMPLEMENTED,
         AccountApiErrorCode.UNKNOWN_ERROR,

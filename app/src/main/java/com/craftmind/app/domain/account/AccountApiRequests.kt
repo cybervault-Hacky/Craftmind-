@@ -23,7 +23,7 @@ object AccountApiRequests {
     fun register(
         emailAddress: String,
         password: CharArray,
-        displayName: String?,
+        displayName: String,
         guestIdentityId: String?,
     ): String = buildJsonBody(
         "email" to emailAddress,

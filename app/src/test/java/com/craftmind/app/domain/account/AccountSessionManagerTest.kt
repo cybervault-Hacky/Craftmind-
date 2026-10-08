@@ -322,6 +322,7 @@ class AccountSessionManagerTest {
     @Test
     fun signOutAlwaysClearsLocallyAndReturnsToLocalMode() {
         stashLiveSession()
+        authenticator.beforeSignOut = { assertNull("local session is cleared before any remote revoke", store.record) }
         val manager = manager()
         manager.restoreSession()
 

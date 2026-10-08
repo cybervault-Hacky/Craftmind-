@@ -70,6 +70,7 @@ class FakeAccountAuthenticator : AccountAuthenticator {
         { AccountAuthOutcome.Failure(AccountAuthErrorCode.INVALID_CREDENTIALS) }
 
     var signOutResult: AccountSignOutResult = AccountSignOutResult(AccountSignOutMethod.LOCAL_ONLY)
+    var beforeSignOut: (() -> Unit)? = null
 
     var deletionResult: AccountDeletionOutcome =
         AccountDeletionOutcome.Unavailable(AccountAvailabilityReason.NO_BACKEND_CONFIGURED)
@@ -115,6 +116,7 @@ class FakeAccountAuthenticator : AccountAuthenticator {
 
     override fun signOut(session: AccountSession?, credential: AccountSessionCredential?): AccountSignOutResult {
         signOutCalls++
+        beforeSignOut?.invoke()
         failureToThrow?.let { throw it }
         return signOutResult
     }

@@ -8,5 +8,5 @@ package com.craftmind.app.domain.account
  * machine reports that honestly instead of the UI hiding a button that would do nothing.
  */
 interface AccountRegistrationCapable {
-    fun signUp(emailAddress: String, password: CharArray, displayName: String?): AccountAuthOutcome
+    fun signUp(emailAddress: String, password: CharArray, displayName: String): AccountAuthOutcome
 }

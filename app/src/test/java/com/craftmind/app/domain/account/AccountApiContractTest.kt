@@ -93,12 +93,15 @@ class AccountApiContractTest {
             "ACCOUNT_NOT_FOUND",
             "ACCOUNT_ALREADY_EXISTS",
             "ACCOUNT_SUSPENDED",
+            "ACCOUNT_DELETED",
             "SESSION_EXPIRED",
-            "SESSION_NOT_FOUND",
+            "SESSION_INVALID",
+            "REFRESH_FAILED",
             "AUTHENTICATION_REQUIRED",
+            "NETWORK_ERROR",
             "INVALID_GUEST_IDENTITY",
             "GUEST_IDENTITY_ALREADY_LINKED",
-            "MALFORMED_REQUEST",
+            "INVALID_REQUEST",
             "REQUEST_TOO_LARGE",
             "METHOD_NOT_ALLOWED",
             "PASSWORD_RESET_NOT_IMPLEMENTED",
@@ -109,6 +112,13 @@ class AccountApiContractTest {
         for (value in wireValues) {
             assertTrue("$value must map to a typed client code", AccountApiErrorCode.fromWireValue(value) != AccountApiErrorCode.UNKNOWN_ERROR || value == "UNKNOWN_ERROR")
         }
+    }
+
+    @Test
+    fun anUnknownServerStatusIsRejectedRatherThanDefaultedToActive() {
+        assertNull(AccountServerStatus.fromWireValue("PENDING"))
+        assertNull(AccountServerStatus.fromWireValue(null))
+        assertEquals(AccountServerStatus.ACTIVE, AccountServerStatus.fromWireValue("ACTIVE"))
     }
 
     @Test
@@ -124,6 +134,8 @@ class AccountApiContractTest {
         assertFalse("retrying a wrong password just burns attempts", AccountApiErrorCode.INVALID_CREDENTIALS.retryable)
         assertFalse(AccountApiErrorCode.INVALID_EMAIL.retryable)
         assertFalse(AccountApiErrorCode.ACCOUNT_SUSPENDED.retryable)
+        assertFalse(AccountApiErrorCode.REFRESH_FAILED.retryable)
+        assertTrue(AccountApiErrorCode.NETWORK_ERROR.retryable)
     }
 
     @Test
@@ -295,6 +307,7 @@ class AccountApiContractTest {
         assertTrue(body.contains("\\n"))
         assertFalse("control characters must never reach the wire raw", body.contains('\u0000'))
         assertTrue("no field is skipped", body.contains("\"password\":\""))
+        assertTrue("the required display name is sent", body.contains("\"displayName\":\""))
     }
 
     @Test

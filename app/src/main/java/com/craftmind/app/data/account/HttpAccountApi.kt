@@ -43,7 +43,7 @@ class HttpAccountApi(
     override fun register(
         emailAddress: String,
         password: CharArray,
-        displayName: String?,
+        displayName: String,
         guestIdentityId: String?,
     ): AccountApiOutcome<AccountRegistration> = exchange(
         path = AccountApiRequests.REGISTER_PATH,
@@ -179,6 +179,7 @@ class HttpAccountApi(
         val email = account.stringOrNull("email") ?: return AccountApiOutcome.Malformed
         val displayName = account.stringOrNull("displayName") ?: return AccountApiOutcome.Malformed
         val status = AccountServerStatus.fromWireValue(account.stringOrNull("status"))
+            ?: return AccountApiOutcome.Malformed
         return AccountApiOutcome.Success(
             AccountServerRecord(
                 userId = userId,

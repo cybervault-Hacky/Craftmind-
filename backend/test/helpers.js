@@ -65,7 +65,7 @@ export async function call(baseUrl, method, path, { body, headers = {}, raw } = 
 export const VALID_PASSWORD = "Correct Horse 7Battery";
 
 export function registrationBody(overrides = {}) {
-  return { email: "builder@example.com", password: VALID_PASSWORD, ...overrides };
+  return { email: "builder@example.com", password: VALID_PASSWORD, displayName: "Builder", ...overrides };
 }
 
 export async function register(baseUrl, overrides = {}) {

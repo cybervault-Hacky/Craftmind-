@@ -64,6 +64,15 @@ class AccountSecurityBoundaryTest {
     }
 
     @Test
+    fun signInCanReturnToGuestModeWithoutCreatingAnAccount() {
+        val forms = sourceText("presentation/account/AccountForms.kt")
+
+        assertTrue(forms.contains("text = \"Continue as Guest\""))
+        assertTrue(forms.contains("onEvent(AccountUiEvent.FormDismissed)"))
+        assertFalse("guest continuation must not submit sign-in credentials", forms.contains("AccountUiEvent.SignInRequested(guest"))
+    }
+
+    @Test
     fun noExceptionMessageFromTheAccountLayerIsEverSurfaced() {
         val text = sourceText("domain/account/AccountSessionManager.kt")
 
@@ -73,9 +82,18 @@ class AccountSecurityBoundaryTest {
     }
 
     @Test
-    fun sessionAndSignInSecretsRedactThemselves() {
+    fun sessionAndSignInSecretsRedactThemselvesAndFormSecretsAreCleared() {
         val credential = AccountSessionCredential.fromCharacters("sup3r-s3cret-session".toCharArray())
         val request = AccountSignInRequest.emailPassword("builder@example.com", "hunter2-please".toCharArray())
+        val viewModel = sourceText("presentation/account/AccountViewModel.kt")
+        val confirmationClear = viewModel.indexOf("event.confirmPassword.fill")
+        val signUpValidation = viewModel.indexOf("AccountFormValidator.validateSignUp")
+
+        assertTrue(
+            "sign-up confirmation is temporary and must be erased before validation",
+            confirmationClear >= 0 && confirmationClear < signUpValidation,
+        )
+        assertTrue("a locally rejected sign-in must erase its defensive request copy", viewModel.contains("request.close()"))
 
         try {
             for (rendered in listOf(credential.toString(), request.toString())) {

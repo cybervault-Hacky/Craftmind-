@@ -75,11 +75,4 @@ export function isWellFormedDisplayName(displayName) {
   return !/[\u0000-\u001f\u007f]/.test(trimmed);
 }
 
-/** Derives a display name from an address when the client did not supply one. Never invents a real name. */
-export function displayNameFromEmail(email) {
-  const localPart = canonicalizeEmail(email).split("@")[0];
-  const cleaned = localPart.replace(/[^A-Za-z0-9._-]/g, "").slice(0, DISPLAY_NAME_MAXIMUM_LENGTH);
-  return cleaned.length > 0 ? cleaned : "CraftMind user";
-}
-
 export { TOKEN_BYTES, GUEST_IDENTITY_PATTERN };

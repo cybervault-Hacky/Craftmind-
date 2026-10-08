@@ -8,6 +8,9 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { call, guestIdentity, loginCall, register, startService, VALID_PASSWORD } from "./helpers.js";
@@ -64,33 +67,52 @@ test("scenario B — sign in, close the app, reopen: the session is restored whi
   }
 });
 
-test("scenario C — sign in, clear app data, reinstall, sign in again: the same server account", async () => {
-  const service = await startService();
+test("scenario C — clear app data, reinstall, restart the service, sign in: the same persistent server account", async () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "craftmind-auth-reinstall-"));
+  const databasePath = join(temporaryDirectory, "craftmind-auth.sqlite");
+  let service;
   try {
-    const first = await register(service.baseUrl, { email: "scenario-c@example.com", guestIdentityId: guestIdentity("c1") });
+    service = await startService({ DATABASE_URL: databasePath });
+    const first = await register(service.baseUrl, {
+      email: "scenario-c@example.com",
+      displayName: "Scenario C",
+      guestIdentityId: guestIdentity("c1"),
+    });
     assert.equal(first.status, 201);
     const accountId = first.body.account.userId;
 
-    // Clearing app data takes the encrypted session and the guest identity with it. Nothing on the service changes:
-    // the account rows are untouched, and the session the device abandoned is simply never used again.
+    const signedOut = await call(service.baseUrl, "POST", "/auth/logout", {
+      body: {
+        accessToken: first.body.session.accessToken,
+        refreshToken: first.body.session.refreshToken,
+      },
+    });
+    assert.equal(signedOut.status, 200);
+    assert.equal(signedOut.body.revoked, true);
+    const oldSession = await call(service.baseUrl, "GET", "/auth/me", {
+      headers: { Authorization: `Bearer ${first.body.session.accessToken}` },
+    });
+    assert.equal(oldSession.body.error.code, "SESSION_INVALID");
+
+    // Clearing app data removes the local credential and guest tag. The real file-backed SQLite database survives a
+    // service restart, just as the central store survives an app uninstall/reinstall.
+    await service.close();
+    service = await startService({ DATABASE_URL: databasePath });
     const afterReinstall = await loginCall(service.baseUrl, {
       email: "scenario-c@example.com",
       guestIdentityId: guestIdentity("c2"),
     });
 
     assert.equal(afterReinstall.status, 200);
+    assert.equal(afterReinstall.body.account.userId, accountId, "the server account identity must survive a device reset");
     assert.equal(
-      afterReinstall.body.account.userId,
-      accountId,
-      "an account must not depend on the device it was created from",
-    );
-    assert.equal(
-      afterReinstall.body.guestLinked,
-      undefined,
-      "signing in to an existing account from a new device must not claim a link it did not make",
+      afterReinstall.body.account.displayName,
+      "Scenario C",
+      "the account record must persist independently of app data",
     );
   } finally {
-    await service.close();
+    if (service) await service.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
 

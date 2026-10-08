@@ -119,12 +119,17 @@ class AccountViewModel(
     }
 
     private fun submitSignUp(event: AccountUiEvent.SignUpRequested) {
-        val candidate = AccountSignUpInput(
-            emailAddress = event.emailAddress,
-            password = String(event.password),
-            confirmPassword = String(event.confirmPassword),
-            displayName = event.displayName,
-        )
+        val candidate = try {
+            AccountSignUpInput(
+                emailAddress = event.emailAddress,
+                password = String(event.password),
+                confirmPassword = String(event.confirmPassword),
+                displayName = event.displayName,
+            )
+        } finally {
+            // Confirmation is only for local matching and must not survive the validation step.
+            event.confirmPassword.fill('\u0000')
+        }
         val validation = AccountFormValidator.validateSignUp(candidate)
         if (validation is AccountFormValidation.Invalid) {
             formIssues = validation.issues
@@ -136,7 +141,7 @@ class AccountViewModel(
         }
         formIssues = emptyList()
         deletionOutcome = null
-        background { manager.signUp(event.emailAddress, event.password, event.displayName.ifBlank { null }) }
+        background { manager.signUp(event.emailAddress, event.password, event.displayName.trim()) }
     }
 
     private fun submitSignIn(event: AccountUiEvent.SignInRequested) {
@@ -161,6 +166,8 @@ class AccountViewModel(
             AccountSignInInput(emailAddress = event.emailAddress, password = String(password)),
         )
         if (validation is AccountFormValidation.Invalid) {
+            // emailPassword created a defensive secret copy; close it because local validation prevented submission.
+            request.close()
             formIssues = validation.issues
             formMode = AccountFormMode.SIGN_IN
             publish()

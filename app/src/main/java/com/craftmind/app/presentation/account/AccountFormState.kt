@@ -75,16 +75,21 @@ object AccountFormValidator {
 
                 else -> Unit
             }
-            if (input.displayName.length > MAXIMUM_DISPLAY_NAME_LENGTH) {
-                add(
-                    AccountFormIssue(
-                        AccountFormField.DISPLAY_NAME,
-                        "Display names can be at most $MAXIMUM_DISPLAY_NAME_LENGTH characters.",
-                    ),
-                )
-            }
-            if (input.displayName.any { it < ' ' || it == '\u007f' }) {
-                add(AccountFormIssue(AccountFormField.DISPLAY_NAME, "Display names cannot contain control characters."))
+            val trimmedDisplayName = input.displayName.trim()
+            when {
+                trimmedDisplayName.isEmpty() ->
+                    add(AccountFormIssue(AccountFormField.DISPLAY_NAME, "Enter a display name."))
+
+                trimmedDisplayName.length > MAXIMUM_DISPLAY_NAME_LENGTH ->
+                    add(
+                        AccountFormIssue(
+                            AccountFormField.DISPLAY_NAME,
+                            "Display names can be at most $MAXIMUM_DISPLAY_NAME_LENGTH characters.",
+                        ),
+                    )
+
+                trimmedDisplayName.any { it < ' ' || it == '\u007f' } ->
+                    add(AccountFormIssue(AccountFormField.DISPLAY_NAME, "Display names cannot contain control characters."))
             }
         }
         return if (issues.isEmpty()) AccountFormValidation.Valid else AccountFormValidation.Invalid(issues)

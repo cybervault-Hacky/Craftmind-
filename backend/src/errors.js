@@ -8,7 +8,7 @@
 
 export const ErrorCode = Object.freeze({
   // Request shape
-  MALFORMED_REQUEST: "MALFORMED_REQUEST",
+  INVALID_REQUEST: "INVALID_REQUEST",
   REQUEST_TOO_LARGE: "REQUEST_TOO_LARGE",
   METHOD_NOT_ALLOWED: "METHOD_NOT_ALLOWED",
 
@@ -22,10 +22,12 @@ export const ErrorCode = Object.freeze({
   ACCOUNT_NOT_FOUND: "ACCOUNT_NOT_FOUND",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   ACCOUNT_SUSPENDED: "ACCOUNT_SUSPENDED",
+  ACCOUNT_DELETED: "ACCOUNT_DELETED",
 
   // Sessions
   SESSION_EXPIRED: "SESSION_EXPIRED",
-  SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
+  SESSION_INVALID: "SESSION_INVALID",
+  REFRESH_FAILED: "REFRESH_FAILED",
   AUTHENTICATION_REQUIRED: "AUTHENTICATION_REQUIRED",
 
   // Guest identity
@@ -36,13 +38,14 @@ export const ErrorCode = Object.freeze({
   PASSWORD_RESET_NOT_IMPLEMENTED: "PASSWORD_RESET_NOT_IMPLEMENTED",
 
   // Service
+  NETWORK_ERROR: "NETWORK_ERROR",
   BACKEND_UNAVAILABLE: "BACKEND_UNAVAILABLE",
   UNKNOWN_ERROR: "UNKNOWN_ERROR",
 });
 
 /** HTTP status per code. */
 const STATUS_BY_CODE = Object.freeze({
-  [ErrorCode.MALFORMED_REQUEST]: 400,
+  [ErrorCode.INVALID_REQUEST]: 400,
   [ErrorCode.REQUEST_TOO_LARGE]: 413,
   [ErrorCode.METHOD_NOT_ALLOWED]: 405,
   [ErrorCode.INVALID_EMAIL]: 400,
@@ -52,12 +55,15 @@ const STATUS_BY_CODE = Object.freeze({
   [ErrorCode.ACCOUNT_NOT_FOUND]: 404,
   [ErrorCode.INVALID_CREDENTIALS]: 401,
   [ErrorCode.ACCOUNT_SUSPENDED]: 403,
+  [ErrorCode.ACCOUNT_DELETED]: 403,
   [ErrorCode.SESSION_EXPIRED]: 401,
-  [ErrorCode.SESSION_NOT_FOUND]: 401,
+  [ErrorCode.SESSION_INVALID]: 401,
+  [ErrorCode.REFRESH_FAILED]: 401,
   [ErrorCode.AUTHENTICATION_REQUIRED]: 401,
   [ErrorCode.INVALID_GUEST_IDENTITY]: 400,
   [ErrorCode.GUEST_IDENTITY_ALREADY_LINKED]: 409,
   [ErrorCode.PASSWORD_RESET_NOT_IMPLEMENTED]: 501,
+  [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
 });
@@ -74,7 +80,7 @@ export class AccountApiError extends Error {
 
 function defaultMessage(code) {
   switch (code) {
-    case ErrorCode.MALFORMED_REQUEST:
+    case ErrorCode.INVALID_REQUEST:
       return "The request body is not valid JSON matching the contract.";
     case ErrorCode.REQUEST_TOO_LARGE:
       return "The request body is larger than this service accepts.";
@@ -94,10 +100,14 @@ function defaultMessage(code) {
       return "The email address and password combination was not accepted.";
     case ErrorCode.ACCOUNT_SUSPENDED:
       return "This account is suspended and cannot sign in.";
+    case ErrorCode.ACCOUNT_DELETED:
+      return "This account is no longer available.";
     case ErrorCode.SESSION_EXPIRED:
       return "The session has expired. Sign in again.";
-    case ErrorCode.SESSION_NOT_FOUND:
+    case ErrorCode.SESSION_INVALID:
       return "The session is no longer valid. Sign in again.";
+    case ErrorCode.REFRESH_FAILED:
+      return "The session could not be refreshed. Sign in again.";
     case ErrorCode.AUTHENTICATION_REQUIRED:
       return "This endpoint requires a valid session.";
     case ErrorCode.INVALID_GUEST_IDENTITY:
@@ -106,6 +116,8 @@ function defaultMessage(code) {
       return "That guest identity is already linked to an account.";
     case ErrorCode.PASSWORD_RESET_NOT_IMPLEMENTED:
       return "Password reset is not implemented by this service yet.";
+    case ErrorCode.NETWORK_ERROR:
+      return "The account service could not complete the network request.";
     case ErrorCode.BACKEND_UNAVAILABLE:
       return "The account service cannot serve this request right now.";
     default:

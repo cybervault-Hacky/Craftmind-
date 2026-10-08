@@ -3,8 +3,8 @@ package com.craftmind.app.domain.account
 /**
  * The authenticator this build ships with (Phase 16).
  *
- * CraftMind has no account service yet, so this implementation exists to make that fact explicit and impossible to
- * mistake for success:
+ * This is the explicit fallback for a build with no account service configured; the app's configured composition root
+ * uses the real HTTP-backed authenticator instead. The fallback makes unavailability impossible to mistake for success:
  * * [availability] always reports [AccountAvailabilityReason.NO_BACKEND_CONFIGURED];
  * * every authentication operation returns [AccountAuthOutcome.Unavailable] — it can never produce a session, a
  *   credential, or an identity, because it has no service to produce one from;
@@ -12,10 +12,9 @@ package com.craftmind.app.domain.account
  * * [requestDeletion] reports [AccountDeletionOutcome.Unavailable]: a deletion request cannot be made, and nothing is
  *   deleted.
  *
- * It is not a stub to be replaced by a fake later. When a real account service exists, the replacement is a new
- * implementation of [AccountAuthenticator]; [NoBackendAccountAuthenticator] then simply stops being the one CraftMind
- * chooses in [CraftMindAccountFoundation], and the rest of the app — state machine, storage boundary, UI states,
- * tests — is unchanged.
+ * It is not an authentication bypass and cannot be used to create a session. The configured Android composition now
+ * injects the real HTTP-backed implementation; this remains the explicit local-only option for tests and other callers
+ * that deliberately do not supply one. The session state machine, storage boundary, and UI state model stay the same.
  */
 class NoBackendAccountAuthenticator : AccountAuthenticator {
     override val providerId: AccountProviderId = AccountProviderId.CRAFTMIND

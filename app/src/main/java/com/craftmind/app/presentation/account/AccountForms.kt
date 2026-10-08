@@ -93,7 +93,7 @@ fun AccountSignInForm(
                 enabled = !busy,
             )
             CraftMindTertiaryButton(
-                text = "Cancel",
+                text = "Continue as Guest",
                 onClick = { onEvent(AccountUiEvent.FormDismissed) },
                 enabled = !busy,
             )
@@ -135,7 +135,7 @@ fun AccountSignUpForm(
             issue = state.issueFor(AccountFormField.EMAIL),
         )
         CraftMindTextInput(
-            label = "Display name (optional)",
+            label = "Display name",
             value = displayName,
             onValueChange = { displayName = it },
             enabled = !busy,

@@ -58,12 +58,12 @@ async function readJsonBody(request, maxBodyBytes) {
   try {
     const parsed = JSON.parse(text);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new AccountApiError(ErrorCode.MALFORMED_REQUEST, "the request body must be a JSON object");
+      throw new AccountApiError(ErrorCode.INVALID_REQUEST, "the request body must be a JSON object");
     }
     return parsed;
   } catch (error) {
     if (error instanceof AccountApiError) throw error;
-    throw new AccountApiError(ErrorCode.MALFORMED_REQUEST);
+    throw new AccountApiError(ErrorCode.INVALID_REQUEST);
   }
 }
 
@@ -105,7 +105,7 @@ export function createAccountService({ database, configuration, logger = console
     }],
     ["POST /auth/guest", async (request) => {
       const body = await readJsonBody(request, configuration.maxBodyBytes);
-      if (typeof body.guestIdentityId !== "string") throw new AccountApiError(ErrorCode.MALFORMED_REQUEST);
+      if (typeof body.guestIdentityId !== "string") throw new AccountApiError(ErrorCode.INVALID_REQUEST);
       return { status: 201, payload: { guest: recordGuestIdentity(database, body.guestIdentityId) } };
     }],
     // A contract, not a feature: CraftMind has no email delivery yet, so password reset cannot be completed honestly.
@@ -134,7 +134,7 @@ export function createAccountService({ database, configuration, logger = console
       if (!handler) {
         throw methodsByPath.has(path)
           ? new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED)
-          : new AccountApiError(ErrorCode.MALFORMED_REQUEST, "unknown endpoint");
+          : new AccountApiError(ErrorCode.INVALID_REQUEST, "unknown endpoint");
       }
       const { status: handlerStatus, payload } = await handler(request);
       status = handlerStatus;

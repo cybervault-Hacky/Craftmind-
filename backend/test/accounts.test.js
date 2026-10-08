@@ -19,14 +19,14 @@ describe("account service", () => {
   });
 
   it("registers an account, returns a real session, and never returns a password hash", async () => {
-    const response = await register(service.baseUrl, { email: "first@example.com" });
+    const response = await register(service.baseUrl, { email: "first@example.com", displayName: "First Builder" });
 
     assert.equal(response.status, 201);
     const { account, session } = response.body;
     assert.match(account.userId, /^usr_[0-9a-f-]{36}$/);
     assert.equal(account.email, "first@example.com");
+    assert.equal(account.displayName, "First Builder");
     assert.equal(account.status, "ACTIVE");
-    assert.ok(account.displayName.length > 0);
     assert.ok(Date.parse(account.createdAt) > 0);
     assert.equal(account.updatedAt, account.createdAt);
     assert.equal(typeof session.accessToken, "string");
@@ -55,6 +55,33 @@ describe("account service", () => {
     assert.equal(badEmail.body.error.code, "INVALID_EMAIL");
     assert.equal(shortPassword.body.error.code, "INVALID_PASSWORD");
     assert.equal(oneClass.body.error.code, "INVALID_PASSWORD");
+  });
+
+  it("requires a real display name and does not derive one from the email address", async () => {
+    const response = await register(service.baseUrl, { email: "nameless@example.com", displayName: undefined });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, "INVALID_DISPLAY_NAME");
+    assert.equal(
+      service.database.prepare("SELECT count(*) AS count FROM users WHERE email_canonical = ?").get("nameless@example.com").count,
+      0,
+    );
+  });
+
+  it("serializes concurrent duplicate registrations into one success and one stable duplicate error", async () => {
+    const [first, second] = await Promise.all([
+      register(service.baseUrl, { email: "race@example.com", displayName: "First" }),
+      register(service.baseUrl, { email: " RACE@example.com ", displayName: "Second" }),
+    ]);
+    const responses = [first, second];
+
+    assert.equal(responses.filter((response) => response.status === 201).length, 1);
+    assert.equal(responses.filter((response) => response.status === 409).length, 1);
+    assert.equal(responses.find((response) => response.status === 409).body.error.code, "ACCOUNT_ALREADY_EXISTS");
+    assert.equal(
+      service.database.prepare("SELECT count(*) AS count FROM users WHERE email_canonical = ?").get("race@example.com").count,
+      1,
+    );
   });
 
   it("signs in with correct credentials and refuses incorrect ones without revealing whether the address exists", async () => {
@@ -93,6 +120,26 @@ describe("account service", () => {
     assert.ok(session.revoked_at !== null, "a suspended account's session must be revoked");
   });
 
+  it("never authenticates a deleted account and does not reveal deletion during password login", async () => {
+    const created = await register(service.baseUrl, { email: "deleted@example.com" });
+    const accessToken = created.body.session.accessToken;
+    const refreshToken = created.body.session.refreshToken;
+    service.database.prepare("UPDATE users SET status = 'DELETED' WHERE email_canonical = ?").run("deleted@example.com");
+
+    const loginAttempt = await loginCall(service.baseUrl, { email: "deleted@example.com" });
+    const currentAttempt = await call(service.baseUrl, "GET", "/auth/me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const refreshAttempt = await call(service.baseUrl, "POST", "/auth/refresh", { body: { refreshToken } });
+
+    assert.equal(loginAttempt.status, 401);
+    assert.equal(loginAttempt.body.error.code, "INVALID_CREDENTIALS");
+    assert.equal(currentAttempt.status, 403);
+    assert.equal(currentAttempt.body.error.code, "ACCOUNT_DELETED");
+    assert.equal(refreshAttempt.status, 403);
+    assert.equal(refreshAttempt.body.error.code, "ACCOUNT_DELETED");
+  });
+
   it("returns the current account for a valid access token only", async () => {
     const created = await register(service.baseUrl, { email: "me@example.com" });
     const accessToken = created.body.session.accessToken;
@@ -106,7 +153,7 @@ describe("account service", () => {
     assert.equal(missing.status, 401);
     assert.equal(missing.body.error.code, "AUTHENTICATION_REQUIRED");
     assert.equal(forged.status, 401);
-    assert.equal(forged.body.error.code, "SESSION_NOT_FOUND");
+    assert.equal(forged.body.error.code, "SESSION_INVALID");
   });
 
   it("expires an access token but lets the refresh token mint a new pair, rotating both", async () => {
@@ -127,7 +174,7 @@ describe("account service", () => {
     assert.notEqual(refreshed.body.session.refreshToken, refreshToken);
     assert.notEqual(refreshed.body.session.accessToken, accessToken);
     assert.equal(reuseOfOldRefresh.status, 401, "a rotated refresh token must not work twice");
-    assert.equal(reuseOfOldRefresh.body.error.code, "SESSION_NOT_FOUND");
+    assert.equal(reuseOfOldRefresh.body.error.code, "REFRESH_FAILED");
     assert.equal(meWithNewToken.status, 200);
   });
 
@@ -159,9 +206,9 @@ describe("account service", () => {
     assert.equal(second.body.alreadyRevoked, true);
     assert.equal(second.body.revokedSessions, 0, "a repeated sign-out revokes nothing new");
     assert.equal(afterLogout.status, 401);
-    assert.equal(afterLogout.body.error.code, "SESSION_NOT_FOUND");
+    assert.equal(afterLogout.body.error.code, "SESSION_INVALID");
     assert.equal(refreshAfterLogout.status, 401);
-    assert.equal(refreshAfterLogout.body.error.code, "SESSION_NOT_FOUND");
+    assert.equal(refreshAfterLogout.body.error.code, "REFRESH_FAILED");
   });
 
   it("keeps the same account across logout and sign-in again", async () => {

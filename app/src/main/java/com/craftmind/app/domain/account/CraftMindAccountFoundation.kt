@@ -3,13 +3,13 @@ package com.craftmind.app.domain.account
 /**
  * The single place where the app decides which account service it is built against (Phase 16).
  *
- * Everything else in the account layer is provider-neutral; this object is the one line a future phase changes when a
- * real CraftMind account service exists. Until then it returns [NoBackendAccountAuthenticator], so the shipped app
- * answers "authentication is not available in this build" instead of pretending otherwise, and the composition root
- * cannot accidentally wire a fake or an unreviewed service.
+ * Everything else in the account layer is provider-neutral. The app composition root supplies the real service-bound
+ * authenticator to [sessionManager]; the default [authenticator] remains an explicit unavailable fallback for callers
+ * that have no service configured. The fallback can never create a session, and the canonical Phase 16 state machine
+ * remains the only account/session model.
  */
 object CraftMindAccountFoundation {
-    /** The authenticator CraftMind ships with. Replace here — and only here — when a real service exists. */
+    /** The explicit unavailable default for callers that do not inject a configured account service. */
     fun authenticator(): AccountAuthenticator = NoBackendAccountAuthenticator()
 
     /** Builds the session state machine for an encrypted session store. */

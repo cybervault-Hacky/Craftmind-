@@ -96,10 +96,30 @@ class AccountFormStateTest {
     }
 
     @Test
-    fun anOptionalDisplayNameIsOptionalButBounded() {
+    fun aDisplayNameIsRequiredAndBounded() {
+        val missing = AccountFormValidator.validateSignUp(
+            AccountSignUpInput(emailAddress = "someone@example.com", password = "Passw0rdd!", confirmPassword = "Passw0rdd!"),
+        )
+        assertEquals("Enter a display name.", missing.issueFor(AccountFormField.DISPLAY_NAME))
+
+        val whitespace = AccountFormValidator.validateSignUp(
+            AccountSignUpInput(
+                emailAddress = "someone@example.com",
+                password = "Passw0rdd!",
+                confirmPassword = "Passw0rdd!",
+                displayName = "   ",
+            ),
+        )
+        assertEquals("Enter a display name.", whitespace.issueFor(AccountFormField.DISPLAY_NAME))
+
         assertTrue(
             AccountFormValidator.validateSignUp(
-                AccountSignUpInput(emailAddress = "someone@example.com", password = "Passw0rdd!", confirmPassword = "Passw0rdd!"),
+                AccountSignUpInput(
+                    emailAddress = "someone@example.com",
+                    password = "Passw0rdd!",
+                    confirmPassword = "Passw0rdd!",
+                    displayName = " Builder ",
+                ),
             ).isValid,
         )
 

@@ -193,7 +193,7 @@ class AccountSessionManager(
      *
      * Take ownership of [password]: it is cleared before this method returns.
      */
-    fun signUp(emailAddress: String, password: CharArray, displayName: String?): AccountState = try {
+    fun signUp(emailAddress: String, password: CharArray, displayName: String): AccountState = try {
         val availability = authenticator.availability()
         val registrationCapable = authenticator as? AccountRegistrationCapable
         when {
@@ -248,7 +248,8 @@ class AccountSessionManager(
      * account layer has no access to them at all.
      */
     fun signOut(): AccountSignOutOutcome {
-        val previous = identityOrNull()
+        val previousSession = session
+        val previous = previousSession?.identity ?: identityOrNull()
         publish(AccountState.SigningOut(previous))
         val stored = try {
             sessionStore.load()
@@ -257,13 +258,9 @@ class AccountSessionManager(
         } catch (_: Exception) {
             null
         }
-        val result = try {
-            authenticator.signOut(session, stored?.credential)
-        } catch (_: Exception) {
-            AccountSignOutResult(AccountSignOutMethod.REMOTE_REVOCATION_FAILED, AccountAuthErrorCode.UNEXPECTED_FAILURE)
-        } finally {
-            stored?.credential?.close()
-        }
+
+        // Local authority is removed before any network work: even a slow or failed remote revoke cannot leave the app
+        // looking signed in or keep the encrypted credential as the active session on this device.
         session = null
         val cleared = try {
             sessionStore.clear()
@@ -272,6 +269,14 @@ class AccountSessionManager(
             false
         } catch (_: Exception) {
             false
+        }
+
+        val result = try {
+            authenticator.signOut(previousSession, stored?.credential)
+        } catch (_: Exception) {
+            AccountSignOutResult(AccountSignOutMethod.REMOTE_REVOCATION_FAILED, AccountAuthErrorCode.UNEXPECTED_FAILURE)
+        } finally {
+            stored?.credential?.close()
         }
         val nextState = if (cleared) {
             publish(AccountState.Guest)

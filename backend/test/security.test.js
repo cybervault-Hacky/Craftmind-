@@ -110,7 +110,7 @@ describe("account service security", () => {
     });
 
     assert.equal(response.status, 400);
-    assert.equal(response.body.error.code, "MALFORMED_REQUEST");
+    assert.equal(response.body.error.code, "INVALID_REQUEST");
     assert.equal(me.status, 401);
   });
 
@@ -128,7 +128,7 @@ describe("account service security", () => {
     const wrongMethod = await call(service.baseUrl, "GET", "/auth/login");
 
     assert.equal(unknown.status, 400);
-    assert.equal(unknown.body.error.code, "MALFORMED_REQUEST");
+    assert.equal(unknown.body.error.code, "INVALID_REQUEST");
     assert.equal(wrongMethod.status, 405);
     assert.equal(wrongMethod.body.error.code, "METHOD_NOT_ALLOWED");
   });

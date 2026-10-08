@@ -479,28 +479,28 @@ none is referenced in the UI, and secrets — provider keys and the account sess
 | Minecraft stages/actions/gates derive from real detector, selector, resolver, and certification state | `MinecraftConnectionSummaryTest` (17 tests) | PASS |
 | Website architecture, navigation, download policy, honest copy, responsive + reduced-motion markers, no remote resources | `scripts/check_website.py` | PASS |
 | No secrets, APKs, keystores, or build outputs are tracked | `scripts/check_release_config.py`, secret scan before commit | PASS |
-| Account state machine: local-first sign-out, fail-closed without a service, restore/refresh/expiry, switching, deletion, listener transitions, no secret in any state | `AccountSessionManagerTest` (32 tests) | PASS |
-| Ownership classification matches the source tree; the four category names are pinned; Minecraft runtime state is runtime-local in the present and the future; the two secret stores stay separate; nothing is account-scoped today | `CraftMindDataOwnershipTest` (10 tests) | PASS |
-| Ownership-marker migration is idempotent, downgrade-safe, interrupt-safe, and carries no user content | `LocalOwnershipMigrationTest` (7 tests) | PASS |
-| Account copy: local mode complete, unavailable ≠ incorrect credentials, masked identity, no secret/identifier rendered, a11y labels, no fake progress | `AccountUiStateTest` (24 tests) | PASS |
-| Security boundary: no logging, no plaintext or shared Keystore namespace, BYOK untouched, no account data in BuildPlans or bridge payloads, no invented backend or endpoint, no WebView/analytics | `AccountSecurityBoundaryTest` (18 tests) | PASS |
-| The Phase 15 design system and navigation are unchanged by this phase | `CraftMindDesignTokensTest` (13), `CraftMindDesignSystemSourceScanTest` (2), `MainDestinationTest` (4) | PASS |
-| The account service really stores and checks accounts: registration, duplicates, invalid input, sign-in, wrong password vs unknown account, suspension, session creation, refresh rotation, expiry, logout idempotence, current account, guest creation and linking, and the four data-clear/reinstall scenarios | `backend/test/accounts.test.js`, `backend/test/scenarios.test.js` (Phase 17) | PASS (32 backend tests total) |
+| Account state machine: local-first sign-out, fail-closed without a service, restore/refresh/expiry, switching, deletion, listener transitions, no secret in any state | `AccountSessionManagerTest` (36 tests) | PASS via temporary offline assertion runner |
+| Ownership classification matches the source tree; the four category names are pinned; Minecraft runtime state is runtime-local in the present and the future; the two secret stores stay separate; nothing is account-scoped today | `CraftMindDataOwnershipTest` (10 tests) | PASS via temporary offline assertion runner |
+| Ownership-marker migration is idempotent, downgrade-safe, interrupt-safe, and carries no user content | `LocalOwnershipMigrationTest` (7 tests) | PASS via temporary offline assertion runner |
+| Account copy: local mode complete, unavailable ≠ incorrect credentials, masked identity, no secret/identifier rendered, a11y labels, no fake progress | `AccountUiStateTest` (28 tests) | PASS via temporary offline assertion runner |
+| Security boundary: no logging, no plaintext or shared Keystore namespace, BYOK untouched, no account data in BuildPlans or bridge payloads, no invented backend or endpoint, no WebView/analytics | `AccountSecurityBoundaryTest` (19 tests) | PASS via temporary offline assertion runner |
+| The Phase 15 design system and navigation are unchanged by this phase | `CraftMindDesignTokensTest` (13), `CraftMindDesignSystemSourceScanTest` (2), `MainDestinationTest` (4) | PASS via temporary offline assertion runner |
+| The account service really stores and checks accounts: registration, duplicates, invalid input, sign-in, wrong password vs unknown account, suspension, session creation, refresh rotation, expiry, logout idempotence, current account, guest creation and linking, and the four data-clear/reinstall scenarios | `backend/test/accounts.test.js`, `backend/test/scenarios.test.js` (Phase 17) | PASS (35/35 backend tests) |
 | Passwords and session credentials never appear: scrypt-only hashes, digest-only tokens keyed by `AUTH_SECRET`, no credential in an error payload or a log line, bounded bodies, no account created by a failed attempt | `backend/test/security.test.js` (Phase 17) | PASS |
-| A server answer becomes app state without invention: success, rejection, suspension, unreachable, malformed, refresh rotation, unknown expiry, guest identity attached, deletion reported unimplemented, nothing printable | `AccountBackendAuthenticatorTest` (Phase 17) | PASS |
-| Stored credentials, wire codes, service-address rules, guest-identity generation, and request payloads keep their contract | `AccountApiContractTest` (Phase 17) | PASS |
-| Form validation: required fields, address shape, the 10-character/two-class password rule, matching confirmation, bounded display name, every complaint attached to its field | `AccountFormStateTest` (Phase 17) | PASS |
+| A server answer becomes app state without invention: success, rejection, suspension, unreachable, malformed, refresh rotation, unknown expiry, guest identity attached, deletion reported unimplemented, nothing printable | `AccountBackendAuthenticatorTest` (30 tests; Phase 17) | PASS via temporary offline assertion runner |
+| Stored credentials, wire codes, service-address rules, guest-identity generation, and request payloads keep their contract | `AccountApiContractTest` (21 tests; Phase 17) | PASS via temporary offline assertion runner |
+| Form validation: required fields, address shape, the 10-character/two-class password rule, matching confirmation, bounded display name, every complaint attached to its field | `AccountFormStateTest` (12 tests; Phase 17) | PASS via temporary offline assertion runner |
 
-Android compilation itself is **not** verified in this environment: no Android SDK, no Gradle distribution, and no
-Maven access are available here, so `ANDROID_BUILD = NOT_RUN`. The Compose screens are exercised by the JVM-checkable
-derivations above and by source-level scans; the instrumented Compose tests
-(`PlanReviewScreenTest`, `SettingsScreenTest`) are present but cannot be executed here, and neither is `AccountForms.kt`
-or the screens themselves; the new text field and the two forms are checked by the token/scan tests and by hand, not by
-rendering. Phase 16 ran the account suite (91 tests) and the design-system slice (19 tests) against the offline JVM
-harness; the full application suite was last run in Phase 15 (358 run, 5 pre-existing failures, 0 errors) and could not
-be re-run here because the harness stubs for AndroidX/Compose storage were lost when the sandbox was recreated.
+Android compilation itself is **not** verified in this environment: no Android SDK or Gradle distribution is installed,
+so `ANDROID_BUILD = NOT_RUN`. The account core/domain/authenticator and pure form/state production sources were compiled
+with Kotlin 2.1.10 on the available JRE; this is not an Android build. The account and design/navigation JVM sources and tests were compiled and invoked with a temporary offline runner that
+implements only the JUnit `@Test` annotation and assertion methods these suites use; it is not Gradle, AndroidX, or an
+Android build. Account test methods **PASS (163/163)** and design/navigation methods **PASS (19/19)** under that runner.
+The pure account production sources also compile with Kotlin 2.1.10 (one existing data-class visibility warning), and the
+`AccountViewModel` was type-checked with a minimal lifecycle shim. Compose forms/screens, the Android HTTP transport,
+instrumented tests, and a device-to-service round trip were not compiled or exercised. The full application suite's last
+recorded run remains Phase 15 (358 run, 5 pre-existing failures, 0 errors).
 
-**Phase 17:** the account slice now runs **158 tests** (the Phase 16 account foundation plus the backend-adapter,
-contract, and form suites) and the design-system slice **19 tests**, both against the offline harness; the backend suite
-runs **32 tests** with `npm test`. Android compilation, instrumented tests, and a device-to-service round trip are still
-not performed here: `ANDROID_BUILD = NOT_RUN`.
+**Phase 17 current verification:** backend `npm test` **PASS (35 tests, 0 failures)**; account JVM methods **PASS
+(163/163; temporary assertion runner)**; design/navigation methods **PASS (19/19; temporary assertion runner)**;
+`ANDROID_BUILD = NOT_RUN`.

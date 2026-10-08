@@ -141,9 +141,9 @@ service — standard library only, SQLite storage, scrypt password hashing, opaq
 now signs up, signs in, restores a session across launches, and signs out against it. Full detail:
 [`docs/account-authentication.md`](docs/account-authentication.md).
 
-- **One real service, no frameworks.** `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`,
-  `POST /auth/logout`, `GET /auth/me`, plus `POST /auth/guest` and `GET /health`. Three tables (`users`, `sessions`,
-  `guest_identities`) and nothing else. `npm test` runs 32 backend tests with no dependencies to install.
+- **One real service, no frameworks.** `POST /auth/register` (email, password, display name), `POST /auth/login`, `POST /auth/refresh`,
+  `POST /auth/logout`, `GET /auth/me`, plus `POST /auth/guest` and `GET /health`. Three account tables (`users`, `sessions`,
+  `guest_identities`) plus migration-version metadata only. `npm test` runs 35 backend tests with no dependencies to install.
 - **The session is the only credential.** Tokens are random 256-bit values, stored by the service as HMAC-SHA256
   digests and by the app only in the Phase 16 Keystore-backed store; refresh rotates both tokens. Nothing else is
   persisted, and no token, password, or internal identifier can reach the UI.
@@ -158,9 +158,11 @@ now signs up, signs in, restores a session across launches, and signs out agains
 - **Settings and navigation are unchanged.** Account lives in the Settings group, the four destinations stay Home /
   Builds / Minecraft / Settings, and the account screens are built from the Phase 15 design system (including one new
   token-based text field, since the design system had no input control before).
-- **Status in this build:** the backend suite (32 tests) and the account and design-system JVM slices (158 and 19
-  tests) run and pass here; `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution), and the service was not
-  exercised from a real device or over a real network in this environment.
+- **Status in this build:** backend `npm test` passes (35/35); 163 account and 19 design/navigation JVM test methods
+  passed in a temporary offline runner using the JUnit assertions those suites call (not a Gradle/Android build). The
+  pure account/domain/authenticator and form/state sources compile with Kotlin 2.1.10. `ANDROID_BUILD = NOT_RUN` (no
+  Android SDK/Gradle distribution); Compose rendering, instrumented tests, and a device or real-network exercise were
+  not performed.
 
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 

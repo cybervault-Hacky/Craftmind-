@@ -52,9 +52,30 @@ class AccountBackendAuthenticatorTest {
     // -------------------------------------------------------------------------------------------- registration
 
     @Test
-    fun registeringReturnsASessionBuiltFromWhatTheServiceReported() {
+    fun theCanonicalSessionManagerCanSeeAndUseTheRealRegistrationCapability() {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Success(registration(expiresAt = 5_000L))
+        val sessionStore = FakeAccountSessionStore()
+        val manager = AccountSessionManager(
+            authenticator = authenticator,
+            sessionStore = sessionStore,
+            clock = clock,
+        )
+        val password = "Passw0rdd!".toCharArray()
+
+        val state = manager.signUp("someone@example.com", password, "Someone")
+
+        assertTrue("the backend authenticator must expose the existing registration capability", state is AccountState.Authenticated)
+        assertEquals("Someone", (state as AccountState.Authenticated).session.identity.displayName)
+        assertEquals("the canonical manager persists only the server-created session", 1, sessionStore.saveCalls)
+        assertTrue("registration takes and clears the password", password.all { it == '\u0000' })
+    }
+
+    @Test
+    fun registeringReturnsASessionBuiltFromWhatTheServiceReported() {
+        api.configured = true
+        val serviceResponse = registration(expiresAt = 5_000L)
+        api.nextRegistration = AccountApiOutcome.Success(serviceResponse)
 
         val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
@@ -64,6 +85,10 @@ class AccountBackendAuthenticatorTest {
         assertEquals(5_000L, success.session.expiresAtEpochMillis)
         assertTrue("a live session can be refreshed", success.session.refreshable)
         assertNotNull(success.credential)
+        assertFalse(
+            "the raw tokens in the API response must be destroyed after the encrypted credential is made",
+            runCatching { serviceResponse.session.tokens.useTokens { _, _ -> Unit } }.isSuccess,
+        )
         // The anonymous identity is offered so the service can link it; it is never required.
         assertEquals(store.stored, api.lastGuestIdentityId)
     }
@@ -73,7 +98,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Rejected(AccountApiErrorCode.ACCOUNT_ALREADY_EXISTS)
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertEquals(AccountAuthErrorCode.ACCOUNT_ALREADY_EXISTS, (outcome as AccountAuthOutcome.Failure).error)
     }
@@ -83,7 +108,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Unreachable
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertEquals(
             AccountAvailabilityReason.NETWORK_UNAVAILABLE,
@@ -96,7 +121,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Malformed
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertEquals(AccountAuthErrorCode.MALFORMED_RESPONSE, (outcome as AccountAuthOutcome.Failure).error)
     }
@@ -108,7 +133,7 @@ class AccountBackendAuthenticatorTest {
             registration(expiresAt = 5_000L, status = AccountServerStatus.SUSPENDED),
         )
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertEquals(AccountAuthErrorCode.ACCOUNT_SUSPENDED, (outcome as AccountAuthOutcome.Failure).error)
     }
@@ -122,9 +147,14 @@ class AccountBackendAuthenticatorTest {
             AccountApiErrorCode.INVALID_CREDENTIALS to AccountAuthErrorCode.INVALID_CREDENTIALS,
             AccountApiErrorCode.ACCOUNT_NOT_FOUND to AccountAuthErrorCode.INVALID_CREDENTIALS,
             AccountApiErrorCode.ACCOUNT_SUSPENDED to AccountAuthErrorCode.ACCOUNT_SUSPENDED,
+            AccountApiErrorCode.ACCOUNT_DELETED to AccountAuthErrorCode.SESSION_REJECTED,
+            AccountApiErrorCode.SESSION_INVALID to AccountAuthErrorCode.SESSION_REJECTED,
+            AccountApiErrorCode.REFRESH_FAILED to AccountAuthErrorCode.SESSION_REJECTED,
             AccountApiErrorCode.ACCOUNT_ALREADY_EXISTS to AccountAuthErrorCode.ACCOUNT_ALREADY_EXISTS,
             AccountApiErrorCode.INVALID_EMAIL to AccountAuthErrorCode.INVALID_REQUEST,
             AccountApiErrorCode.INVALID_PASSWORD to AccountAuthErrorCode.INVALID_REQUEST,
+            AccountApiErrorCode.INVALID_REQUEST to AccountAuthErrorCode.INVALID_REQUEST,
+            AccountApiErrorCode.NETWORK_ERROR to AccountAuthErrorCode.NETWORK_UNAVAILABLE,
             AccountApiErrorCode.BACKEND_UNAVAILABLE to AccountAuthErrorCode.SERVICE_UNAVAILABLE,
             AccountApiErrorCode.UNKNOWN_ERROR to AccountAuthErrorCode.UNEXPECTED_FAILURE,
         )
@@ -186,13 +216,12 @@ class AccountBackendAuthenticatorTest {
     fun anAccessTokenTheServiceHasForgottenIsExchangedForANewPair() {
         api.configured = true
         api.nextAccount = AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_EXPIRED)
-        api.nextRefresh = AccountApiOutcome.Success(
-            AccountServerSession(
-                tokens = tokens("new-access", "new-refresh"),
-                accessExpiresAtEpochMillis = 9_000L,
-                refreshExpiresAtEpochMillis = 90_000L,
-            ),
+        val rotated = AccountServerSession(
+            tokens = tokens("new-access", "new-refresh"),
+            accessExpiresAtEpochMillis = 9_000L,
+            refreshExpiresAtEpochMillis = 90_000L,
         )
+        api.nextRefresh = AccountApiOutcome.Success(rotated)
         val session = existingSession()
 
         val outcome = authenticator.restore(session.storedCredential(), session.session)
@@ -200,18 +229,53 @@ class AccountBackendAuthenticatorTest {
         val success = outcome as AccountAuthOutcome.Success
         assertEquals("a rotated pair must replace the stored one", 9_000L, success.session.expiresAtEpochMillis)
         assertTrue(success.credential.useSecret { String(it).contains("new-access") })
+        assertFalse(
+            "raw rotated response tokens must be destroyed after credential copy",
+            runCatching { rotated.tokens.useTokens { _, _ -> Unit } }.isSuccess,
+        )
     }
 
     @Test
     fun aSessionTheServiceRefusesEndsRatherThanBeingKept() {
         api.configured = true
-        api.nextAccount = AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_NOT_FOUND)
+        api.nextAccount = AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_INVALID)
         api.nextRefresh = AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_EXPIRED)
         val session = existingSession()
 
         val outcome = authenticator.restore(session.storedCredential(), session.session)
 
         assertEquals(AccountAuthErrorCode.SESSION_REJECTED, (outcome as AccountAuthOutcome.Failure).error)
+    }
+
+    @Test
+    fun temporaryServiceErrorCodesDuringRestoreKeepTheSavedSession() {
+        val cases = listOf(
+            AccountApiErrorCode.NETWORK_ERROR to AccountAvailabilityReason.NETWORK_UNAVAILABLE,
+            AccountApiErrorCode.BACKEND_UNAVAILABLE to AccountAvailabilityReason.MAINTENANCE,
+            AccountApiErrorCode.UNKNOWN_ERROR to AccountAvailabilityReason.MAINTENANCE,
+        )
+        for ((code, reason) in cases) {
+            api.nextAccount = AccountApiOutcome.Rejected(code)
+            val existing = existingSession()
+
+            val outcome = authenticator.restore(existing.storedCredential(), existing.session)
+
+            assertEquals("$code is a service problem, not proof of a dead credential", AccountAuthOutcome.Unavailable(reason), outcome)
+        }
+    }
+
+    @Test
+    fun aTemporaryServiceFailureDuringRefreshDoesNotRejectTheSavedCredential() {
+        api.nextAccount = AccountApiOutcome.Rejected(AccountApiErrorCode.SESSION_EXPIRED)
+        api.nextRefresh = AccountApiOutcome.Rejected(AccountApiErrorCode.BACKEND_UNAVAILABLE)
+        val existing = existingSession()
+
+        val outcome = authenticator.restore(existing.storedCredential(), existing.session)
+
+        assertEquals(
+            AccountAuthOutcome.Unavailable(AccountAvailabilityReason.MAINTENANCE),
+            outcome,
+        )
     }
 
     @Test
@@ -255,7 +319,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Success(registration(expiresAt = null))
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertNull(
             "the app must not invent a lifetime the service did not declare",
@@ -268,7 +332,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Success(registration(expiresAt = 900L))
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         assertNull((outcome as AccountAuthOutcome.Success).session.expiresAtEpochMillis)
     }
@@ -378,7 +442,7 @@ class AccountBackendAuthenticatorTest {
         api.configured = true
         api.nextRegistration = AccountApiOutcome.Success(registration(expiresAt = 5_000L))
 
-        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), null)
+        val outcome = authenticator.signUp("someone@example.com", "Passw0rdd!".toCharArray(), "Someone")
 
         val printed = outcome.toString() + (outcome as AccountAuthOutcome.Success).run {
             session.toString() + credential.toString()
@@ -476,7 +540,7 @@ class FakeAccountApi : AccountApi {
     override fun register(
         emailAddress: String,
         password: CharArray,
-        displayName: String?,
+        displayName: String,
         guestIdentityId: String?,
     ): AccountApiOutcome<AccountRegistration> {
         calls++
