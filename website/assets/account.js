@@ -341,10 +341,13 @@ export async function initAccountMembership(root = document.querySelector('[data
   if (!region) return;
   if (!requireSession(region, adapters.account)) return;
   region.dataset.state = STATE.LOADING;
-  const [membershipResult, entitlementsResult, creditsResult] = await Promise.all([
+  const [membershipResult, entitlementsResult, creditsResult, capabilitiesResult] = await Promise.all([
     adapters.account.loadMembership(),
     adapters.account.loadEntitlements(),
     adapters.account.loadCredits(),
+    // Phase 23: the account's creator identity, summarized. A supplementary read: if it fails, the membership panel
+    // still reports the plan and balance it could verify, and the creator line simply says nothing was read.
+    adapters.account.loadAccountCapabilities(),
   ]);
   if (membershipResult.status !== RESULT.OK || entitlementsResult.status !== RESULT.OK || creditsResult.status !== RESULT.OK) {
     const unauthorized = [membershipResult, entitlementsResult, creditsResult].some((result) => result.status === RESULT.UNAUTHORIZED);
@@ -362,6 +365,12 @@ export async function initAccountMembership(root = document.querySelector('[data
   const entitlements = entitlementsResult.payload?.entitlements ?? [];
   const grants = entitlementsResult.payload?.administrativeGrants ?? [];
   const credits = creditsResult.payload?.credits ?? {};
+  const creator = capabilitiesResult.status === RESULT.OK ? capabilitiesResult.payload?.creator ?? null : null;
+  const creatorLine = creator
+    ? (creator.exists
+      ? `${creator.handle ? `@${creator.handle} · ` : ""}${creator.status ?? "unknown status"} · ${creator.verification ?? "unverified"}`
+      : "No creator profile yet")
+    : null;
   const balance = Number.isFinite(credits.available) ? `${credits.available} credits` : "Credit balance unavailable";
   region.dataset.state = STATE.POPULATED;
   region.innerHTML = `
@@ -381,6 +390,7 @@ export async function initAccountMembership(root = document.querySelector('[data
         ["Availability", catalogue.availabilityLabel],
         ["Purchasable", catalogue.purchasable === true ? "Yes" : "No — no payment is implemented"],
         ["Credit balance", balance],
+        ["Creator identity", creatorLine],
         ["Entitlements", entitlements.map((entry) => entry.key).join(", ") || null],
         ["Administrative grants", grants.map((grant) => grant.entitlementKey).join(", ") || "None active"],
       ])}

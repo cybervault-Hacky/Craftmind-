@@ -32,6 +32,18 @@ import {
   entitlementsForSession,
   membershipForSession,
 } from "./account-membership.js";
+import {
+  accountCapabilitiesForSession,
+  createCreatorProfileForSession,
+  createServerForSession,
+  creatorEligibilityForSession,
+  creatorProfileForSession,
+  listServersForSession,
+  publicCreatorProfileForHandle,
+  serverForSession,
+  updateCreatorProfileForSession,
+  updateServerForSession,
+} from "./creator-server-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -232,7 +244,7 @@ function statusForEmailDelivery(result, emailDelivery) {
  * changes, so a source or session already under an active Phase 20 protection is throttled here too — the controls are
  * reused exactly as they are, not duplicated.
  */
-const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/"];
+const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/", "/creator/", "/servers/"];
 
 function isSecuritySensitiveRoute(pathKey) {
   return SECURITY_SENSITIVE_PREFIXES.some((prefix) => pathKey.startsWith(prefix));
@@ -250,6 +262,10 @@ function routeSecurityCategory(pathKey) {
   if (pathKey.startsWith("/auth")) return "USER_AUTH";
   // A credit consumption is a credential-bearing state change: an active session protection applies to it as well.
   if (pathKey === "/account/credits/consume") return "SESSION";
+  // Phase 23 creator and workspace state changes are credential-bearing too. Public creator reads are not in this
+  // category at all: an anonymous read is throttled by the request limit and by the autonomous source protections, and
+  // applying an *account* protection to an anonymous request would protect nothing.
+  if (pathKey === "/creator/profile" || pathKey.startsWith("/servers/")) return "SESSION";
   return "REQUEST";
 }
 
@@ -282,7 +298,20 @@ function securitySignalForFailure(code, pathKey) {
     case ErrorCode.RATE_LIMITED:
       return { eventType: "RATE_LIMIT_VIOLATION", result: "THROTTLED" };
     case ErrorCode.DEVELOPER_ACCESS_DENIED:
+    case ErrorCode.SERVER_ACCESS_DENIED:
+    case ErrorCode.OWNERSHIP_REQUIRED:
       return { eventType: "UNAUTHORIZED_ACCESS_ATTEMPT", result: "DENIED" };
+    // A suspended profile or workspace refusing a protected operation is evidence of an account in a restricted state,
+    // exactly like a suspended account refusing a session. It is recorded once per attempt; the detection thresholds
+    // decide whether that is a pattern.
+    case ErrorCode.CREATOR_PROFILE_SUSPENDED:
+    case ErrorCode.SERVER_SUSPENDED:
+      return { eventType: "SUSPICIOUS_ACCOUNT_ACTIVITY", result: "DENIED" };
+    // Deliberately unmapped: CREATOR_ENTITLEMENT_REQUIRED, SERVER_ENTITLEMENT_REQUIRED, CREATOR_PROFILE_NOT_FOUND,
+    // SERVER_NOT_FOUND, and CREATOR_HANDLE_UNAVAILABLE. Holding no plan, mistyping a handle, and racing for a taken
+    // slug are ordinary outcomes of an ordinary client, not attack evidence. The first two are still audited
+    // (ENTITLEMENT_DENIED) and the last three are rate-limited, so nothing is invisible — it is simply not escalated
+    // into a security incident, because a security system that cries wolf is worse than one that stays quiet.
     case ErrorCode.DEVELOPER_TOOL_UNKNOWN:
     case ErrorCode.DEVELOPER_TOOL_INPUT_INVALID:
       return { eventType: "HIGH_IMPACT_ACTION_FAILED", result: "FAILURE" };
@@ -596,6 +625,54 @@ export function createAccountService({ database, configuration, logger = console
       const headerKey = typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"].trim() : null;
       return { status: 200, payload: consumeCreditsForSession(database, configuration, token, body, headerKey) };
     }],
+    // Phase 23 creator surface. The account always comes from the bearer session; the body carries content only. A
+    // public creator read is the one anonymous route: it shows the public projection of an ACTIVE profile, and every
+    // other case — unknown, suspended, or disabled — answers with the same not-found failure.
+    ["GET /account/capabilities", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "credits", request, "", configuration.rateLimit.credits);
+      return { status: 200, payload: accountCapabilitiesForSession(database, configuration, token) };
+    }],
+    ["GET /creator/profile", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "creator-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: creatorProfileForSession(database, configuration, token) };
+    }],
+    ["GET /creator/eligibility", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "creator-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: creatorEligibilityForSession(database, configuration, token) };
+    }],
+    ["POST /creator/profile", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "creator-write", request, "", configuration.rateLimit.creatorProfileWrite);
+      return { status: 201, payload: createCreatorProfileForSession(database, configuration, token, body) };
+    }],
+    ["PATCH /creator/profile", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "creator-write", request, "", configuration.rateLimit.creatorProfileWrite);
+      return { status: 200, payload: updateCreatorProfileForSession(database, configuration, token, body) };
+    }],
+    ["GET /servers", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "server-read", request, "", configuration.rateLimit.serverRead);
+      return { status: 200, payload: listServersForSession(database, configuration, token) };
+    }],
+    ["POST /servers", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "server-write", request, "", configuration.rateLimit.serverWrite);
+      return { status: 201, payload: createServerForSession(database, configuration, token, body) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -721,6 +798,74 @@ export function createAccountService({ database, configuration, logger = console
     ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth", schemaVersion: SCHEMA_VERSION } })],
   ]);
 
+  /**
+   * Parameterized routes.
+   *
+   * The router is an exact-match map, which is what makes it auditable — but two resources are addressed by their own
+   * public slug. Rather than loosen every route into a pattern, the three slug-addressed handlers live here and are
+   * consulted only when the exact map misses. Two consequences are deliberate:
+   *
+   *   * the **route pattern** is what reaches the request log, never the slug, so a log line cannot become a list of
+   *     every handle and workspace a caller probed;
+   *   * the slug is decoded only by handler code that validates it, never by the router.
+   */
+  const dynamicRoutes = [
+    {
+      method: "GET",
+      name: "/creators/:handle",
+      pattern: /^\/creators\/([^/]{1,64})$/,
+      handler: (request, _context, handle) => {
+        consumeLimit(limits, "creator-public", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: publicCreatorProfileForHandle(database, decodeURIComponent(handle)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/servers/:slug",
+      pattern: /^\/servers\/([^/]{1,64})$/,
+      handler: (request, _context, slug) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "server-read", request, "", configuration.rateLimit.serverRead);
+        return { status: 200, payload: serverForSession(database, configuration, token, decodeURIComponent(slug)) };
+      },
+    },
+    {
+      method: "PATCH",
+      name: "/servers/:slug",
+      pattern: /^\/servers\/([^/]{1,64})$/,
+      handler: async (request, _context, slug) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "server-write", request, "", configuration.rateLimit.serverWrite);
+        return {
+          status: 200,
+          payload: updateServerForSession(database, configuration, token, decodeURIComponent(slug), body),
+        };
+      },
+    },
+  ];
+  /**
+   * Method-aware matching, and deliberately so: a pattern match without a method match must not run a handler at all.
+   * `PATCH /servers/:slug` is an update; answering it with the read handler would ignore the request body, report
+   * success, and return unchanged state — the most dangerous kind of wrong answer, because the caller believes a write
+   * happened. When the pattern matches and the method does not, the caller raises `METHOD_NOT_ALLOWED` instead.
+   */
+  const matchDynamicRoute = (method, pathKey) => {
+    for (const route of dynamicRoutes) {
+      if (route.method !== method) continue;
+      const match = route.pattern.exec(pathKey);
+      if (match) return { route, params: match.slice(1) };
+    }
+    return null;
+  };
+  /** The pattern that owns a path, for logging and for method-mismatch decisions only. Never the slug itself. */
+  const dynamicPatternFor = (pathKey) => dynamicRoutes.find((route) => route.pattern.test(pathKey))?.name ?? null;
+  const dynamicPathMatches = (pathKey) => dynamicRoutes.some((route) => route.pattern.test(pathKey));
+  const dynamicMethodAllowed = (pathKey, method) =>
+    dynamicRoutes.some((route) => route.method === method && route.pattern.test(pathKey));
+
   const methodsByPath = new Map();
   for (const key of routes.keys()) {
     const [method, path] = key.split(" ");
@@ -743,6 +888,11 @@ export function createAccountService({ database, configuration, logger = console
       enforceHttps(request, configuration);
       const pathKey = path.replace(/\/+$/, "") || "/";
       if (routes.has(`${request.method} ${pathKey}`) || methodsByPath.has(pathKey)) logRoute = pathKey;
+      else if (dynamicPathMatches(pathKey)) {
+        // The pattern is logged, the slug is not: a request log must not become a directory of creator handles, and a
+        // mismatched method must not be logged as though the request had reached a handler.
+        logRoute = dynamicPatternFor(pathKey) ?? "/unmatched";
+      }
       if (isSecuritySensitiveRoute(pathKey) && request.method !== "OPTIONS") {
         // Autonomous protections for the request source, then (when a bearer credential is presented) for the account
         // or session it resolves to. This is the enforcement half of the response policy; it never grants anything.
@@ -755,14 +905,23 @@ export function createAccountService({ database, configuration, logger = console
       }
       if (request.method === "OPTIONS") {
         const requestedMethod = String(request.headers["access-control-request-method"] ?? "");
-        if (!methodsByPath.get(pathKey)?.has(requestedMethod)) throw new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED);
+        if (!methodsByPath.get(pathKey)?.has(requestedMethod) && !dynamicMethodAllowed(pathKey, requestedMethod)) {
+          throw new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED);
+        }
         status = 204;
         sendNoContent(response, requestId, corsHeaders);
         return;
       }
-      const handler = routes.get(`${request.method} ${pathKey}`);
+      let handler = routes.get(`${request.method} ${pathKey}`);
       if (!handler) {
-        throw methodsByPath.has(pathKey)
+        const matched = matchDynamicRoute(request.method, pathKey);
+        if (matched) {
+          const { route, params } = matched;
+          handler = (dynamicRequest, context) => route.handler(dynamicRequest, context, ...params);
+        }
+      }
+      if (!handler) {
+        throw methodsByPath.has(pathKey) || dynamicPathMatches(pathKey)
           ? new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED)
           : new AccountApiError(ErrorCode.INVALID_REQUEST, "Unknown account endpoint.");
       }

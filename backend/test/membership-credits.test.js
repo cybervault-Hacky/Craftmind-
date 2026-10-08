@@ -933,19 +933,25 @@ describe("Phase 22 migration and data preservation", () => {
     for (const added of ["membership_accounts", "membership_transitions", "credit_ledger", "credit_operation_keys"]) {
       assert.equal(tables.includes(added), true, added);
     }
+    // Phase 23 added two more additive tables and their append-only history without touching the Phase 22 ones.
+    for (const phase23 of ["creator_profiles", "creator_status_history", "server_workspaces", "server_members"]) {
+      assert.equal(tables.includes(phase23), true, phase23);
+    }
     for (const preserved of ["users", "sessions", "guest_identities", "developer_accounts", "developer_sessions",
       "developer_access_grants", "developer_action_confirmations", "admin_audit_log", "security_incidents",
       "security_events", "security_actions", "security_notifications", "security_rate_limit_state"]) {
       assert.equal(tables.includes(preserved), true, preserved);
     }
-    assert.equal(SCHEMA_VERSION, 5);
+    assert.equal(SCHEMA_VERSION, 6);
     const health = await call(service.baseUrl, "GET", "/health");
-    assert.equal(health.body.schemaVersion, 5);
+    assert.equal(health.body.schemaVersion, 6);
     // The one audit log stays append-only, with all three of its triggers recreated by the v5 rebuild.
     const triggers = service.database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all().map((row) => row.name);
     for (const trigger of ["admin_audit_log_no_update", "admin_audit_log_no_delete", "admin_audit_log_no_replacement",
       "credit_ledger_no_update", "credit_ledger_no_delete", "credit_ledger_no_replacement",
-      "membership_transitions_no_update", "membership_transitions_no_delete"]) {
+      "membership_transitions_no_update", "membership_transitions_no_delete",
+      "creator_status_history_no_update", "creator_status_history_no_delete",
+      "server_members_owner_immutable_update", "server_members_owner_immutable_delete", "server_members_single_owner"]) {
       assert.equal(triggers.includes(trigger), true, trigger);
     }
     assert.throws(() => service.database.prepare("UPDATE admin_audit_log SET outcome = 'FAILURE'").run(), /append-only/);
@@ -991,8 +997,8 @@ describe("Phase 22 migration and data preservation", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 4").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 5);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
+    assert.equal(SCHEMA_VERSION, 6);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 4").get().applied_at, appliedAt);
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_legacy'").get().display_name, "Legacy");
     assert.equal(database.prepare("SELECT device_label FROM sessions WHERE session_id = 'ses_legacy'").get().device_label, "Legacy device");

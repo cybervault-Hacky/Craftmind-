@@ -36,8 +36,55 @@ export const AUDIT_OUTCOME = Object.freeze({
 export const MAXIMUM_AUDIT_METADATA_CHARACTERS = 4096;
 
 /**
+ * Audit capture frames (Phase 23).
+ *
+ * A refusal must leave a record even though the change it refused never happened — but a record inserted inside a
+ * transaction that then rolls back disappears with it, which would make every denied request invisible to the one log.
+ * `runTransaction` therefore opens a frame around an operation: appends made while a frame is open are validated and
+ * held in memory, written together with the change when the transaction commits, and written *after* the rollback
+ * when the operation refuses. Validation still happens at append time, so a bad record fails the operation itself,
+ * exactly as an inline insert would.
+ *
+ * Nothing else uses frames. The developer control plane keeps its own savepoint discipline in `admin-tools.js`, and
+ * direct appends outside any transaction insert immediately, as before.
+ */
+const captureFrames = [];
+
+export function beginAuditCapture() {
+  const frame = { records: [], flushedInTransaction: false };
+  captureFrames.push(frame);
+  return frame;
+}
+
+export function endAuditCapture(frame) {
+  const top = captureFrames.pop();
+  if (top !== frame) {
+    // Frames are strictly nested; anything else means the stack was mutated across transactions, which would attach
+    // one operation's records to another's. Fail closed rather than misattribute.
+    throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
+  }
+}
+
+function writeAuditRow(database, row) {
+  database.prepare(
+    `INSERT INTO admin_audit_log
+       (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.auditId, row.actorKind, row.actorDeveloperId, row.actionType, row.targetUserId, row.incidentId, row.occurredAt, row.outcome, row.metadataJson);
+}
+
+/**
+ * Writes a frame's held records. Called inside the transaction for a successful operation (so the audit commits with
+ * the change) and after the rollback for a refused one (so the refusal outlives the rolled-back change it describes).
+ */
+export function flushAuditCapture(database, frame) {
+  for (const row of frame.records) writeAuditRow(database, row);
+}
+
+/**
  * Appends one audit record. The caller owns the surrounding transaction (the Phase 19 tool registry uses a savepoint
- * inside one), so a privileged action is never acknowledged unless its audit write commits with it.
+ * inside one), so a privileged action is never acknowledged unless its audit write commits with it. When a capture
+ * frame is open — see `beginAuditCapture` — the validated record is held for the frame's flush instead.
  */
 export function appendAuditRecord(database, {
   actorKind = AUDIT_ACTOR_KIND.DEVELOPER,
@@ -68,19 +115,13 @@ export function appendAuditRecord(database, {
   if (typeof encoded !== "string" || encoded.length > MAXIMUM_AUDIT_METADATA_CHARACTERS) {
     throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
   }
-  database.prepare(
-    `INSERT INTO admin_audit_log
-       (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    newAuditId(),
-    actorKind,
-    actorDeveloperId,
-    actionType,
-    targetUserId,
-    incidentId,
-    occurredAt,
-    outcome,
-    encoded,
-  );
+  const row = {
+    auditId: newAuditId(), actorKind, actorDeveloperId, actionType, targetUserId, incidentId, occurredAt, outcome, metadataJson: encoded,
+  };
+  const frame = captureFrames[captureFrames.length - 1];
+  if (frame !== undefined) {
+    frame.records.push(row);
+    return;
+  }
+  writeAuditRow(database, row);
 }

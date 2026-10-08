@@ -407,15 +407,16 @@ describe("Phase 18 account security and recovery", () => {
     old.close();
     try {
       const migrated = openDatabase(filename);
-      // Phase 22 added migration v5 (membership, entitlements, credit ledger) on top of this Phase 17 database.
-      assert.equal(SCHEMA_VERSION, 5);
+      // Phase 22 added migration v5 (membership, entitlements, credit ledger) and Phase 23 added v6 (creator identity
+      // and server workspaces) on top of this Phase 17 database. Both are additive.
+      assert.equal(SCHEMA_VERSION, 6);
       assert.equal(migrated.prepare("SELECT email FROM users WHERE user_id = ?").get("usr_existing").email, "legacy@example.com");
       assert.equal(migrated.prepare("SELECT last_used_at, device_label FROM sessions WHERE session_id = ?").get("ses_existing").last_used_at, "2026-01-01T00:00:00.000Z");
       assert.equal(migrated.prepare("SELECT device_label FROM sessions WHERE session_id = ?").get("ses_existing").device_label, "Unknown device");
       assert.equal(migrated.prepare("SELECT email_verified_at FROM users WHERE user_id = ?").get("usr_existing").email_verified_at, null);
       migrated.close();
       const reopened = openDatabase(filename);
-      assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
+      assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
       assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 1);
       reopened.close();
     } finally {

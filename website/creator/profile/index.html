@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101713">
-  <meta name="description" content="The CraftMind creator public-profile editor interface, with honest states because no creator service stores profiles yet.">
+  <meta name="description" content="The CraftMind creator public-profile editor interface: it reads the real creator profile state from the account service and refuses to save from the page.">
   <title>Public profile · Creator studio — CraftMind</title>
   <link rel="icon" type="image/svg+xml" href="../../favicon.svg">
   <link rel="stylesheet" href="../../styles.css">
   <script type="module" src="../../assets/site.js"></script>
+  <script type="module" src="../../assets/creator-profile.js"></script>
 </head>
 <body data-page="creator-profile-edit">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -49,12 +50,14 @@
       <p class="crumbs"><a href="../../index.html">Home</a> <span aria-hidden="true">/</span> <a href="../index.html">Creator studio</a> <span aria-hidden="true">/</span> <span>Public profile</span></p>
       <p class="eyebrow">PUBLIC PROFILE</p>
       <h1 id="page-title">How buyers<br>see you.</h1>
-      <p class="lead">A creator profile carries a display name, bio, links, and the categories you work in. Profiles are
-      stored by the creator service, which does not exist yet, so this page shows the layout and refuses to save.</p>
+      <p class="lead">A creator profile carries a display name, a handle, a bio, and the categories you work in. Profiles
+      are stored by the account service and owned by the account: the panel below reads your real profile state from it.
+      This page does not write through a browser form yet, so it refuses to save rather than pretend.</p>
     </section>
 
     <section class="page-section container">
-      <div class="app-shell">
+      <div class="stack-lg" data-creator-status></div>
+      <div class="app-shell" style="margin-top:26px">
         <nav class="side-nav" aria-label="Creator studio navigation">
           <h2 id="creator-nav-title">Creator studio</h2>
           <ul>
@@ -76,7 +79,7 @@
               <div class="field">
                 <label for="creator-display-name">Display name</label>
                 <input class="input" id="creator-display-name" name="displayName" maxlength="40" disabled aria-describedby="creator-display-name-hint">
-                <span class="field-hint" id="creator-display-name-hint">Up to 40 characters. Cannot be saved until a creator service exists.</span>
+                <span class="field-hint" id="creator-display-name-hint">Up to 40 characters. Saving from this page is not implemented yet.</span>
               </div>
               <div class="field">
                 <label for="creator-bio">Bio</label>
@@ -110,7 +113,8 @@
           <div class="banner banner--planned" role="note">
             <span class="banner-mark">DISABLED ON PURPOSE</span>
             <p>The fields above are disabled rather than editable-and-unsavable, so nothing you type can be lost or
-            mistaken for a saved profile.</p>
+            mistaken for a saved profile. The creator service implements profile creation and updates over its API; saving
+            from this page is a later phase, and the panel above always shows what the server actually holds.</p>
           </div>
         </div>
       </div>

@@ -97,13 +97,28 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "GET /account/entitlements",
   "GET /account/credits",
   "GET /account/credits/transactions",
+  // Phase 23: the creator identity foundation. These are the endpoints that actually exist server-side. Profile creation
+  // and updates (POST/PATCH /creator/profile) are implemented on the service but have no write path here: this site
+  // reads creator state and changes nothing through a browser.
+  "GET /account/capabilities",
+  "GET /creator/profile",
+  "GET /creator/eligibility",
 ]);
+
+/** The one anonymous route the site may call. It returns the public projection of an ACTIVE creator profile. */
+export const PUBLIC_CREATOR_ENDPOINT = "GET /creators/:handle";
 
 /** The method names the configured account adapter exposes; also the contract reported by describeIntegrationBoundary. */
 const ACCOUNT_METHODS = Object.freeze([
   "signIn", "signOut", "loadAccount", "loadSessions", "revokeSession", "revokeOtherSessions",
   "requestPasswordReset", "confirmPasswordReset", "changePassword", "resendVerification",
   "loadMembership", "loadEntitlements", "loadCredits",
+  "loadAccountCapabilities", "loadCreatorProfile", "loadCreatorEligibility", "loadPublicCreatorProfile",
+]);
+
+/** The creator identity surface. Every method is a read: no method here creates, edits, publishes, or sells anything. */
+const CREATOR_PROFILE_METHODS = Object.freeze([
+  "loadProfile", "loadEligibility", "loadCapabilities", "loadPublicProfile",
 ]);
 
 /** The read-only membership surface. Every method is a read; nothing here starts a purchase or a charge. */
@@ -206,6 +221,21 @@ export function createAccountAdapter({ origin = null } = {}) {
     loadMembership() { return requestJson(origin, "/account/membership", { token: session.accessToken }); },
     loadEntitlements() { return requestJson(origin, "/account/entitlements", { token: session.accessToken }); },
     loadCredits() { return requestJson(origin, "/account/credits", { token: session.accessToken }); },
+    loadAccountCapabilities() { return requestJson(origin, "/account/capabilities", { token: session.accessToken }); },
+    loadCreatorProfile() { return requestJson(origin, "/creator/profile", { token: session.accessToken }); },
+    loadCreatorEligibility() { return requestJson(origin, "/creator/eligibility", { token: session.accessToken }); },
+    loadPublicCreatorProfile(handle) {
+      // The handle is validated here as well as on the server, because a path segment is interpolated into a URL: an
+      // unvalidated value could travel somewhere other than the creator route.
+      if (typeof handle !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/.test(handle)) {
+        return Promise.resolve(Object.freeze({
+          status: RESULT.ERROR,
+          reason: REASON.REJECTED,
+          message: "A creator handle is a lowercase address of 3 to 32 characters using letters, digits, and hyphens.",
+        }));
+      }
+      return requestJson(origin, `/creators/${handle}`);
+    },
   });
 }
 
@@ -240,6 +270,41 @@ function createMembershipAdapter(account) {
     loadMembership: signedInOnly("loadMembership"),
     loadEntitlements: signedInOnly("loadEntitlements"),
     loadCredits: signedInOnly("loadCredits"),
+  });
+}
+
+/**
+ * The creator identity surface.
+ *
+ * Phase 23 turned the creator plan into a real capability: an account with the Creator entitlement can own a profile,
+ * and the profile has its own status and verification marker. This adapter reads that state and nothing else. It has no
+ * `createProfile`, `updateProfile`, or `publish` method — the service implements profile writes, but no website feature
+ * performs them yet, and a method that quietly wrote through a form would be a bigger claim than the phase makes.
+ */
+function createCreatorProfileAdapter(account) {
+  const contract = [...CREATOR_PROFILE_METHODS];
+  if (!account.configured) {
+    return unconfigured("creatorProfile", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  const signedInOnly = (method) => async () => {
+    if (!account.signedIn) {
+      return Object.freeze({
+        status: RESULT.UNAUTHORIZED,
+        reason: REASON.NOT_SIGNED_IN,
+        message: "Sign in to read your creator profile, status, and capabilities from the account service.",
+      });
+    }
+    return account[method]();
+  };
+  return Object.freeze({
+    configured: true,
+    name: "creatorProfile",
+    contract,
+    get signedIn() { return account.signedIn; },
+    loadProfile: signedInOnly("loadCreatorProfile"),
+    loadEligibility: signedInOnly("loadCreatorEligibility"),
+    loadCapabilities: signedInOnly("loadAccountCapabilities"),
+    loadPublicProfile: (handle) => account.loadPublicCreatorProfile(handle),
   });
 }
 
@@ -291,6 +356,8 @@ export function createAdapters() {
     // honest unavailable states as before when one is not.
     membership: createMembershipAdapter(account),
     entitlements: createEntitlementsAdapter(account),
+    // Phase 23: creator identity reads (profile, status, verification, capabilities) from the same account service.
+    creatorProfile: createCreatorProfileAdapter(account),
     // Documented, unimplemented, and intentionally inert. Each list is the exact method set a later phase must provide.
     marketplace: unconfigured("marketplace", ["searchListings", "getListing", "listCategories", "listFeatured", "listSaved", "setSaved"]),
     creator: unconfigured("creator", ["listMyListings", "createDraft", "updateDraft", "publishListing", "unpublishListing", "duplicateListing", "deleteDraft", "listMedia", "uploadMedia"]),

@@ -166,6 +166,23 @@ function membershipConfiguration(environment) {
   return Object.freeze(catalog);
 }
 
+/**
+ * Phase 23 creator and server configuration.
+ *
+ * There is exactly one number here, and it is an **operational bound**: how many workspaces one account may create. It
+ * is not a plan entitlement, it is not a price, and it is not advertised as a tier — the API returns it alongside a
+ * marker saying it is configuration. Everything else the phase needs to bound (profile field lengths, slug rules,
+ * capability definitions) is a product invariant and lives in `creator-catalog.js` / `server-catalog.js`, where a test
+ * can assert it rather than an operator silently changing it.
+ */
+function creatorAndServerConfiguration(environment) {
+  return Object.freeze({
+    serverWorkspaces: Object.freeze({
+      maximumPerAccount: positiveInteger(environment, "SERVER_MAX_WORKSPACES_PER_ACCOUNT", 3, 100),
+    }),
+  });
+}
+
 /** @param {NodeJS.ProcessEnv} environment */
 export function loadConfiguration(environment = process.env, options = {}) {
   const nodeEnvironment = (environment.NODE_ENV ?? "development").trim().toLowerCase();
@@ -276,6 +293,7 @@ export function loadConfiguration(environment = process.env, options = {}) {
     trustProxyTls,
     corsAllowedOrigins,
     membership: membershipConfiguration(environment),
+    ...creatorAndServerConfiguration(environment),
     security: securityConfiguration(environment),
     rateLimit: Object.freeze({
       login: Object.freeze({ maximum: positiveInteger(environment, "RATE_LOGIN_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_LOGIN_WINDOW_MS", 900_000, 86_400_000) }),
@@ -293,6 +311,12 @@ export function loadConfiguration(environment = process.env, options = {}) {
       // Phase 22: reading entitlement state is cheap; consuming credits is a state change and is limited far more tightly.
       credits: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREDITS_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_CREDITS_WINDOW_MS", 900_000, 86_400_000) }),
       creditConsume: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREDIT_CONSUME_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_CREDIT_CONSUME_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 23: reading creator/server state is cheap; creating or changing it is a bounded state change. Public
+      // creator reads are limited too, because an anonymous endpoint is the one most worth scraping.
+      creatorProfileWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREATOR_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_CREATOR_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      creatorProfileRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREATOR_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_CREATOR_READ_WINDOW_MS", 900_000, 86_400_000) }),
+      serverWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_SERVER_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_SERVER_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      serverRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_SERVER_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_SERVER_READ_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

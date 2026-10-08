@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101713">
-  <meta name="description" content="The CraftMind creator directory interface, with honest empty states because no creator service or listing storage exists yet.">
+  <meta name="description" content="The CraftMind creator directory interface, with honest empty states because no directory, listing storage, or rating service exists yet.">
   <title>Creators — CraftMind</title>
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <link rel="stylesheet" href="../styles.css">
@@ -45,8 +45,10 @@
       <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <span>Creators</span></p>
       <p class="eyebrow">CREATORS</p>
       <h1 id="page-title">The people<br>behind the builds.</h1>
-      <p class="lead">Creator profiles, listings, and ratings are part of the marketplace service. Until that exists,
-      this directory shows no invented creators and no fabricated statistics — only the layout that will hold them.</p>
+      <p class="lead">Creator profiles are real and server-owned: each one is readable at a handle, and the profile page
+      reads it directly. A browsable <em>directory</em> — search, categories, follower counts — and listings and ratings
+      belong to the marketplace service, which does not exist yet, so this page shows no invented creators and no
+      fabricated statistics, only the layout that will hold them.</p>
     </section>
 
     <section class="section container section-tight" aria-labelledby="directory-title">
@@ -54,7 +56,7 @@
       <div class="section-heading">
         <p class="eyebrow">DIRECTORY</p>
         <h2 id="directory-title">Browse creators.</h2>
-        <p>Creator search, categories, and follower counts need a creator service. Review the layout with sample
+        <p>Creator search, categories, and follower counts need a directory service, which is not implemented. Review the layout with sample
         records by adding <code>?preview=1</code> to this address.</p>
       </div>
       <div class="state-card state-card--empty" data-creators-directory role="region" aria-label="Creator directory"></div>
@@ -65,8 +67,8 @@
         <article class="card">
           <span class="card-meta">PLANNED</span>
           <h3>Creator profiles</h3>
-          <p>Display name, bio, links, joined date, and the categories a creator works in. Nothing is fetched, inferred,
-          or invented until a creator service can serve it.</p>
+          <p>Display name, a handle, a bio, and the categories a creator works in. A single profile is already served by
+          the account service and readable at its handle; browsing many creators at once needs the directory below.</p>
         </article>
         <article class="card">
           <span class="card-meta">PLANNED</span>

@@ -179,6 +179,8 @@ describe("account service security", () => {
 
     assert.deepEqual(tables, [
       "admin_audit_log",
+      "creator_profiles",
+      "creator_status_history",
       "credit_ledger",
       "credit_operation_keys",
       "developer_access_grants",
@@ -197,9 +199,12 @@ describe("account service security", () => {
       "security_incidents",
       "security_notifications",
       "security_rate_limit_state",
+      "server_members",
+      "server_workspaces",
       "sessions",
       "users",
     ]);
+    // Phase 23 added creator identity and server workspaces: ownership records, not a marketplace or a payment system.
     // Phase 22 added an internal membership and build-credit ledger, so `credit` is no longer a forbidden substring —
     // the ban exists to stop a *payment or marketplace* system appearing without its phase. Those remain forbidden, and
     // the credit tables are internal allocations with no purchase, price, or settlement behind them.

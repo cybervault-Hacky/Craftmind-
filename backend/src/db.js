@@ -482,6 +482,171 @@ const MIGRATIONS = [
          BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
     ],
   },
+  {
+    // Phase 23 is additive: creator identity and server workspaces, each with the ownership rules and the append-only
+    // history the marketplace phase will consume. Two existing structures are widened rather than duplicated:
+    //
+    //   * `admin_audit_log` is rebuilt with the Phase 23 tool names and domain events. Every existing row, its actor,
+    //     its target, and its incident reference are copied across, and all three append-only triggers are recreated.
+    //     There is still exactly one audit log.
+    //   * `developer_action_confirmations` is rebuilt so the new high-impact tools can be confirmed. Its rows are
+    //     pending proposals only, and the rebuild happens inside this migration's own transaction.
+    //
+    // Nothing is dropped. `users`, `sessions`, `guest_identities`, the developer tables, the Phase 20 security tables,
+    // the Phase 22 membership and credit tables, and every Phase 21 website artefact are untouched.
+    //
+    // Ownership is enforced by the database, not by convention: a workspace has exactly one owner row, that row cannot
+    // be updated or deleted, and a second owner row cannot be inserted. There is no ownership transfer in this phase,
+    // so there is no code path — and no SQL path — that could quietly reassign a workspace.
+    version: 6,
+    statements: [
+      `CREATE TABLE creator_profiles (
+         creator_id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+         handle TEXT NOT NULL UNIQUE CHECK (length(handle) BETWEEN 3 AND 32),
+         display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 40),
+         bio TEXT NOT NULL DEFAULT '' CHECK (length(bio) <= 600),
+         category TEXT CHECK (category IS NULL OR category IN ('Structures', 'Landscaping', 'Interiors', 'Redstone')),
+         avatar_reference TEXT CHECK (avatar_reference IS NULL OR length(avatar_reference) <= 300),
+         status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'PENDING', 'SUSPENDED', 'DISABLED')),
+         verification_status TEXT NOT NULL CHECK (verification_status IN ('UNVERIFIED', 'PENDING', 'VERIFIED', 'REVOKED')),
+         status_changed_at TEXT NOT NULL,
+         verified_at TEXT,
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         CHECK (verification_status <> 'VERIFIED' OR verified_at IS NOT NULL)
+       )`,
+      `CREATE INDEX creator_profiles_by_status ON creator_profiles(status, created_at DESC)`,
+      `CREATE INDEX creator_profiles_by_verification ON creator_profiles(verification_status, created_at DESC)`,
+      `CREATE TABLE creator_status_history (
+         history_id TEXT PRIMARY KEY,
+         creator_id TEXT NOT NULL REFERENCES creator_profiles(creator_id) ON DELETE CASCADE,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         change_type TEXT NOT NULL CHECK (change_type IN ('STATUS', 'VERIFICATION')),
+         from_value TEXT,
+         to_value TEXT NOT NULL,
+         reason TEXT NOT NULL CHECK (length(reason) BETWEEN 3 AND 200),
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         occurred_at TEXT NOT NULL,
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `CREATE INDEX creator_status_history_by_creator ON creator_status_history(creator_id, occurred_at DESC, history_id)`,
+      `CREATE INDEX creator_status_history_by_user ON creator_status_history(user_id, occurred_at DESC)`,
+      `CREATE TRIGGER creator_status_history_no_update BEFORE UPDATE ON creator_status_history
+         BEGIN SELECT RAISE(ABORT, 'creator history is append-only'); END`,
+      `CREATE TRIGGER creator_status_history_no_delete BEFORE DELETE ON creator_status_history
+         BEGIN SELECT RAISE(ABORT, 'creator history is append-only'); END`,
+      `CREATE TABLE server_workspaces (
+         server_id TEXT PRIMARY KEY,
+         owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         slug TEXT NOT NULL UNIQUE CHECK (length(slug) BETWEEN 3 AND 32),
+         display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 60),
+         description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 600),
+         status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL
+       )`,
+      `CREATE INDEX server_workspaces_by_owner ON server_workspaces(owner_user_id, created_at DESC)`,
+      `CREATE INDEX server_workspaces_by_status ON server_workspaces(status, created_at DESC)`,
+      `CREATE TABLE server_members (
+         member_id TEXT PRIMARY KEY,
+         server_id TEXT NOT NULL REFERENCES server_workspaces(server_id) ON DELETE CASCADE,
+         user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         role TEXT NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'MEMBER')),
+         created_at TEXT NOT NULL,
+         UNIQUE (server_id, user_id)
+       )`,
+      `CREATE INDEX server_members_by_user ON server_members(user_id, created_at DESC)`,
+      `CREATE INDEX server_members_by_server ON server_members(server_id, role)`,
+      `CREATE TRIGGER server_members_owner_immutable_update BEFORE UPDATE ON server_members
+         WHEN OLD.role = 'OWNER'
+         BEGIN SELECT RAISE(ABORT, 'workspace ownership cannot be changed'); END`,
+      `CREATE TRIGGER server_members_owner_immutable_delete BEFORE DELETE ON server_members
+         WHEN OLD.role = 'OWNER'
+         BEGIN SELECT RAISE(ABORT, 'workspace ownership cannot be removed'); END`,
+      `CREATE TRIGGER server_members_single_owner BEFORE INSERT ON server_members
+         WHEN NEW.role = 'OWNER'
+          AND EXISTS (SELECT 1 FROM server_members WHERE server_id = NEW.server_id AND role = 'OWNER')
+         BEGIN SELECT RAISE(ABORT, 'a workspace has exactly one owner'); END`,
+      `CREATE TABLE admin_audit_log_v6 (
+         audit_id TEXT PRIMARY KEY,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke',
+           'security_overview', 'list_security_incidents', 'get_security_incident', 'list_security_events',
+           'list_security_actions', 'list_security_notifications', 'developer_ai_security_summary',
+           'SECURITY_INCIDENT_CREATED', 'SECURITY_RATE_LIMIT_APPLIED', 'SECURITY_REQUEST_REJECTED',
+           'SECURITY_SESSION_REVOKED', 'SECURITY_ACCOUNT_PROTECTED', 'SECURITY_ALERT_CREATED',
+           'SECURITY_PROTECTION_RELEASED', 'SECURITY_INCIDENT_RESOLVED',
+           'inspect_membership', 'grant_membership', 'grant_credits', 'reverse_credit_grant', 'list_credit_transactions',
+           'MEMBERSHIP_BASELINE_ASSIGNED', 'MEMBERSHIP_GRANTED', 'MEMBERSHIP_EXPIRED',
+           'CREDIT_GRANTED', 'CREDIT_CONSUMED', 'CREDIT_EXPIRED', 'CREDIT_REVERSED',
+           'CREDIT_OPERATION_REJECTED', 'ENTITLEMENT_DENIED',
+           'inspect_creator', 'list_creator_profiles', 'verify_creator', 'revoke_creator_verification',
+           'suspend_creator', 'restore_creator',
+           'inspect_server', 'list_server_workspaces', 'suspend_server', 'restore_server', 'archive_server',
+           'CREATOR_PROFILE_CREATED', 'CREATOR_PROFILE_UPDATED', 'CREATOR_STATUS_CHANGED',
+           'CREATOR_VERIFICATION_CHANGED', 'CREATOR_ACCESS_DENIED',
+           'SERVER_CREATED', 'SERVER_UPDATED', 'SERVER_STATUS_CHANGED', 'SERVER_ACCESS_DENIED'
+         )),
+         target_user_id TEXT,
+         incident_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `INSERT INTO admin_audit_log_v6
+         (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+       SELECT audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json
+         FROM admin_audit_log`,
+      `DROP TRIGGER admin_audit_log_no_update`,
+      `DROP TRIGGER admin_audit_log_no_delete`,
+      `DROP TRIGGER admin_audit_log_no_replacement`,
+      `DROP TABLE admin_audit_log`,
+      `ALTER TABLE admin_audit_log_v6 RENAME TO admin_audit_log`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_incident ON admin_audit_log(incident_id, occurred_at DESC)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+      `CREATE TABLE developer_action_confirmations_v6 (
+         confirmation_digest TEXT PRIMARY KEY,
+         developer_id TEXT NOT NULL REFERENCES developer_accounts(developer_id) ON DELETE CASCADE,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'revoke_user_sessions', 'suspend_user', 'restore_user', 'grant_entitlement', 'revoke_entitlement',
+           'grant_membership', 'grant_credits', 'reverse_credit_grant',
+           'verify_creator', 'revoke_creator_verification', 'suspend_creator', 'restore_creator',
+           'suspend_server', 'restore_server', 'archive_server'
+         )),
+         target_user_id TEXT,
+         arguments_json TEXT NOT NULL CHECK (length(arguments_json) <= 4096),
+         created_at TEXT NOT NULL,
+         expires_at TEXT NOT NULL,
+         consumed_at TEXT
+       )`,
+      `INSERT INTO developer_action_confirmations_v6
+         (confirmation_digest, developer_id, action_type, target_user_id, arguments_json, created_at, expires_at, consumed_at)
+       SELECT confirmation_digest, developer_id, action_type, target_user_id, arguments_json, created_at, expires_at, consumed_at
+         FROM developer_action_confirmations`,
+      `DROP TABLE developer_action_confirmations`,
+      `ALTER TABLE developer_action_confirmations_v6 RENAME TO developer_action_confirmations`,
+      `CREATE INDEX developer_confirmations_by_developer ON developer_action_confirmations(developer_id, created_at DESC)`,
+      `CREATE INDEX developer_confirmations_by_expiry ON developer_action_confirmations(expires_at)`,
+    ],
+  },
 ];
 
 export const AUDIT_ACTION_TYPES = Object.freeze({
@@ -503,6 +668,23 @@ export const AUDIT_ACTION_TYPES = Object.freeze({
     "MEMBERSHIP_BASELINE_ASSIGNED", "MEMBERSHIP_GRANTED", "MEMBERSHIP_EXPIRED",
     "CREDIT_GRANTED", "CREDIT_CONSUMED", "CREDIT_EXPIRED", "CREDIT_REVERSED",
     "CREDIT_OPERATION_REJECTED", "ENTITLEMENT_DENIED",
+  ]),
+  CREATOR_TOOLS: Object.freeze([
+    "inspect_creator", "list_creator_profiles", "verify_creator", "revoke_creator_verification",
+    "suspend_creator", "restore_creator",
+  ]),
+  SERVER_TOOLS: Object.freeze([
+    "inspect_server", "list_server_workspaces", "suspend_server", "restore_server", "archive_server",
+  ]),
+  /** The subset of Phase 23 tool names that a mutating action may be confirmed for. */
+  CONFIRMABLE_CREATOR_SERVER_TOOLS: Object.freeze([
+    "verify_creator", "revoke_creator_verification", "suspend_creator", "restore_creator",
+    "suspend_server", "restore_server", "archive_server",
+  ]),
+  CREATOR_AND_SERVER_EVENTS: Object.freeze([
+    "CREATOR_PROFILE_CREATED", "CREATOR_PROFILE_UPDATED", "CREATOR_STATUS_CHANGED",
+    "CREATOR_VERIFICATION_CHANGED", "CREATOR_ACCESS_DENIED",
+    "SERVER_CREATED", "SERVER_UPDATED", "SERVER_STATUS_CHANGED", "SERVER_ACCESS_DENIED",
   ]),
   AUTOMATED_SECURITY_ACTIONS: Object.freeze([
     "SECURITY_INCIDENT_CREATED", "SECURITY_RATE_LIMIT_APPLIED", "SECURITY_REQUEST_REJECTED",
