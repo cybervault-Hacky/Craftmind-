@@ -258,31 +258,39 @@ Accessibility is part of the component contract, not a later pass:
 
 ## 7. Website architecture
 
-The website is a static multi-page site under `website/`, published from this repository.
+The website is a static multi-page site under `website/`, published from this repository. Phase 15 built eight product
+pages; Phase 21 added the marketplace, membership, creator, and account sections on the same design language and the same
+shell (see §10). The page set is now thirty pages:
 
-| Page | File | Content |
-| --- | --- | --- |
-| Home | `index.html` | Branding, tagline *Describe it. Show it. Build it.*, the `DOWNLOAD APK` call to action, product overview, feature highlights, and the AI → BuildPlan → Minecraft explanation. |
-| How It Works | `how-it-works.html` | The six real steps from description to in-game build. |
-| Features | `features.html` | Only implemented behaviour. No marketplace, accounts, or pricing. |
-| Download | `download.html` | The single (disabled) `DOWNLOAD APK` control, version facts, supported Android, install guidance, security/integrity, and direct-from-website distribution. |
-| About | `about.html` | Honest description, mission, philosophy, high-level technology, and links. |
-| FAQ / Help | `faq.html` | Answers limited to implemented behaviour. |
-| Privacy | `privacy.html` | The repository's existing privacy documentation is the source of truth. |
-| Terms | `terms.html` | Marked as a draft that requires final legal review. |
+| Section | Pages |
+| --- | --- |
+| Public (Phase 15) | `index.html`, `how-it-works.html`, `features.html`, `download.html`, `about.html`, `faq.html`, `privacy.html`, `terms.html` |
+| Marketplace | `marketplace/index.html`, `marketplace/build.html` |
+| Membership | `membership/index.html` |
+| Creators | `creators/index.html`, `creators/profile.html` |
+| Account | `account/index.html`, `account/profile.html`, `account/security.html`, `account/sessions.html`, `account/purchases.html`, `account/saved.html`, `account/membership.html` |
+| Creator studio | `creator/index.html`, `creator/listings/{index,new,edit}.html`, `creator/{orders,earnings,reviews,analytics,profile,settings}/index.html` |
 
-Shared elements: a skip link, one `h1` per page, navigation `Home / How it works / Features / Download / About /
-FAQ` with `aria-current="page"` on the current page, and a footer linking Privacy, Terms, and the source repository.
-`styles.css` holds the base design language plus a "Phase 15 multi-page components" block; there is no framework, no
-build step, and no remote resource.
+The developer control plane is deliberately outside this page set. It is served from `backend/public/developer.html` under
+backend authorisation and is never linked from a public page
+(see [`developer-control-plane.md`](developer-control-plane.md)).
 
-`scripts/check_website.py` enforces the architecture: page count, one `h1` per page, viewport and skip-link presence,
-resolution of every internal anchor/link/resource, the exact navigation set with correct `aria-current`, exactly one
-disabled `DOWNLOAD APK` control site-wide and it must be on `download.html`, absence of `href="….apk"` and of
-`releases/latest/download`, the honest-copy phrases (including "not yet been built, installed, or published"),
-download facts (1.0.0, 10000, Android 8.0+, SHA-256), the "final legal review" marker in Terms, the attribution and
-no-false-claims copy in About, responsive and reduced-motion markers in CSS, and the absence of remote or fabricated
-resources.
+Shared elements: a skip link, one `h1` and one main landmark per page, a `data-page` key that selects the page controller,
+the same nine public navigation links (`Home / Marketplace / Membership / Creators / How it works / Features / Download /
+About / FAQ`) with one `Get the app` call to action and `aria-current="page"` on the owning section, the same footer link
+block, and a mobile navigation disclosure that enhances a horizontally scrollable list. Account and creator pages add a
+contextual shell: a labelled context line plus a section navigation whose current entry is marked without JavaScript.
+`styles.css` holds the base design language plus a "Phase 15 multi-page components" and a "Phase 21 — marketplace, creator,
+membership, and account components" block; there is no framework, no build step, and no remote resource.
+
+`scripts/check_website.py` enforces the architecture: the exact page set and controller keys, region hooks per controller,
+one `h1` and one main landmark per page, viewport and skip-link presence, resolution of every internal anchor, link, and
+resource, the exact navigation set with the correct single `aria-current`, the footer block, the contextual section shell
+with exactly one current entry, exactly one disabled `DOWNLOAD APK` control site-wide on `download.html`, absence of
+`href="….apk"` and of `releases/latest/download`, the honest-copy phrases (including "not yet been built, installed, or
+published"), download facts (1.0.0, 10000, Android 8.0+, SHA-256), the "final legal review" marker in Terms, the
+attribution and no-false-claims copy in About, responsive and reduced-motion markers in CSS, and the absence of remote or
+fabricated resources. Phase 21 extends it with the honesty invariants listed in §10.
 
 GitHub Pages is configured as a manual workflow *template* (`website/github-pages-workflow.yml.example`) only; the
 expected project URL is `https://cybervault-hacky.github.io/Craftmind-/`, and that URL is a deployment target, not a
@@ -329,7 +337,10 @@ The rules are deliberately strict so the interface does not drift:
     only when those phases actually begin. Until then nothing in the app or the website references them: no
     "Marketplace", "Pricing", "Creator", or "Servers" navigation entry, no empty card grid, no stub screen, and no
     website page. A placeholder advertises a product that does not exist, which is worse than its absence. The accounts
-    half of this rule was fulfilled by Phase 16, which is the phase that began accounts: see §9.
+    half of this rule was fulfilled by Phase 16, which is the phase that began accounts: see §9. The marketplace half was
+    fulfilled by Phase 21, which is the phase that began the marketplace: it ships the interface and the state system with
+    no service behind them, and every page states what is not implemented: see §10. An honest interface foundation is not
+    a placeholder — a placeholder pretends, an unavailable state explains.
 
 Explicitly forbidden in every later phase: random colours; competing primary buttons; a second card system; a second
 typography system; unrelated dialog styles; a separate navigation system; redesigning an existing screen without a
@@ -449,11 +460,12 @@ Guest/local mode is first class and explicit, not an error state:
 
 ### 9.7 Website
 
-The website keeps its eight pages, navigation, and disabled APK download until a signed artifact exists. Phase 18
-corrects its account/privacy copy: the app/repository support account authentication when a service URL is configured,
-but this repository operates no production endpoint or email provider; account data is not used for cloud sync, and
-account deletion is unavailable. Marketplace, payments, subscriptions, and other excluded systems are not advertised as
-implemented.
+The website keeps its disabled APK download until a signed artifact exists. Phase 18 corrected its account/privacy copy:
+the app/repository support account authentication when a service URL is configured, but this repository operates no
+production endpoint or email provider; account data is not used for cloud sync, and account deletion is unavailable.
+Marketplace, payments, subscriptions, and other excluded systems are not advertised as implemented. Phase 21 later added
+the marketplace, membership, creator, and account interface foundation — interface, states, and honest unavailability
+only; see §10 and [`marketplace-ui-foundation.md`](marketplace-ui-foundation.md).
 
 ### 9.8 Future cloud extension points
 
@@ -466,7 +478,44 @@ none is referenced in the UI, and secrets — provider keys and the account sess
 
 ---
 
-## 10. What verifies these claims
+## 10. Marketplace, creator, membership, and account interface foundation (Phase 21)
+
+Phase 21 builds the interface and the state architecture for the marketplace, creator studio, membership, and account
+center **before** any marketplace, subscription, payment, commission, payout, or entitlement service exists. It adds no
+backend, no database table, and no provider integration. Full contracts:
+[`marketplace-ui-foundation.md`](marketplace-ui-foundation.md).
+
+- **Honest unavailability is the default.** Every new page renders an `unavailable` (or `empty`) state from the shared
+  state system when no service is configured: no dummy rows, no zero-as-data, no skeleton that resolves into nothing.
+  Sample records exist only behind `?preview=1`, are named `DEMO_*`/`SAMPLE_*` in source, and are labelled "Preview data"
+  in the interface.
+- **Nothing can be bought, sold, published, or subscribed to.** Purchase, download, follow, plan, publish, and save-draft
+  controls are `disabled` with a stated reason. The build-detail page says purchases are coming soon; the wizard's final
+  step says marketplace publishing will be available soon; membership plans are "Not priced yet" and not purchasable.
+- **Commission is undefined, not guessed.** The pricing step shows `YOUR PRICE`, `CRAFTMIND FEE`, and
+  `ESTIMATED EARNINGS`; the fee and the earnings figure read "Not defined yet" and "Unavailable" because no commission
+  rate exists in this phase. A percentage appears only inside a collapsed example that states it is an arbitrary
+  illustration of the layout, not the CraftMind fee.
+- **One compatibility model.** The wizard's compatibility step reuses the app's own vocabulary — editions, loaders,
+  release channels, the single registered and certified runtime profile (`java-fabric-1.20.1`), and the BuildPlan limits —
+  through a read-only mirror (`assets/compatibility.js`) rather than a second model. A target outside the registry is
+  reported as unsupported with certification `NOT_PERFORMED`.
+- **One data boundary.** `assets/adapters.js` registers every future service (marketplace, creator, orders, reviews,
+  analytics, membership, entitlements, payments) as unconfigured and answers with a typed `unavailable` result. The only
+  implemented adapter is the account adapter, and only against the endpoints that already exist in `backend/`, and only
+  after a deployer configures an HTTPS origin. There is no invented endpoint, no hardcoded production URL, and no request
+  from any page other than that adapter.
+- **States, accessibility, and responsiveness are properties of the components.** Eight states, a polite live region,
+  `role="alert"` error summaries with `aria-invalid` fields and per-field messages, `aria-pressed`/`aria-selected` on
+  toggles and tabs, a labelled progress bar, keyboard-reachable mobile navigation, visible focus, status never conveyed by
+  colour alone, reduced-motion-safe transitions, and data tables that become labelled cards below 680px.
+- **Navigation stays honest about authority.** The public navigation is nine links plus the download call to action.
+  Account links appear contextually; the creator studio is reachable only where it is relevant; the developer control
+  plane is never linked publicly. A hidden link is not authorisation — authorisation stays in the backend.
+- **The app is untouched.** Android navigation remains Home / Builds / Minecraft / Settings, asserted by
+  `MainDestinationTest`; the marketplace interface belongs to the website.
+
+## 11. What verifies these claims
 
 | Claim | Verified by | Result |
 | --- | --- | --- |
@@ -477,6 +526,10 @@ none is referenced in the UI, and secrets — provider keys and the account sess
 | History cards derive every field from the stored record | `BuildRecordSummaryTest` (6) | PASS |
 | Minecraft stages/actions/gates derive from real detector, selector, resolver, and certification state | `MinecraftConnectionSummaryTest` (17 tests) | PASS |
 | Website architecture, navigation, download policy, honest copy, responsive + reduced-motion markers, no remote resources | `scripts/check_website.py` | PASS |
+| Phase 21 information architecture: 30 pages, controller keys, region hooks, navigation/footer contract, section shells, and the honesty invariants (no payment provider, no browser storage, no secret, no hardcoded API origin, `fetch` only in the adapter module, preview-gated sample data, disabled purchase/plan controls, undefined commission) | `scripts/check_website.py` | PASS (30 pages, 884 links) |
+| Rendered behaviour of the Phase 21 pages: honest unavailable states, preview gating, live search/filter/sort/save, membership period toggle, disabled purchase and plan actions, the seven-step wizard with its validation, accessibility markers, and escaping | Local jsdom harness outside the repository (72 assertions) | PASS (72/72); not committed, no browser is installed in this environment |
+| Phase 21 did not weaken the security layer or the account service | `cd backend && npm test` | PASS (98/98 across 10 suites) |
+| Android information architecture is unchanged by a website-only phase | `MainDestinationTest` (4 tests) | Source unchanged; Gradle unavailable here, so the suite was **not** re-run |
 | No secrets, APKs, keystores, or build outputs are tracked | `scripts/check_release_config.py`, secret scan before commit | PASS |
 | Account state machine: local-first sign-out, fail-closed without a service, restore/refresh/expiry, switching, deletion, listener transitions, no secret in any state | `AccountSessionManagerTest` (36 tests) | PASS via temporary offline assertion runner |
 | Ownership classification matches the source tree; the four category names are pinned; Minecraft runtime state is runtime-local in the present and the future; the two secret stores stay separate; nothing is account-scoped today | `CraftMindDataOwnershipTest` (10 tests) | PASS via temporary offline assertion runner |

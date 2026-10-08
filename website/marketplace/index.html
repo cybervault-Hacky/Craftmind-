@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="The CraftMind marketplace interface: search, categories, filters, sorting, featured and saved builds, with honest states because no marketplace backend exists yet.">
+  <title>Marketplace — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../assets/site.js"></script>
+</head>
+<body data-page="marketplace-home">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="../index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="../index.html">Home</a>
+        <a href="../marketplace/index.html" aria-current="page">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creators/index.html">Creators</a>
+        <a href="../how-it-works.html">How it works</a>
+        <a href="../features.html">Features</a>
+        <a href="../download.html">Download</a>
+        <a href="../about.html">About</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <span>Marketplace</span></p>
+      <p class="eyebrow">MARKETPLACE · INTERFACE FOUNDATION</p>
+      <h1 id="page-title">Build with other<br>people's best work.</h1>
+      <p class="lead">This is the marketplace experience CraftMind is designed around: find a build, read exactly what it
+      supports, and know what you are getting before anything is purchased. The marketplace service does not exist yet,
+      so every listing, price, and purchase control here is stated honestly as unavailable.</p>
+    </section>
+
+    <section class="section container" aria-labelledby="browse-title">
+      <div data-preview-banner></div>
+      <div class="section-heading">
+        <p class="eyebrow">BROWSE</p>
+        <h2 id="browse-title">Search, filter, sort.</h2>
+        <p>The controls below work. They query CraftMind's catalog service — which is not implemented — so with no
+        catalog connected they return nothing and say so.</p>
+      </div>
+
+      <form class="toolbar" role="search" aria-labelledby="browse-title" data-catalog-form>
+        <div class="field">
+          <label for="catalog-search">Search builds</label>
+          <input class="input" id="catalog-search" type="search" name="query" placeholder="Longhouse, garden, redstone…" data-catalog-search>
+          <span class="field-hint">Searches titles, descriptions, categories, and tags.</span>
+        </div>
+        <div class="field">
+          <label for="catalog-category">Category</label>
+          <select class="select" id="catalog-category" data-catalog-category>
+            <option value="">All categories</option>
+            <option value="Structures">Structures</option>
+            <option value="Landscaping">Landscaping</option>
+            <option value="Interiors">Interiors</option>
+            <option value="Redstone">Redstone</option>
+            <option value="Farms">Farms</option>
+            <option value="Decorations">Decorations</option>
+            <option value="Mini-games">Mini-games</option>
+            <option value="Whole worlds">Whole worlds</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="catalog-sort">Sort by</label>
+          <select class="select" id="catalog-sort" data-catalog-sort>
+            <option value="relevance">Most relevant</option>
+            <option value="newest">Newest</option>
+            <option value="popular">Most saved</option>
+            <option value="price-asc">Price: low to high</option>
+            <option value="title">Title A–Z</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="catalog-edition">Edition</label>
+          <select class="select" id="catalog-edition" data-catalog-edition>
+            <option value="">Any edition</option>
+            <option value="java">Java Edition</option>
+            <option value="bedrock">Bedrock Edition</option>
+            <option value="legacy">Legacy Edition</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="choice" for="catalog-free">
+            <input type="checkbox" id="catalog-free" data-catalog-free>
+            <span>Free builds only<small>No price is defined anywhere yet.</small></span>
+          </label>
+        </div>
+        <div class="field">
+          <button type="button" class="button button-secondary" data-catalog-reset>Reset filters</button>
+        </div>
+      </form>
+      <p class="field-hint" data-catalog-status role="status" aria-live="polite" style="margin-top:12px"></p>
+
+      <h3 class="small" style="margin-top:42px">Featured</h3>
+      <div data-featured-region></div>
+
+      <h3 class="small" style="margin-top:42px">All builds</h3>
+      <div class="state-card state-card--unavailable" data-catalog-region role="region" aria-label="Marketplace results"></div>
+
+      <h3 class="small" style="margin-top:42px">Saved builds</h3>
+      <div class="state-card state-card--empty" data-saved-region role="region" aria-label="Saved builds"></div>
+
+      <h3 class="small" style="margin-top:42px">Creator highlights</h3>
+      <div data-creators-region></div>
+    </section>
+
+    <section class="section container section-tight" aria-labelledby="status-title">
+      <div class="section-heading">
+        <p class="eyebrow">WHAT THIS PAGE HONESTLY IS</p>
+        <h2 id="status-title">A product experience,<br>not a working store.</h2>
+      </div>
+      <div class="card-grid">
+        <article class="card">
+          <span class="card-meta">WORKS TODAY</span>
+          <h3>Search, filters, sorting, and saved state</h3>
+          <p>The interface is real and keyboard accessible. Saving an item keeps it in this page for this visit only —
+          nothing is uploaded, and nothing is written to browser storage.</p>
+        </article>
+        <article class="card">
+          <span class="card-meta">NOT IMPLEMENTED</span>
+          <h3>Listings, purchases, and downloads</h3>
+          <p>No marketplace service stores listings, no checkout exists, and no build can be purchased or downloaded.
+          Purchase controls are shown as unavailable rather than faked.</p>
+        </article>
+        <article class="card">
+          <span class="card-meta">REVIEW THE LAYOUT</span>
+          <h3>Sample data on request</h3>
+          <p>Add <code>?preview=1</code> to this address to render a small sample catalog. Every sample card is labelled
+          as preview data and no control on it can start a transaction.</p>
+        </article>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="../index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creator/index.html">Creator studio</a>
+        <a href="../account/index.html">Account</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+        <a href="../download.html">Download</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
