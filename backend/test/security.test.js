@@ -188,6 +188,11 @@ describe("account service security", () => {
       "guest_identities",
       "password_recovery_tokens",
       "schema_migrations",
+      "security_actions",
+      "security_events",
+      "security_incidents",
+      "security_notifications",
+      "security_rate_limit_state",
       "sessions",
       "users",
     ]);

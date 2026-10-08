@@ -8,7 +8,7 @@ import { createAccountService } from "../src/server.js";
 export const TEST_SECRET = "test-secret-that-is-long-enough-for-configuration-validation";
 const servicesByUrl = new Map();
 
-export async function startService(overrides = {}, { emailDelivery = new DevelopmentEmailSink(), developerAiProvider = null, rateLimiter = undefined } = {}) {
+export async function startService(overrides = {}, { emailDelivery = new DevelopmentEmailSink(), developerAiProvider = null, rateLimiter = undefined, securityEngine = null } = {}) {
   const configuration = loadConfiguration({
     NODE_ENV: "test",
     DATABASE_URL: ":memory:",
@@ -31,12 +31,12 @@ export async function startService(overrides = {}, { emailDelivery = new Develop
     warn: (message) => logs.push(`warn ${message}`),
     error: (message) => logs.push(`error ${message}`),
   };
-  const server = createAccountService({ database, configuration, logger, emailDelivery, developerAiProvider, rateLimiter });
+  const server = createAccountService({ database, configuration, logger, emailDelivery, developerAiProvider, rateLimiter, securityEngine });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
   const service = {
-    baseUrl, database, configuration, logs, emailDelivery,
+    baseUrl, database, configuration, logs, emailDelivery, securityEngine,
     async close() {
       servicesByUrl.delete(baseUrl);
       await new Promise((resolve) => server.close(resolve));
@@ -80,7 +80,7 @@ export async function registerVerified(service, overrides = {}) {
   const message = service.emailDelivery.takeMessage("verification", email);
   if (!message) throw new Error("test email sink did not capture a verification message");
   const verified = await call(service.baseUrl, "POST", "/auth/verify-email", { body: { token: message.token } });
-  if (verified.status !== 200) throw new Error("test verification did not complete");
+  if (verified.status !== 200) throw new Error(`test verification did not complete: ${verified.status} ${JSON.stringify(verified.body)}`);
   const signedIn = await loginCall(service.baseUrl, input);
   return {
     ...signedIn,

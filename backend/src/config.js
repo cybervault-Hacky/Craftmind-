@@ -72,6 +72,67 @@ function originList(environment) {
   return Object.freeze([...new Set(normalized)]);
 }
 
+/**
+ * One detection rule's centralized thresholds. Every automated decision reads its numbers from here, so no rule
+ * contains a magic number of its own. Ordering is validated: medium < high < critical.
+ */
+function detectionThresholds(environment, key, { medium, high, critical, windowMs, maximumWindowMs = 3_600_000 }) {
+  const prefix = `SECURITY_${key}`;
+  const resolved = {
+    windowMs: positiveInteger(environment, `${prefix}_WINDOW_MS`, windowMs, maximumWindowMs),
+    medium: positiveInteger(environment, `${prefix}_MEDIUM_MAX`, medium, 1_000_000),
+    high: positiveInteger(environment, `${prefix}_HIGH_MAX`, high, 1_000_000),
+    critical: positiveInteger(environment, `${prefix}_CRITICAL_MAX`, critical, 1_000_000),
+  };
+  if (!(resolved.medium < resolved.high && resolved.high < resolved.critical)) {
+    throw new ConfigurationError(`${prefix} thresholds must satisfy medium < high < critical`);
+  }
+  return Object.freeze(resolved);
+}
+
+function securityConfiguration(environment) {
+  return Object.freeze({
+    thresholds: Object.freeze({
+      bruteForce: detectionThresholds(environment, "BRUTE_FORCE", { windowMs: 120_000, medium: 5, high: 12, critical: 25 }),
+      developerAuthFailures: detectionThresholds(environment, "DEV_AUTH", { windowMs: 120_000, medium: 3, high: 6, critical: 12 }),
+      // Stale or revoked credentials are routinely retried by clients after a logout, an app restart, or an expired
+      // access token, so this rule watches *sustained* reuse rather than a handful of ordinary retries.
+      sessionAbuse: detectionThresholds(environment, "SESSION_ABUSE", { windowMs: 300_000, medium: 8, high: 15, critical: 25 }),
+      rateLimitAbuse: detectionThresholds(environment, "RATE_LIMIT_ABUSE", { windowMs: 600_000, medium: 3, high: 8, critical: 15 }),
+      unauthorizedAccess: detectionThresholds(environment, "UNAUTHORIZED_ACCESS", { windowMs: 600_000, medium: 5, high: 10, critical: 20 }),
+      confirmationAbuse: detectionThresholds(environment, "CONFIRMATION_ABUSE", { windowMs: 600_000, medium: 3, high: 6, critical: 12 }),
+      malformedRequests: detectionThresholds(environment, "MALFORMED_REQUESTS", { windowMs: 300_000, medium: 5, high: 10, critical: 20 }),
+      requestBurst: detectionThresholds(environment, "REQUEST_BURST", { windowMs: 60_000, medium: 120, high: 240, critical: 400 }),
+    }),
+    response: Object.freeze({
+      // Automated protections are temporary by construction. No automated action is allowed to become permanent.
+      defaultProtectionSeconds: positiveInteger(environment, "SECURITY_DEFAULT_PROTECTION_SECONDS", 900, 86_400),
+      maximumProtectionSeconds: positiveInteger(environment, "SECURITY_MAX_PROTECTION_SECONDS", 3_600, 86_400),
+      throttleMaximum: positiveInteger(environment, "SECURITY_THROTTLE_MAX", 5, 600),
+      throttleWindowMs: positiveInteger(environment, "SECURITY_THROTTLE_WINDOW_MS", 300_000, 3_600_000),
+      burstCooldownMs: positiveInteger(environment, "SECURITY_BURST_COOLDOWN_MS", 60_000, 3_600_000),
+      notificationCooldownMs: positiveInteger(environment, "SECURITY_NOTIFICATION_COOLDOWN_MS", 300_000, 86_400_000),
+      // A hard rejection is only ever issued against an abusive request source, never against an account or session.
+      deniableScopes: Object.freeze(["SOURCE"]),
+    }),
+    retention: Object.freeze({
+      eventsSeconds: positiveInteger(environment, "SECURITY_EVENT_RETENTION_SECONDS", 2_592_000, 31_536_000),
+      notificationsSeconds: positiveInteger(environment, "SECURITY_NOTIFICATION_RETENTION_SECONDS", 7_776_000, 31_536_000),
+      resolvedIncidentsSeconds: positiveInteger(environment, "SECURITY_INCIDENT_RETENTION_SECONDS", 15_552_000, 63_072_000),
+      releasedProtectionSeconds: positiveInteger(environment, "SECURITY_PROTECTION_RETENTION_SECONDS", 604_800, 7_776_000),
+    }),
+    bounds: Object.freeze({
+      metadataCharacters: 2048,
+      reasonCharacters: 200,
+      reasonsPerIncident: 6,
+      eventDeduplicationMs: 1000,
+      incidentDeduplicationMs: positiveInteger(environment, "SECURITY_INCIDENT_DEDUP_MS", 900_000, 86_400_000),
+      maximumEventsPerQuery: 200,
+      maximumIncidentsPerQuery: 100,
+    }),
+  });
+}
+
 /** @param {NodeJS.ProcessEnv} environment */
 export function loadConfiguration(environment = process.env, options = {}) {
   const nodeEnvironment = (environment.NODE_ENV ?? "development").trim().toLowerCase();
@@ -181,6 +242,7 @@ export function loadConfiguration(environment = process.env, options = {}) {
     publicOrigin,
     trustProxyTls,
     corsAllowedOrigins,
+    security: securityConfiguration(environment),
     rateLimit: Object.freeze({
       login: Object.freeze({ maximum: positiveInteger(environment, "RATE_LOGIN_MAX", 10, 10_000), windowMs: positiveInteger(environment, "RATE_LOGIN_WINDOW_MS", 900_000, 86_400_000) }),
       register: Object.freeze({ maximum: positiveInteger(environment, "RATE_REGISTER_MAX", 60, 10_000), windowMs: positiveInteger(environment, "RATE_REGISTER_WINDOW_MS", 3_600_000, 86_400_000) }),

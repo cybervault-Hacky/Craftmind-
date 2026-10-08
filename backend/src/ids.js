@@ -40,6 +40,56 @@ export function newGrantId() {
   return `grt_${randomUUID()}`;
 }
 
+export function newSecurityEventId() {
+  return `sev_${randomUUID()}`;
+}
+
+export function newSecurityIncidentId() {
+  return `inc_${randomUUID()}`;
+}
+
+export function newSecurityActionId() {
+  return `act_${randomUUID()}`;
+}
+
+export function newSecurityNotificationId() {
+  return `ntf_${randomUUID()}`;
+}
+
+export function newSecurityProtectionId() {
+  return `prt_${randomUUID()}`;
+}
+
+/**
+ * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
+ * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.
+ */
+export function securitySourceDigest(authSecret, address) {
+  return createHmac("sha256", authSecret)
+    .update("craftmind:security-source-v1:", "utf8")
+    .update(String(address ?? "unknown"), "utf8")
+    .digest("hex")
+    .slice(0, 40);
+}
+
+/**
+ * Opaque account correlation handle used when a failed authentication names an account that does not (or may not)
+ * exist. Security detection must be able to count repeated attempts against the same address without storing the
+ * address itself, so only this keyed digest is ever written.
+ */
+export function securityAccountDigest(authSecret, canonicalEmail) {
+  return `ref_${createHmac("sha256", authSecret)
+    .update("craftmind:security-account-v1:", "utf8")
+    .update(String(canonicalEmail ?? "unknown"), "utf8")
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
+/** Opaque incident handle shown to developers (for example `SEC-4F2C91A7`); never derived from account data. */
+export function newIncidentReference() {
+  return `SEC-${randomBytes(5).toString("hex").toUpperCase()}`;
+}
+
 export function newToken() {
   return randomBytes(TOKEN_BYTES).toString("base64url");
 }

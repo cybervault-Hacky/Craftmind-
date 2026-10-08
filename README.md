@@ -175,6 +175,42 @@ Phase 19 supersedes Phase 18's prior out-of-scope note **only** by adding a dist
 - **Migration/security.** SQLite schema v3 adds isolated developer accounts/sessions/bootstrap state, audited confirmations/grants, and an append-oriented audit log. Developer rate limits are configurable and currently in-memory/process-local. The dashboard is not linked from the eight-page public website; Android remains Home / Builds / Minecraft / Settings and includes no developer credentials or AI key.
 - **Verification status:** `cd backend && npm test` → 73/73 passed; backend JavaScript syntax checks, `python3 scripts/check_website.py` (8 pages), `python3 scripts/check_release_config.py`, and `git diff --check` passed. Android build/device tests, live AI/email provider calls, hosted network integration, an independent security audit, and production deployment are not claimed.
 
+## Phase 20 — Autonomous security response and threat detection
+
+Phase 20 adds a self-contained backend security layer to the account service: it watches authentication, session,
+rate-limit, authorization, and request patterns, and answers a predefined set of bounded threats immediately — with no
+human, no AI provider, and no external service in the detection or response path. Full contracts:
+[`docs/autonomous-security-response.md`](docs/autonomous-security-response.md).
+
+- **Closed, sanitized event model.** Fifteen registered event types feed one normalization boundary; unregistered,
+  oversized, or malformed signals are rejected. Credential-shaped values are redacted before storage, and no raw client
+  address or account identifier is ever written — sources and unknown accounts are keyed through keyed HMAC digests.
+- **Deterministic detection.** Eight explainable counting rules (brute force, developer sign-in failures, session
+  reuse, rate-limit abuse, unauthorized access, confirmation abuse, malformed requests, request bursts) compare
+  bounded windows against centralized thresholds; risk scoring adds bounded 0–100 context, and every escalation carries
+  the structured reasons that produced it.
+- **Progressive autonomous response.** Plans walk MEDIUM → HIGH → CRITICAL: tighten the specific subject first
+  (account, session, or source), add the subject remedy (session revocation, account protection), and only at CRITICAL
+  temporarily reject the abusive source and raise one developer alert. Every measure is expiring and reversible; a hard
+  rejection is only ever issued for a request source, and nothing can delete, ban, suspend, or change privileges.
+- **Policy-authorized tool registry.** Eight registered tools execute only with an unexpired authorization envelope
+  minted by the policy (`TTL ≤ 60 s`, `actor_kind = SYSTEM_SECURITY`), so a client, a developer session, or the AI can
+  never invoke an automated response directly. Enforced protections reuse the existing typed `RATE_LIMITED` (429 with
+  `Retry-After`) response, and a rejection caused by a protection is not counted as fresh abuse evidence.
+- **Audited and explainable.** Incidents deduplicate per (category, subject) and carry severity, risk score, reasons,
+  the actions taken (applied or benignly skipped), related events, and their audit trail. Retention is bounded: events
+  30 days, notifications 90 days, resolved incidents 180 days, released protections 7 days.
+- **Read-only Security Center.** Seven role-checked, bounded developer tools expose incidents, events, actions, and
+  alerts inside the Phase 19 dashboard. The optional AI summary receives a sanitized brief and may return prose only
+  (`MESSAGE_ONLY`, zero tools); a tool proposal in that mode is refused, and detection and protection work with no AI
+  provider configured at all.
+- **Migration/security.** SQLite schema v4 adds isolated security incidents, events, actions, notifications, and
+  rate-limit state, and rebuilds the audit log with an explicit `actor_kind` and `incident_id` while preserving every
+  existing row and its append-only guarantees.
+- **Verification status:** `cd backend && npm test` → 98/98 passed across 10 suites; `python3 scripts/check_website.py`
+  (8 pages) and `python3 scripts/check_release_config.py` passed. No live deployment, external security review,
+  multi-instance/shared-state test, or live AI/email provider call is claimed.
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
@@ -247,7 +283,7 @@ The Android UI reports the authenticated session, bridge-reported edition/Minecr
 - Other provider adapters or user-configurable AI endpoints.
 - Manual build editing/design tools, block palettes, coordinate editors, templates, rollback, undo, or visual/screenshot verification of a constructed world.
 - Cloud sync, account-owned build history, cross-device settings, ads, premium tiers, or an AI gateway/provider-billing backend. The account service handles authentication only; local build history and BYOK provider credentials are not attached to accounts.
-- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; no real AI provider adapter is bundled or claimed. Account deletion remains unavailable; there is no public user account dashboard.
+- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable; there is no public user account dashboard.
 - Bedrock execution: no Bedrock bridge implementation exists here, no Bedrock version is runtime-certified, and the Bedrock block/state catalog is empty, so the Bedrock bridge never receives a BuildPlan. Bedrock cannot load the Java Fabric mod. No unsafe client automation (screen scraping, input simulation, injection, patching, anti-cheat/DRM/license bypass) is implemented or planned as a substitute.
 - Manual Minecraft runtime selection or override: there is no edition/Minecraft-version/loader/adapter picker, no nearest-version fallback, no cross-edition matching, and no "execute anyway" control. The runtime comes only from the authenticated bridge; a runtime that cannot be detected stays unknown and construction stays disabled.
 - Legacy/beta/snapshot/experimental execution: no legacy bridge, Forge mod, or legacy runtime integration exists here; the two declared legacy contracts are `EXPERIMENTAL` with `NOT_PERFORMED` certification and an empty block/state catalog, so a recognized legacy runtime is refused with a typed `RUNTIME_NOT_CERTIFIED` failure before any bridge call. Support would require a real runtime test recorded in the registry first.

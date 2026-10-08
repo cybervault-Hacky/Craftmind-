@@ -25,7 +25,10 @@ import {
 } from "./accounts.js";
 import { createEmailDelivery } from "./email-delivery.js";
 import { AccountApiError, ErrorCode } from "./errors.js";
+import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
+import { SecurityEngine } from "./security-engine.js";
+import { countSecurityEvents } from "./security-events.js";
 import {
   authenticateDeveloper,
   bootstrapDeveloper,
@@ -42,6 +45,7 @@ import {
   confirmDeveloperAction,
   invokeDeveloperTool,
   recordDeveloperAiAudit,
+  recordDeveloperAiSecurityAudit,
   recordDeveloperToolRejection,
 } from "./admin-tools.js";
 import { DeveloperAiCoordinator } from "./developer-ai.js";
@@ -197,13 +201,90 @@ function statusForEmailDelivery(result, emailDelivery) {
   return emailDelivery.mode === "DEVELOPMENT_SINK" ? "DEVELOPMENT_SINK" : "PROVIDER_ACCEPTED";
 }
 
-/** @param {{ database: import('node:sqlite').DatabaseSync, configuration: object, logger?: object, emailDelivery?: object, rateLimiter?: object, developerAiProvider?: object }} options */
-export function createAccountService({ database, configuration, logger = console, emailDelivery, rateLimiter, developerAiProvider = null }) {
+/** Route → protection/event category. Security-sensitive routes are the only ones with autonomous protections. */
+const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/developer/"];
+
+function isSecuritySensitiveRoute(pathKey) {
+  return SECURITY_SENSITIVE_PREFIXES.some((prefix) => pathKey.startsWith(prefix));
+}
+
+function routeSecurityCategory(pathKey) {
+  if (pathKey.startsWith("/developer/auth")) return "DEVELOPER_AUTH";
+  // Confirmation attempts are their own abuse category, so a confirmation protection never throttles unrelated routes.
+  if (pathKey === "/developer/tools/confirm" || pathKey === "/developer/tools/cancel") return "CONFIRMATION";
+  if (pathKey.startsWith("/developer")) return "DEVELOPER_ADMIN";
+  if (pathKey === "/auth/login" || pathKey === "/auth/register" || pathKey === "/auth/guest") return "USER_AUTH";
+  // Credential-bearing session routes are the only ones a session protection may touch; account-recovery routes
+  // (verification, password reset) stay in the user-auth category so a session protection never blocks recovery.
+  if (pathKey === "/auth/refresh" || pathKey === "/auth/logout" || pathKey === "/auth/me") return "SESSION";
+  if (pathKey.startsWith("/auth")) return "USER_AUTH";
+  return "REQUEST";
+}
+
+function routeCategoryLabel(pathKey) {
+  return pathKey.slice(1).replace(/\//g, "_").replace(/[^a-z0-9:_-]/gi, "").toLowerCase().slice(0, 64) || "root";
+}
+
+/** Maps a typed API failure to the normalized security signal it represents; unmapped codes produce nothing. */
+function securitySignalForFailure(code, pathKey) {
+  switch (code) {
+    case ErrorCode.INVALID_CREDENTIALS:
+      return { eventType: "AUTHENTICATION_FAILED", result: "FAILURE" };
+    case ErrorCode.ACCOUNT_SUSPENDED:
+    case ErrorCode.ACCOUNT_DELETED:
+      return { eventType: "SUSPICIOUS_ACCOUNT_ACTIVITY", result: "DENIED" };
+    case ErrorCode.DEVELOPER_INVALID_CREDENTIALS:
+    case ErrorCode.DEVELOPER_BOOTSTRAP_INVALID:
+    case ErrorCode.DEVELOPER_BOOTSTRAP_CONSUMED:
+      return { eventType: "DEVELOPER_AUTHENTICATION_FAILED", result: "FAILURE" };
+    case ErrorCode.SESSION_INVALID:
+    case ErrorCode.AUTHENTICATION_REQUIRED:
+    case ErrorCode.DEVELOPER_AUTHENTICATION_REQUIRED:
+      return { eventType: "SESSION_INVALID_CREDENTIAL", result: "INVALID", sessionAware: true };
+    case ErrorCode.SESSION_EXPIRED:
+    case ErrorCode.DEVELOPER_SESSION_EXPIRED:
+      return { eventType: "SESSION_EXPIRED_REUSE", result: "DENIED", sessionAware: true };
+    case ErrorCode.REFRESH_FAILED:
+    case ErrorCode.DEVELOPER_REFRESH_FAILED:
+      return { eventType: "SESSION_REFRESH_FAILED", result: "FAILURE", sessionAware: true };
+    case ErrorCode.RATE_LIMITED:
+      return { eventType: "RATE_LIMIT_VIOLATION", result: "THROTTLED" };
+    case ErrorCode.DEVELOPER_ACCESS_DENIED:
+      return { eventType: "UNAUTHORIZED_ACCESS_ATTEMPT", result: "DENIED" };
+    case ErrorCode.DEVELOPER_TOOL_UNKNOWN:
+    case ErrorCode.DEVELOPER_TOOL_INPUT_INVALID:
+      return { eventType: "HIGH_IMPACT_ACTION_FAILED", result: "FAILURE" };
+    case ErrorCode.DEVELOPER_CONFIRMATION_INVALID:
+    case ErrorCode.DEVELOPER_CONFIRMATION_EXPIRED:
+      return { eventType: "CONFIRMATION_ATTEMPT_INVALID", result: "INVALID" };
+    case ErrorCode.INVALID_REQUEST:
+    case ErrorCode.INVALID_CONTENT_TYPE:
+    case ErrorCode.REQUEST_TOO_LARGE:
+      return isSecuritySensitiveRoute(pathKey) ? { eventType: "MALFORMED_SECURITY_REQUEST", result: "INVALID" } : null;
+    default:
+      return null;
+  }
+}
+
+/** @param {{ database: import('node:sqlite').DatabaseSync, configuration: object, logger?: object, emailDelivery?: object, rateLimiter?: object, developerAiProvider?: object, securityEngine?: object }} options */
+export function createAccountService({ database, configuration, logger = console, emailDelivery, rateLimiter, developerAiProvider = null, securityEngine = null }) {
   const mail = emailDelivery ?? createEmailDelivery(configuration);
   const limits = rateLimiter ?? new InMemoryRateLimiter({ authSecret: configuration.authSecret });
   const developerAi = new DeveloperAiCoordinator({ provider: developerAiProvider });
+  // The engine is local and self-contained: it never requires the AI provider, and an injected engine keeps tests and
+  // alternative compositions explicit.
+  const security = securityEngine ?? new SecurityEngine({ database, configuration, logger });
   cleanupExpiredAccountRecords(database);
   cleanupExpiredDeveloperRecords(database);
+  const runSecurityMaintenance = () => {
+    try {
+      security.resolveQuietIncidents();
+      security.cleanup();
+    } catch (error) {
+      logger.warn?.(JSON.stringify({ event: "security_maintenance_failed", errorType: error?.name ?? "Error" }));
+    }
+  };
+  runSecurityMaintenance();
   const cleanupTimer = setInterval(() => {
     try {
       cleanupExpiredAccountRecords(database);
@@ -211,6 +292,7 @@ export function createAccountService({ database, configuration, logger = console
     } catch (error) {
       logger.error?.(JSON.stringify({ event: "account_expiry_cleanup_failed", errorType: error?.name ?? "Error" }));
     }
+    runSecurityMaintenance();
   }, 60 * 60 * 1000);
   cleanupTimer.unref?.();
   const sendMail = async (kind, challenge, requestId) => {
@@ -223,6 +305,80 @@ export function createAccountService({ database, configuration, logger = console
       // Recipient, body, token, and provider exception are deliberately excluded.
       logger.warn?.(JSON.stringify({ event: "email_delivery_failed", kind, requestId }));
       return statusForEmailDelivery("FAILED", mail);
+    }
+  };
+
+  /**
+   * Turns one rejected request into at most one normalized security signal. This is the single ingestion point for
+   * request-observed behaviour; nothing secret (body, credentials, addresses, tokens) crosses into it.
+   */
+  const recordFailureSignal = (request, pathKey, error, { token, kind = "user", accountReference = null } = {}) => {
+    try {
+      // A rejection produced by an autonomous protection is not new evidence of abuse: recording it would let the
+      // system's own defensive throttling escalate into fresh incidents (a feedback loop). The incident, the
+      // protection, and the audit record for it already exist.
+      if (error?.securityProtectionId) return;
+      const code = error instanceof AccountApiError ? error.code : null;
+      if (!code) return;
+      const signal = securitySignalForFailure(code, pathKey);
+      if (!signal) return;
+      let sessionReference = null;
+      let resolvedAccount = accountReference;
+      if (signal.sessionAware && typeof token === "string") {
+        const classification = security.classifySessionFailure({ kind, token });
+        if (classification.state === "REVOKED") signal.eventType = "SESSION_REVOKED_REUSE";
+        else if (classification.state === "EXPIRED") signal.eventType = "SESSION_EXPIRED_REUSE";
+        sessionReference = classification.sessionReference ?? null;
+        resolvedAccount = classification.accountReference ?? resolvedAccount;
+      }
+      security.recordSignal({
+        eventType: signal.eventType,
+        result: signal.result,
+        accountReference: resolvedAccount,
+        sessionReference,
+        routeCategory: routeCategoryLabel(pathKey),
+        sourceReference: security.sourceDigestFor(request),
+      });
+    } catch (failure) {
+      logger.warn?.(JSON.stringify({ event: "security_signal_failed", errorType: failure?.name ?? "Error" }));
+    }
+  };
+
+  /**
+   * Applies active autonomous protections to an incoming security-sensitive request. A hard rejection throws the same
+   * typed rate-limit error the existing limiter uses; a tightened throttle consumes from that same limiter, so the
+   * stricter bound always governs and no privileged path is granted.
+   */
+  const enforceRequestProtections = (request, pathKey, { accountReference = null, sessionReference = null, token = null, kind = "user" } = {}) => {
+    const category = routeSecurityCategory(pathKey);
+    const sourceReference = security.sourceDigestFor(request);
+    security.noteRequest({ sourceReference, accountReference, routeCategory: routeCategoryLabel(pathKey) });
+    let resolvedAccount = accountReference;
+    let resolvedSession = sessionReference;
+    if (token && !resolvedSession && !resolvedAccount) {
+      const classification = security.classifySessionFailure({ kind, token });
+      resolvedSession = classification.sessionReference ?? null;
+      resolvedAccount = classification.accountReference ?? null;
+    }
+    security.enforceProtection({ sourceReference, accountReference: resolvedAccount, sessionReference: resolvedSession, category, rateLimiter: limits });
+  };
+
+  /** Records a successful sign-in, and flags the "success after repeated failures" pattern the detection layer watches. */
+  const recordAuthenticationSuccess = (request, accountReference) => {
+    if (!accountReference) return;
+    try {
+      const since = new Date(Date.now() - 600_000).toISOString();
+      const recentFailures = countSecurityEvents(database, { since, eventType: "AUTHENTICATION_FAILED", accountReference });
+      security.recordSignal({
+        eventType: recentFailures >= 3 ? "AUTHENTICATION_SUCCEEDED_AFTER_FAILURES" : "AUTHENTICATION_SUCCEEDED",
+        result: "SUCCESS",
+        accountReference,
+        routeCategory: "auth_login",
+        sourceReference: security.sourceDigestFor(request),
+        metadata: recentFailures >= 3 ? { recentFailures } : {},
+      });
+    } catch (error) {
+      logger.warn?.(JSON.stringify({ event: "security_success_signal_failed", errorType: error?.name ?? "Error" }));
     }
   };
 
@@ -245,7 +401,24 @@ export function createAccountService({ database, configuration, logger = console
     ["POST /auth/login", async (request) => {
       const body = await readJsonBody(request, configuration.maxBodyBytes);
       consumeLimit(limits, "login", request, body.email, configuration.rateLimit.login);
-      return { status: 200, payload: await login(database, configuration, body) };
+      // An account-level protection throttles sign-in attempts for one account without ever locking the owner out.
+      const accountReference = typeof body.email === "string" && isWellFormedEmail(body.email)
+        ? security.accountReferenceForEmail(body.email)
+        : null;
+      enforceRequestProtections(request, "/auth/login", { accountReference });
+      let payload;
+      try {
+        payload = await login(database, configuration, body);
+      } catch (error) {
+        if (error instanceof AccountApiError) {
+          // Richer signal than the request-level catch can produce: the attempted account is known here.
+          recordFailureSignal(request, "/auth/login", error, { accountReference });
+          error.securityRecorded = true;
+        }
+        throw error;
+      }
+      recordAuthenticationSuccess(request, accountReference);
+      return { status: 200, payload };
     }],
     ["POST /auth/refresh", async (request) => {
       const body = await readJsonBody(request, configuration.maxBodyBytes);
@@ -357,7 +530,19 @@ export function createAccountService({ database, configuration, logger = console
     ["POST /developer/auth/login", async (request) => {
       const body = await readJsonBody(request, configuration.maxBodyBytes);
       consumeLimit(limits, "developer-login", request, body.email, configuration.rateLimit.developerLogin);
-      return { status: 200, payload: await loginDeveloper(database, configuration, body) };
+      const accountReference = typeof body.email === "string" && isWellFormedEmail(body.email)
+        ? security.accountReferenceForEmail(body.email, { kind: "developer" })
+        : null;
+      enforceRequestProtections(request, "/developer/auth/login", { accountReference });
+      try {
+        return { status: 200, payload: await loginDeveloper(database, configuration, body) };
+      } catch (error) {
+        if (error instanceof AccountApiError) {
+          recordFailureSignal(request, "/developer/auth/login", error, { accountReference });
+          error.securityRecorded = true;
+        }
+        throw error;
+      }
     }],
     ["POST /developer/auth/refresh", async (request) => {
       const body = await readJsonBody(request, configuration.maxBodyBytes);
@@ -401,7 +586,7 @@ export function createAccountService({ database, configuration, logger = console
         throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
       }
       const result = invokeDeveloperTool(database, configuration, actor, body.tool, body.arguments, {
-        configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider,
+        configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider, securityEngine: security,
       });
       return { status: 200, payload: { tool: body.tool, result } };
     }],
@@ -434,11 +619,29 @@ export function createAccountService({ database, configuration, logger = console
         status: 200,
         payload: await developerAi.runTurn({
           database, configuration, actor, prompt: body.prompt,
-          context: { configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider },
+          context: { configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider, securityEngine: security },
         }),
       };
     }],
-    ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth" } })],
+    ["POST /developer/ai/security-summary", async (request) => {
+      consumeLimit(limits, "developer-ai", request, "", configuration.rateLimit.developerAi);
+      const actor = requireDeveloperActor(request, database, configuration);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      if (Object.keys(body).some((key) => !["incidentId", "prompt"].includes(key))) {
+        recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_TOOL_INPUT_INVALID });
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+      // Message-only AI assistance over a sanitized brief. Detection and immediate protection have already run, and
+      // continue to run without this provider.
+      return {
+        status: 200,
+        payload: await developerAi.runSecurityAnalysis({
+          database, actor, prompt: body.prompt ?? "", incidentId: body.incidentId ?? null,
+          context: { configuration, schemaVersion: SCHEMA_VERSION, developerAiProvider, securityEngine: security },
+        }),
+      };
+    }],
+    ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth", schemaVersion: SCHEMA_VERSION } })],
   ]);
 
   const methodsByPath = new Map();
@@ -463,6 +666,16 @@ export function createAccountService({ database, configuration, logger = console
       enforceHttps(request, configuration);
       const pathKey = path.replace(/\/+$/, "") || "/";
       if (routes.has(`${request.method} ${pathKey}`) || methodsByPath.has(pathKey)) logRoute = pathKey;
+      if (isSecuritySensitiveRoute(pathKey) && request.method !== "OPTIONS") {
+        // Autonomous protections for the request source, then (when a bearer credential is presented) for the account
+        // or session it resolves to. This is the enforcement half of the response policy; it never grants anything.
+        let presentedToken = null;
+        try { presentedToken = bearerToken(request) ?? null; } catch { presentedToken = null; }
+        enforceRequestProtections(request, pathKey, {
+          token: presentedToken,
+          kind: pathKey.startsWith("/developer") ? "developer" : "user",
+        });
+      }
       if (request.method === "OPTIONS") {
         const requestedMethod = String(request.headers["access-control-request-method"] ?? "");
         if (!methodsByPath.get(pathKey)?.has(requestedMethod)) throw new AccountApiError(ErrorCode.METHOD_NOT_ALLOWED);
@@ -483,6 +696,21 @@ export function createAccountService({ database, configuration, logger = console
     } catch (error) {
       const typed = error instanceof AccountApiError ? error : new AccountApiError(ErrorCode.UNKNOWN_ERROR);
       status = typed.status;
+      // The single security ingestion point for rejected requests. Account/session references are resolved internally
+      // and stored only as opaque identifiers. A route that already recorded a richer signal (it knows the attempted
+      // account) marks the error so the same failure is never counted twice.
+      try {
+        if (error instanceof AccountApiError && error.securityRecorded !== true) {
+          let presentedToken = null;
+          try { presentedToken = bearerToken(request) ?? null; } catch { presentedToken = null; }
+          recordFailureSignal(request, path.replace(/\/+$/, "") || "/", error, {
+            token: presentedToken,
+            kind: path.startsWith("/developer") ? "developer" : "user",
+          });
+        }
+      } catch (signalError) {
+        logger.warn?.(JSON.stringify({ event: "security_signal_failed", errorType: signalError?.name ?? "Error" }));
+      }
       if (!(error instanceof AccountApiError)) {
         // The class name is safe; the message may contain a body or provider response and is discarded.
         logger.error?.(JSON.stringify({ event: "account_request_internal_failure", errorType: error?.name ?? "Error", requestId }));

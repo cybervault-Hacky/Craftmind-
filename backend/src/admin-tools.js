@@ -4,21 +4,29 @@
  */
 
 import { AccountApiError, ErrorCode } from "./errors.js";
-import { canonicalizeEmail, developerTokenDigest, digestsMatch, isWellFormedEmail, newAuditId, newGrantId, newToken } from "./ids.js";
+import { canonicalizeEmail, developerTokenDigest, digestsMatch, isWellFormedEmail, newGrantId, newToken } from "./ids.js";
 import { ACCOUNT_STATUS } from "./db.js";
+import { AUDIT_ACTOR_KIND, appendAuditRecord } from "./audit.js";
+import { SECURITY_CENTER_TOOLS } from "./security-center-tools.js";
 
 const GRANT_TYPES = new Set(["BETA_ACCESS", "PREVIEW_ACCESS", "PROMOTIONAL_ACCESS"]);
 const MAX_AUDIT_PAGE_SIZE = 100;
+const SECURITY_CENTER_READ_TOOLS = Object.keys(SECURITY_CENTER_TOOLS);
 const ALLOWED_ROLES = Object.freeze({
   OWNER: new Set([
     "overview", "inspectUser", "listUserSessions", "revokeUserSessions", "suspendUser", "restoreUser",
     "listEntitlements", "grantEntitlement", "revokeEntitlement", "listAuditLog", "configurationStatus",
+    ...SECURITY_CENTER_READ_TOOLS,
   ]),
   ADMIN: new Set([
     "overview", "inspectUser", "listUserSessions", "revokeUserSessions", "suspendUser", "restoreUser",
     "listEntitlements", "grantEntitlement", "revokeEntitlement", "listAuditLog",
+    ...SECURITY_CENTER_READ_TOOLS,
   ]),
-  DEVELOPER: new Set(["overview", "inspectUser", "listUserSessions", "listEntitlements", "listAuditLog"]),
+  DEVELOPER: new Set([
+    "overview", "inspectUser", "listUserSessions", "listEntitlements", "listAuditLog",
+    ...SECURITY_CENTER_READ_TOOLS,
+  ]),
 });
 
 function nowIso() {
@@ -42,14 +50,17 @@ function runTransaction(database, operation) {
   }
 }
 
-function appendAudit(database, actor, actionType, targetUserId, outcome, metadata = {}) {
-  const encoded = JSON.stringify(metadata);
-  if (encoded.length > 4096) throw new AccountApiError(ErrorCode.UNKNOWN_ERROR);
-  database.prepare(
-    `INSERT INTO admin_audit_log
-       (audit_id, actor_developer_id, action_type, target_user_id, occurred_at, outcome, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(newAuditId(), actor.developer_id, actionType, targetUserId ?? null, nowIso(), outcome, encoded);
+/**
+ * Audit helper for AI-assisted developer turns. The human developer is always recorded as the acting identity; the
+ * actor category marks that the produced analysis came from the AI boundary.
+ */
+export function recordDeveloperAiSecurityAudit(database, actor, outcome, metadata = {}) {
+  return audited(database, actor, "developer_ai_security_summary", () => ({
+    result: true,
+    auditOutcome: outcome,
+    auditMetadata: metadata,
+    actorKind: AUDIT_ACTOR_KIND.AI,
+  }));
 }
 
 function safeFailure(error) {
@@ -76,7 +87,7 @@ function requireCurrentActorSession(database, actor) {
   }
 }
 
-function audited(database, actor, actionType, operation, { onFailure } = {}) {
+function audited(database, actor, actionType, operation, { onFailure, actorKind = AUDIT_ACTOR_KIND.DEVELOPER } = {}) {
   let result;
   let failure = null;
   let attemptedTargetUserId = null;
@@ -99,7 +110,15 @@ function audited(database, actor, actionType, operation, { onFailure } = {}) {
       failure.code === ErrorCode.DEVELOPER_ACCESS_DENIED ? "DENIED" : "FAILURE"
     ) : "SUCCESS");
     const metadata = failure ? { errorCode: failure.code } : (operationResult?.auditMetadata ?? {});
-    appendAudit(database, actor, actionType, targetUserId, outcome, metadata);
+    appendAuditRecord(database, {
+      actorKind: operationResult?.actorKind ?? actorKind,
+      actorDeveloperId: actor.developer_id,
+      actionType,
+      targetUserId: targetUserId ?? null,
+      outcome,
+      metadata,
+      occurredAt: nowIso(),
+    });
     database.exec("COMMIT");
     result = operationResult?.result;
   } catch (error) {
@@ -218,7 +237,7 @@ function noArguments(input) {
   return {};
 }
 
-const TOOLS = Object.freeze({
+const ADMIN_TOOLS = Object.freeze({
   overview: {
     audit: "overview", mutating: false, roles: ["OWNER", "ADMIN", "DEVELOPER"],
     description: "Read aggregate account and session counts.", schema: { type: "object", properties: {}, additionalProperties: false },
@@ -404,15 +423,17 @@ const TOOLS = Object.freeze({
     },
     execute(database, args) {
       const rows = database.prepare(
-        `SELECT l.action_type, l.occurred_at, l.outcome, l.metadata_json,
+        `SELECT l.action_type, l.actor_kind, l.incident_id, l.occurred_at, l.outcome, l.metadata_json,
                 actor.email AS actor_email, target.email AS target_email
            FROM admin_audit_log l
-           JOIN developer_accounts actor ON actor.developer_id = l.actor_developer_id
+           LEFT JOIN developer_accounts actor ON actor.developer_id = l.actor_developer_id
            LEFT JOIN users target ON target.user_id = l.target_user_id
           ORDER BY l.occurred_at DESC, l.audit_id DESC LIMIT ?`,
       ).all(args.limit);
       const events = rows.map((row) => ({
         action: row.action_type,
+        actorKind: row.actor_kind,
+        incidentId: row.incident_id,
         occurredAt: row.occurred_at,
         outcome: row.outcome,
         actorEmail: row.actor_email,
@@ -448,6 +469,13 @@ const TOOLS = Object.freeze({
     },
   },
 });
+
+/**
+ * One registry, two families. Administrative tools keep the Phase 19 authority model (mutating actions stop at the
+ * confirmation boundary); the Phase 20 Security Center adds read-only security tools. The automated security response
+ * tools are a separate, policy-authorized registry the developer surface cannot reach.
+ */
+const TOOLS = Object.freeze({ ...ADMIN_TOOLS, ...SECURITY_CENTER_TOOLS });
 
 function resolvedTargetUserId(args, database) {
   if (args?.userId) return args.userId;
