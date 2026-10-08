@@ -17,8 +17,11 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.craftmind.app.designsystem.CraftMindTheme
+import com.craftmind.app.presentation.app.rememberReducedMotionPreference
 import com.craftmind.app.domain.buildplan.BuildInput
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.account.AccountViewModel
+import com.craftmind.app.presentation.account.AccountViewModelFactory
 import com.craftmind.app.presentation.app.CraftMindApp
 import com.craftmind.app.presentation.home.BuildComposerEvent
 import com.craftmind.app.presentation.builds.BuildExecutionViewModel
@@ -52,6 +55,16 @@ class MainActivity : ComponentActivity() {
                 factory = remember(appContainer) { ProviderSettingsViewModelFactory(appContainer.aiBuildEngine) },
             )
             val providerSettingsState by providerSettingsViewModel.state.collectAsStateWithLifecycle()
+            val accountViewModel: AccountViewModel = viewModel(
+                factory = remember(appContainer) {
+                    AccountViewModelFactory(
+                        manager = appContainer.accountSessionManager,
+                        ownershipMigration = appContainer.accountOwnershipMigration,
+                        guestAnnouncement = appContainer.accountAuthenticator::announceGuestIdentity,
+                    )
+                },
+            )
+            val accountState by accountViewModel.state.collectAsStateWithLifecycle()
             val bridgePairingViewModel: BridgePairingViewModel = viewModel(
                 factory = remember(appContainer) {
                     BridgePairingViewModelFactory(appContainer.minecraftBridge, appContainer.minecraftCompatibilityResolver)
@@ -114,7 +127,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            CraftMindTheme(themeMode = themeMode) {
+            // The design system collapses every transition when the device asks for reduced motion (§15).
+            val reducedMotion = rememberReducedMotionPreference(context)
+            CraftMindTheme(themeMode = themeMode, reducedMotion = reducedMotion) {
                 CraftMindApp(
                     composerState = composerState,
                     onComposerEvent = homeViewModel::dispatch,
@@ -131,6 +146,8 @@ class MainActivity : ComponentActivity() {
                     executionState = executionState,
                     onExecutionEvent = executionViewModel::dispatch,
                     compatibilityResolver = appContainer.minecraftCompatibilityResolver,
+                    accountState = accountState,
+                    onAccountEvent = accountViewModel::dispatch,
                 )
             }
         }

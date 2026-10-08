@@ -1,5 +1,6 @@
 package com.craftmind.app.presentation.builds
 
+import com.craftmind.app.BuildConfig
 import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
@@ -430,7 +431,7 @@ class PlanReviewScreenTest {
             bridgeId = bridge.bridgeId,
             identityFingerprint = bridge.tlsFingerprint,
             bridgeVersion = "1.2.0",
-            clientAppVersion = "1.0.0-test",
+            clientAppVersion = BuildConfig.VERSION_NAME,
             editionName = "java",
             minecraftVersion = "1.20.1",
             javaRuntimeMajor = 17,
@@ -465,7 +466,9 @@ class PlanReviewScreenTest {
         )
         return BridgePairingState(
             profile = bridge,
-            connection = BridgeConnectionState.Connected(bridge, capabilities, System.currentTimeMillis()),
+            connection = BridgeConnectionState.Connected(
+                bridge, capabilities, System.currentTimeMillis(), "ui-test-session",
+            ),
         )
     }
 

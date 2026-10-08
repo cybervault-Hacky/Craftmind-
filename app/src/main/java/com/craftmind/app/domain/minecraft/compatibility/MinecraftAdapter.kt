@@ -128,6 +128,11 @@ class MinecraftAdapterRegistry {
     private fun invalidProfileReason(profile: SupportedMinecraftRuntimeDescriptor): String? = when {
         profile.edition == MinecraftEdition.UNKNOWN || !profile.version.isKnown || profile.loader == MinecraftLoader.UNKNOWN ->
             "edition, stable version, and loader must be explicit"
+        // Phase 13: Bedrock identities are contract-keyed because no Bedrock Minecraft version is certified. A
+        // version-keyed Bedrock profile could overlap a Bedrock contract and make adapter selection ambiguous, so
+        // the registry refuses it instead of leaving the ambiguity to be discovered at selection time.
+        profile.edition == MinecraftEdition.BEDROCK ->
+            "a Bedrock runtime must be matched by a Bedrock contract profile, never by a version-keyed profile"
         profile.loader.edition != profile.edition -> "edition and loader family are inconsistent"
         profile.supportStatus !in setOf(MinecraftCompatibilityStatus.SUPPORTED, MinecraftCompatibilityStatus.EXPERIMENTAL) ->
             "only implemented supported or explicitly experimental profiles may be registered"
@@ -243,14 +248,13 @@ class MinecraftAdapterRegistry {
         val SAFE_VERSION = Regex("[A-Za-z0-9._+-]{1,64}")
 
         /**
-         * A profile may only claim a release channel that its exact version identifier can actually carry. A
-         * LEGACY profile may describe an older *release* token (1.7.10) — that explicit registry decision is the
-         * only reason such a runtime is treated as legacy — while a beta/alpha/snapshot token keeps its channel.
+         * Registration and Phase 13 detection share one release-channel rule: a profile may only claim a channel
+         * that its exact version identifier can actually carry. A LEGACY profile may describe an older *release*
+         * token (1.7.10) — that explicit registry decision is the only reason such a runtime is treated as legacy —
+         * while a beta/alpha/snapshot token keeps its channel.
          */
         fun releaseChannelMatches(declared: MinecraftVersionChannel, parsed: MinecraftVersionChannel): Boolean =
-            declared != MinecraftVersionChannel.UNKNOWN && (
-                declared == parsed || (declared == MinecraftVersionChannel.LEGACY && parsed == MinecraftVersionChannel.RELEASE)
-                )
+            MinecraftRuntimeDescriptorValidation.releaseChannelCoherent(declared, parsed)
     }
 }
 
@@ -278,5 +282,19 @@ object DefaultMinecraftCompatibility {
         }
     }
 
-    val resolver: MinecraftCompatibilityResolver by lazy { MinecraftCompatibilityResolver(registry) }
+    val resolver: MinecraftCompatibilityResolver by lazy { MinecraftCompatibilityResolver(registry, selector) }
+
+    /** Phase 13 deterministic adapter selector over the same registry; there is no second adapter registry. */
+    val selector: MinecraftAdapterSelector by lazy { MinecraftAdapterSelector(registry) }
+
+    /** Phase 13 automatic runtime detection over authoritative, authenticated bridge facts. */
+    val detector: MinecraftRuntimeDetector by lazy { MinecraftRuntimeDetector(registry) }
+
+    /**
+     * Phase 13 pipeline entry point: detection → validation → adapter selection → compatibility resolution →
+     * session-bound execution authorization.
+     */
+    val gate: MinecraftRuntimeCompatibilityGate by lazy {
+        MinecraftRuntimeCompatibilityGate(detector, selector, resolver)
+    }
 }

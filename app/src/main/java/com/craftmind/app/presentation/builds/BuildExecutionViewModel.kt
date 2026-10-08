@@ -2,6 +2,7 @@ package com.craftmind.app.presentation.builds
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.buildplan.BuildStatus
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.buildplan.LocalBuildRepository
@@ -14,11 +15,11 @@ import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
 import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
+import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
-import com.craftmind.app.domain.minecraft.compatibility.failureReasonCode
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -116,10 +117,15 @@ class BuildExecutionViewModel(
                     mutableState.update { it.copy(flow = BuildExecutionFlow.Failed(record, executionId, "CONSTRUCTION_DISABLED")) }
                     return@launch
                 }
-                val compatibility = compatibilityResolver.resolve(record.plan, connected.capabilities.runtimeDescriptor)
-                if (!compatibility.canExecute) {
+                // Phase 13: eligibility is re-derived from the runtime that is authenticated right now — detection,
+                // descriptor validation, adapter selection, and compatibility resolution all run again here.
+                val authorization = compatibilityResolver.runtimeGate.authorizeExecution(
+                    report = connected.runtimeReport(BuildConfig.VERSION_NAME),
+                    requirements = BuildPlanRequirements.from(record.plan),
+                )
+                if (!authorization.authorized) {
                     mutableState.update {
-                        it.copy(flow = BuildExecutionFlow.Failed(record, executionId, compatibility.failureReasonCode()))
+                        it.copy(flow = BuildExecutionFlow.Failed(record, executionId, authorization.reasonCode))
                     }
                     return@launch
                 }
@@ -129,7 +135,8 @@ class BuildExecutionViewModel(
                     mutableState.update { it.copy(flow = BuildExecutionFlow.Failed(record, executionId, "BUILD_PLAN_NOT_EXECUTABLE")) }
                     return@launch
                 }
-                if (compatibilityResolver.adapter(compatibility.adapterId) == null) {
+                val selectedAdapterId = authorization.binding?.selection?.adapterId
+                if (selectedAdapterId == null || compatibilityResolver.adapter(selectedAdapterId) == null) {
                     mutableState.update { it.copy(flow = BuildExecutionFlow.Failed(record, executionId, "MINECRAFT_ADAPTER_UNAVAILABLE")) }
                     return@launch
                 }
@@ -151,9 +158,14 @@ class BuildExecutionViewModel(
         try {
             val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
                 ?: throw MinecraftBridgeFailure("BRIDGE_SESSION_UNAVAILABLE")
-            val compatibility = compatibilityResolver.resolve(record.plan, connected.capabilities.runtimeDescriptor)
-            if (!compatibility.canExecute) throw MinecraftBridgeFailure(compatibility.failureReasonCode())
-            val adapter = compatibilityResolver.adapter(compatibility.adapterId)
+            val authorization = compatibilityResolver.runtimeGate.authorizeExecution(
+                report = connected.runtimeReport(BuildConfig.VERSION_NAME),
+                requirements = BuildPlanRequirements.from(record.plan),
+            )
+            if (!authorization.authorized) {
+                throw MinecraftBridgeFailure(authorization.reasonCode, authorization.reasons.firstOrNull())
+            }
+            val adapter = compatibilityResolver.adapter(authorization.binding?.selection?.adapterId)
                 ?: throw MinecraftBridgeFailure("MINECRAFT_ADAPTER_UNAVAILABLE")
             val preview = adapter.preflight(bridge, record, executionId)
             val preparedRecord = preview.toLocalRecord(record, connected.bridge.bridgeId)
@@ -238,14 +250,19 @@ class BuildExecutionViewModel(
             }
             return
         }
-        val compatibility = compatibilityResolver.resolve(planRecord.plan, connected.capabilities.runtimeDescriptor)
-        if (!compatibility.canExecute) {
+        // Phase 13 final pre-execution check: the runtime authenticated now must still be the runtime this preview
+        // was prepared for. The bridge repository enforces the same binding again before it sends the BuildPlan.
+        val startAuthorization = compatibilityResolver.runtimeGate.authorizeExecution(
+            report = connected.runtimeReport(BuildConfig.VERSION_NAME),
+            requirements = BuildPlanRequirements.from(planRecord.plan),
+        )
+        if (!startAuthorization.authorized) {
             mutableState.update {
-                it.copy(flow = BuildExecutionFlow.Failed(planRecord, preview.executionId, compatibility.failureReasonCode()))
+                it.copy(flow = BuildExecutionFlow.Failed(planRecord, preview.executionId, startAuthorization.reasonCode))
             }
             return
         }
-        val adapter = compatibilityResolver.adapter(compatibility.adapterId)
+        val adapter = compatibilityResolver.adapter(startAuthorization.binding?.selection?.adapterId)
         if (adapter == null) {
             mutableState.update { it.copy(flow = BuildExecutionFlow.Failed(planRecord, preview.executionId, "MINECRAFT_ADAPTER_UNAVAILABLE")) }
             return
@@ -295,8 +312,10 @@ class BuildExecutionViewModel(
         if (preview != null) {
             viewModelScope.launch {
                 val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
-                val compatibility = connected?.let { compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor) }
-                val adapter = compatibility?.takeIf {
+                val resolution = connected?.let {
+                    compatibilityResolver.runtimeGate.resolveRuntime(it.runtimeReport(BuildConfig.VERSION_NAME))
+                }
+                val adapter = resolution?.compatibility?.takeIf {
                     it.status == MinecraftCompatibilityStatus.SUPPORTED && MinecraftCapability.CANCELLATION !in it.missingCapabilities
                 }?.let { compatibilityResolver.adapter(it.adapterId) }
                 if (adapter != null) {
@@ -347,12 +366,14 @@ class BuildExecutionViewModel(
     private fun cancel(executionId: String) {
         val existing = mutableState.value.records.firstOrNull { it.executionId == executionId } ?: return
         val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
-        val compatibility = connected?.let { compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor) }
-        if (connected == null || compatibility == null || !compatibility.canExecute) {
-            track(existing, connectionReasonCode = compatibility?.failureReasonCode() ?: "CONSTRUCTION_DISABLED")
+        val resolution = connected?.let {
+            compatibilityResolver.runtimeGate.resolveRuntime(it.runtimeReport(BuildConfig.VERSION_NAME))
+        }
+        if (connected == null || resolution == null || !resolution.canExecute) {
+            track(existing, connectionReasonCode = resolution?.failureReasonCode() ?: "CONSTRUCTION_DISABLED")
             return
         }
-        val adapter = compatibilityResolver.adapter(compatibility.adapterId)
+        val adapter = compatibilityResolver.adapter(resolution.selection.adapterId)
         if (adapter == null) {
             track(existing, connectionReasonCode = "MINECRAFT_ADAPTER_UNAVAILABLE")
             return
@@ -398,8 +419,10 @@ class BuildExecutionViewModel(
 
     private suspend fun queryThroughAdapter(executionId: String): MinecraftExecutionQueryResult {
         val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
-        val result = connected?.let { compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor) }
-        val adapter = compatibilityResolver.adapter(result?.adapterId)
+        val resolution = connected?.let {
+            compatibilityResolver.runtimeGate.resolveRuntime(it.runtimeReport(BuildConfig.VERSION_NAME))
+        }
+        val adapter = resolution?.selection?.takeIf { it.isSelected }?.let { compatibilityResolver.adapter(it.adapterId) }
         // Status is read-only: if the runtime has moved outside every adapter profile, retain secure bridge truth
         // without selecting a fallback adapter or enabling construction.
         return adapter?.status(bridge, executionId) ?: bridge.queryExecution(executionId)

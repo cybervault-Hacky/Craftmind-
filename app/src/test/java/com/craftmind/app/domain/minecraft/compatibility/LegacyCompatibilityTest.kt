@@ -314,15 +314,35 @@ class LegacyCompatibilityTest {
 
     @Test
     fun certificationLadderIsExplicitAndNeverCollapsed() {
+        // Phase 14 §1 added exactly one rung, SIMULATED_E2E_VERIFIED, between BRIDGE_TESTED and RUNTIME_TESTED:
+        // a full pipeline run against a controlled simulated bridge is real evidence about CraftMind's wiring and
+        // must be recorded as such, while still never authorizing support. The ladder is otherwise unchanged.
         val expected = listOf(
             MinecraftRuntimeCertification.NOT_PERFORMED,
             MinecraftRuntimeCertification.STATIC_ONLY,
             MinecraftRuntimeCertification.UNIT_TESTED,
             MinecraftRuntimeCertification.BRIDGE_TESTED,
+            MinecraftRuntimeCertification.SIMULATED_E2E_VERIFIED,
             MinecraftRuntimeCertification.RUNTIME_TESTED,
             MinecraftRuntimeCertification.CERTIFIED,
         )
         assertEquals(expected, MinecraftRuntimeCertification.entries.toList())
+        // Deterministic ordering: the ladder is ranked, and the simulated ceiling sits below any real runtime rung.
+        assertEquals(
+            expected.mapIndexed { index, _ -> index }.toList(),
+            expected.map { it.evidenceRank }.toList(),
+        )
+        assertEquals(
+            MinecraftRuntimeCertification.SIMULATED_E2E_VERIFIED,
+            MinecraftRuntimeCertification.MAXIMUM_SIMULATED_LEVEL,
+        )
+        assertTrue(
+            MinecraftRuntimeCertification.MAXIMUM_SIMULATED_LEVEL.evidenceRank <
+                MinecraftRuntimeCertification.RUNTIME_TESTED.evidenceRank,
+        )
+        assertFalse(MinecraftRuntimeCertification.SIMULATED_E2E_VERIFIED.isRealRuntimeEvidence)
+        assertTrue(MinecraftRuntimeCertification.RUNTIME_TESTED.isRealRuntimeEvidence)
+        assertFalse("simulated evidence must never authorize support", MinecraftRuntimeCertification.SIMULATED_E2E_VERIFIED.authorizesSupport)
         expected.forEach { certification ->
             assertEquals(
                 "only runtime-tested/certified rungs authorize SUPPORTED",

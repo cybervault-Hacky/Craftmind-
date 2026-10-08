@@ -255,6 +255,18 @@ data class MinecraftRuntimeDescriptor(
     /** True when this descriptor describes Bedrock rather than a Java/JVM runtime. */
     val isBedrock: Boolean get() = edition == MinecraftEdition.BEDROCK
 
+    /**
+     * Release channel securely derived from the authoritative Minecraft identifier the authenticated bridge
+     * reported. It is never taken from a UI selection, a launcher name, a filename, or a profile's preference, and
+     * a contradictory profile declaration makes the descriptor invalid instead of being corrected silently.
+     */
+    val releaseChannel: MinecraftVersionChannel get() = version.channel
+
+    /** True when the bridge reported every execution limit CraftMind requires; missing limits fail closed. */
+    val hasReportedLimits: Boolean
+        get() = maximumValidatedOperations != null && maximumRequestBytes != null &&
+            maximumOperationsPerTick != null && maximumExecutionSeconds != null
+
     companion object {
         /** Maps the authenticated protocol-v2 runtime report; no Java/API values are inferred by the app. */
         @Suppress("LongParameterList")
@@ -342,6 +354,16 @@ enum class MinecraftRuntimeCertification(val displayName: String) {
     STATIC_ONLY("Static/source-level analysis only"),
     UNIT_TESTED("Source-level unit tests only"),
     BRIDGE_TESTED("Verified against a bridge without a Minecraft runtime"),
+
+    /**
+     * Phase 14: the complete production pipeline (protocol codecs, contract validator, runtime detection, adapter
+     * selection, compatibility resolution, execution authorization, execution/progress/cancellation) was exercised
+     * end-to-end against a controlled **simulated** bridge. This is real evidence about CraftMind's own wiring and
+     * it is deliberately *not* evidence about a Minecraft runtime: it never authorizes support, never upgrades to
+     * [RUNTIME_TESTED] or [CERTIFIED], and a simulated run can never certify a runtime.
+     */
+    SIMULATED_E2E_VERIFIED("Simulated end-to-end pipeline only · no Minecraft runtime"),
+
     RUNTIME_TESTED("Verified against a real Minecraft runtime"),
     CERTIFIED("Recorded as a certified production target"),
 
@@ -352,6 +374,34 @@ enum class MinecraftRuntimeCertification(val displayName: String) {
 
     /** Bedrock additionally requires a real Bedrock runtime test; a release-process label is not enough. */
     val authorizesBedrockSupport: Boolean get() = this == RUNTIME_TESTED
+
+    /** Deterministic evidence strength: a higher rank is strictly stronger evidence, never a different kind. */
+    val evidenceRank: Int
+        get() = when (this) {
+            NOT_PERFORMED -> 0
+            STATIC_ONLY -> 1
+            UNIT_TESTED -> 2
+            BRIDGE_TESTED -> 3
+            SIMULATED_E2E_VERIFIED -> 4
+            RUNTIME_TESTED -> 5
+            CERTIFIED -> 6
+        }
+
+    fun atLeast(other: MinecraftRuntimeCertification): Boolean = evidenceRank >= other.evidenceRank
+
+    /** True when the evidence was produced without any real Minecraft runtime. */
+    val isSimulatedEvidence: Boolean get() = evidenceRank <= SIMULATED_E2E_VERIFIED.evidenceRank
+
+    /** True only for evidence that required a real Minecraft runtime. */
+    val isRealRuntimeEvidence: Boolean get() = this == RUNTIME_TESTED || this == CERTIFIED
+
+    /**
+     * The strongest level a simulated run may ever record. Kept next to the ladder so no code path can promote
+     * simulated evidence to runtime certification by accident.
+     */
+    companion object {
+        val MAXIMUM_SIMULATED_LEVEL: MinecraftRuntimeCertification = SIMULATED_E2E_VERIFIED
+    }
 }
 
 /** Integration limitations a runtime declares up front instead of implying reliability. */
@@ -480,6 +530,12 @@ enum class MinecraftCompatibilityReasonCode(val displayName: String) {
     UNSUPPORTED_LEGACY_VERSION("The reported legacy Minecraft identifier has no registered compatibility profile"),
     UNSUPPORTED_RELEASE_CHANNEL("No registered compatibility profile covers this release channel"),
     RUNTIME_NOT_CERTIFIED("This runtime is recognized but has no recorded runtime certification"),
+
+    // Phase 13: automatic runtime detection, session binding, and adapter-selection security.
+    APP_VERSION_MISMATCH("The authenticated bridge echoed a different CraftMind app version"),
+    RUNTIME_DETECTION_UNAUTHORIZED("Runtime detection requires an authenticated bridge session"),
+    SESSION_IDENTITY_MISMATCH("This runtime is not bound to the current authenticated bridge session"),
+    RUNTIME_IDENTITY_CHANGED("The authenticated Minecraft runtime changed after compatibility was resolved"),
 }
 
 @Serializable

@@ -2,10 +2,12 @@ package com.craftmind.app.domain.minecraft
 
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeLimitation
+import com.craftmind.app.domain.minecraft.compatibility.AuthenticatedMinecraftRuntimeReport
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeIdentity
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimePlatform
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -93,6 +95,59 @@ data class BridgeCapabilitiesSnapshot(
     val compatibilityResult: MinecraftCompatibilityResult
         get() = DefaultMinecraftCompatibility.resolver.resolveRuntime(runtimeDescriptor)
 
+    /**
+     * Phase 13: the security-sensitive identity this authenticated runtime report is bound to. It combines the
+     * paired bridge identity, the pinned TLS fingerprint, the authenticated session, and the exact runtime facts,
+     * so a changed Minecraft version, loader, bridge, protocol, or session invalidates prior compatibility.
+     */
+    fun runtimeIdentity(
+        sessionId: String?,
+        authenticatedAtEpochMillis: Long,
+    ): MinecraftRuntimeIdentity? = if (sessionId.isNullOrEmpty()) {
+        null
+    } else {
+        MinecraftRuntimeIdentity(
+            bridgeId = bridgeId,
+            identityFingerprint = identityFingerprint,
+            sessionId = sessionId,
+            authenticatedAtEpochMillis = authenticatedAtEpochMillis,
+            bridgeProtocolVersion = protocolVersion,
+            bridgeVersion = bridgeVersion,
+            edition = runtimeDescriptor.edition,
+            version = runtimeDescriptor.version,
+            releaseChannel = runtimeDescriptor.releaseChannel,
+            loader = runtimeDescriptor.loader,
+            loaderVersion = runtimeDescriptor.loaderVersion,
+            javaRuntimeMajor = runtimeDescriptor.javaRuntimeMajor,
+            platform = runtimeDescriptor.platform,
+            dimensionId = dimensionId,
+            worldSessionId = worldSessionId,
+        )
+    }
+
+    /**
+     * Phase 13: builds the only input automatic runtime detection accepts. The requested app version is the value
+     * this client signed into the capabilities request; the bridge must have echoed exactly that value.
+     */
+    fun runtimeReport(
+        sessionId: String?,
+        requestedAppVersion: String?,
+        authenticated: Boolean = true,
+        authenticatedAtEpochMillis: Long? = null,
+        expectedBridgeId: String? = bridgeId,
+        expectedIdentityFingerprint: String? = identityFingerprint,
+        reportedBytes: Int? = null,
+    ): AuthenticatedMinecraftRuntimeReport = AuthenticatedMinecraftRuntimeReport.fromSnapshot(
+        snapshot = this,
+        sessionId = sessionId,
+        requestedAppVersion = requestedAppVersion,
+        authenticated = authenticated,
+        authenticatedAtEpochMillis = authenticatedAtEpochMillis,
+        expectedBridgeId = expectedBridgeId,
+        expectedIdentityFingerprint = expectedIdentityFingerprint,
+        reportedBytes = reportedBytes,
+    )
+
     /** Runtime-level execution gate, resolved through the registered adapter rather than scattered version checks. */
     val executionCompatible: Boolean
         get() = compatibilityResult.canExecute
@@ -105,7 +160,22 @@ sealed interface BridgeConnectionState {
         val bridge: TrustedMinecraftBridge,
         val capabilities: BridgeCapabilitiesSnapshot,
         val authenticatedAtEpochMillis: Long,
-    ) : BridgeConnectionState
+        /**
+         * Authenticated bridge session this runtime report belongs to (Phase 13). Runtime compatibility is bound to
+         * it; a null value means the session identity is unknown, so detection stays incomplete and execution is
+         * blocked instead of trusting an unbound runtime.
+         */
+        val sessionId: String? = null,
+    ) : BridgeConnectionState {
+        /** The Phase 13 detection input for this authenticated runtime report. */
+        fun runtimeReport(requestedAppVersion: String?): AuthenticatedMinecraftRuntimeReport =
+            capabilities.runtimeReport(
+                sessionId = sessionId,
+                requestedAppVersion = requestedAppVersion,
+                authenticated = true,
+                authenticatedAtEpochMillis = authenticatedAtEpochMillis,
+            )
+    }
     data class Error(val reasonCode: String) : BridgeConnectionState
 }
 

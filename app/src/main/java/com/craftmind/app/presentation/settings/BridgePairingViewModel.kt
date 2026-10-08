@@ -5,7 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.MinecraftBridgeFailure
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeResolution
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import kotlinx.coroutines.CancellationException
@@ -28,11 +30,14 @@ class BridgePairingViewModel(
         }
         viewModelScope.launch {
             bridge.connectionState.collect { connection ->
-                val connected = connection as? BridgeConnectionState.Connected
-                val compatibility = connected?.let {
-                    compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor)
+                val resolution = resolveRuntime(connection)
+                mutableState.update {
+                    it.copy(
+                        connection = connection,
+                        compatibility = resolution?.compatibility,
+                        runtimeResolution = resolution,
+                    )
                 }
-                mutableState.update { it.copy(connection = connection, compatibility = compatibility) }
             }
         }
     }
@@ -102,18 +107,24 @@ class BridgePairingViewModel(
         viewModelScope.launch {
             try {
                 bridge.refreshCapabilities()
-                val connected = bridge.connectionState.value as? BridgeConnectionState.Connected
-                val compatibility = connected?.let { compatibilityResolver.resolveRuntime(it.capabilities.runtimeDescriptor) }
+                val resolution = resolveRuntime(bridge.connectionState.value)
+                val compatibility = resolution?.compatibility
                 mutableState.update {
                     it.copy(
                         isWorking = false,
                         compatibility = compatibility,
+                        runtimeResolution = resolution,
                         message = when {
+                            resolution == null ->
+                                "Capabilities refreshed. No authenticated runtime report is available, so nothing was detected and construction stays unavailable."
                             compatibility?.let { it.status == MinecraftCompatibilityStatus.SUPPORTED && it.canExecute } == true ->
-                                "Capabilities refreshed. A supported adapter and the required authenticated runtime capabilities are available."
+                                "Capabilities refreshed. ${resolution.detection.detectedEdition.displayName} " +
+                                    "${resolution.detection.detectedVersion.displayIdentifier} was detected automatically and the exact adapter " +
+                                    "${resolution.selection.adapterId?.value ?: "none"} was selected."
                             compatibility?.status == MinecraftCompatibilityStatus.SUPPORTED ->
                                 "Capabilities refreshed. The runtime is supported, but one or more runtime capabilities or limits are not ready for construction."
-                            else -> "Capabilities refreshed. The runtime is not supported or could not be identified; no adapter will be selected for construction.",
+                            else -> "Capabilities refreshed. ${resolution.detection.detectionStatusLabel()}; " +
+                                "no BuildPlan will be sent for execution."
                         },
                     )
                 }
@@ -193,6 +204,17 @@ class BridgePairingViewModel(
         }
     }
 
+    /**
+     * Runs the Phase 13 pipeline for the currently authenticated session: detection → descriptor validation →
+     * deterministic adapter selection → compatibility resolution. The user never selects an edition, version,
+     * loader, or adapter, and a cached descriptor is never reused: this is recomputed for every connection state
+     * change and every capability refresh.
+     */
+    private fun resolveRuntime(connection: BridgeConnectionState): MinecraftRuntimeResolution? =
+        (connection as? BridgeConnectionState.Connected)?.let { connected ->
+            compatibilityResolver.runtimeGate.resolveRuntime(connected.runtimeReport(BuildConfig.VERSION_NAME))
+        }
+
     private fun describe(error: Exception): String {
         val code = (error as? MinecraftBridgeFailure)?.reasonCode ?: "BRIDGE_OPERATION_FAILED"
         return when (code) {
@@ -206,6 +228,14 @@ class BridgePairingViewModel(
             "BRIDGE_ALREADY_CONFIGURED" -> "A bridge is already saved. Revoke it or explicitly forget it before pairing another."
             "BRIDGE_IDENTITY_MISMATCH", "BRIDGE_IDENTITY_CHANGED" -> "The TLS identity does not match the fingerprint you confirmed. Verify /craftmind identity; the changed identity was not trusted."
             "BRIDGE_CAPABILITIES_UNSUPPORTED", "BRIDGE_CAPABILITIES_INVALID" -> "The bridge reported an unsupported or malformed capability set. No build can be sent."
+            "RUNTIME_DETECTION_UNAUTHORIZED" -> "Runtime detection needs an authenticated bridge session. Connect again; nothing was detected and no build can be sent."
+            "SESSION_IDENTITY_MISMATCH" -> "The authenticated bridge session or identity changed, so the previous runtime compatibility was invalidated. Reconnect to detect the runtime again."
+            "RUNTIME_IDENTITY_CHANGED" -> "The authenticated Minecraft runtime changed after compatibility was resolved. The previous execution eligibility was discarded; detection and compatibility resolution run again."
+            "APP_VERSION_MISMATCH" -> "The bridge echoed a different CraftMind app version. Update the app and the bridge together; CraftMind never silently downgrades the protocol."
+            "RUNTIME_DESCRIPTOR_INVALID" -> "The runtime report contradicts itself or the bridge protocol, so it was rejected instead of corrected. No build can be sent."
+            "RUNTIME_UNKNOWN", "RUNTIME_INCOMPLETE" -> "The bridge did not report enough authoritative runtime information. CraftMind never guesses a version, and no build can be sent."
+            "AMBIGUOUS_ADAPTER_MATCH" -> "More than one registered adapter claims this exact runtime, so adapter selection is blocked instead of choosing one."
+            "WORLD_SESSION_CHANGED" -> "The bridge world session changed, so prepared work was invalidated. Prepare the build again from the current world."
             "BRIDGE_UPDATE_REQUIRED", "BRIDGE_PROTOCOL_UNSUPPORTED" -> "This server uses the older Bridge 1.1.0 / protocol 1 profile. Update CraftMind and the server bridge together to the matching app plus Bridge 1.2.0 / protocol 2, then reconnect. The saved pairing, device identity, and server trusted-client record are preserved; runtime versions are never inferred."
             "BRIDGE_TIMEOUT" -> "The bridge did not respond before the timeout. Check the private-LAN address and server listener."
             "BRIDGE_UNAVAILABLE" -> "Could not reach the bridge over HTTPS. Check the private network, firewall, and server status."

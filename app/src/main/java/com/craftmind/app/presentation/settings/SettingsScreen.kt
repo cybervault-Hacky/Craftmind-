@@ -4,29 +4,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,15 +24,48 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
+import com.craftmind.app.designsystem.CraftMindCard
+import com.craftmind.app.designsystem.CraftMindDetailLines
+import com.craftmind.app.designsystem.CraftMindDestructiveButton
+import com.craftmind.app.designsystem.CraftMindDivider
+import com.craftmind.app.designsystem.CraftMindExpandableSection
+import com.craftmind.app.designsystem.CraftMindKeyValueRow
+import com.craftmind.app.designsystem.CraftMindLayout
+import com.craftmind.app.designsystem.CraftMindNotice
+import com.craftmind.app.designsystem.CraftMindPrimaryButton
+import com.craftmind.app.designsystem.CraftMindScreen
+import com.craftmind.app.designsystem.CraftMindSecondaryButton
+import com.craftmind.app.designsystem.CraftMindSectionHeader
+import com.craftmind.app.designsystem.CraftMindShapes
+import com.craftmind.app.designsystem.CraftMindStatusBadge
+import com.craftmind.app.designsystem.CraftMindTertiaryButton
+import com.craftmind.app.designsystem.CraftMindTone
+import com.craftmind.app.designsystem.CraftMindType
 import com.craftmind.app.domain.settings.ThemeMode
+import com.craftmind.app.presentation.account.AccountAction
+import com.craftmind.app.presentation.account.AccountSettingsSummary
+import com.craftmind.app.presentation.account.AccountUiEvent
+import com.craftmind.app.presentation.account.defaultAccountSummary
+import com.craftmind.app.presentation.minecraft.minecraftConnectionSummary
+import com.craftmind.app.presentation.navigation.MainDestination
 
+/**
+ * Settings (Phase 15 §10).
+ *
+ * Six groups, in the order a user needs them: Appearance, Account, AI providers, Minecraft, Data, About. Secrets stay masked
+ * and are never displayed after saving; credential handling itself is unchanged — the key is still encrypted with an
+ * Android Keystore key and stored in app-private no-backup storage.
+ *
+ * Nothing here duplicates a screen: the Minecraft group summarizes real bridge state and links to the Minecraft
+ * destination, and the About group links to the About screen.
+ */
 @Composable
 fun SettingsScreen(
     themeMode: ThemeMode,
@@ -53,112 +75,231 @@ fun SettingsScreen(
     bridgeState: BridgePairingState = BridgePairingState(),
     onBridgeEvent: (BridgePairingEvent) -> Unit = {},
     modifier: Modifier = Modifier,
+    onOpenAbout: () -> Unit = {},
+    onOpenMinecraft: () -> Unit = {},
+    accountSummary: AccountSettingsSummary = defaultAccountSummary(),
+    onAccountEvent: (AccountUiEvent) -> Unit = {},
+    onOpenAccount: () -> Unit = {},
 ) {
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 30.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+    CraftMindScreen(
+        title = "Settings",
+        eyebrow = "Preferences",
+        subtitle = MainDestination.SETTINGS.purpose,
+        modifier = modifier,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("Settings", style = MaterialTheme.typography.headlineLarge)
-            Text(
-                text = "Configure an AI provider, its key, and a verified model independently.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        AppearanceGroup(themeMode = themeMode, onThemeModeSelected = onThemeModeSelected)
+        AccountGroup(summary = accountSummary, onEvent = onAccountEvent, onOpenAccount = onOpenAccount)
+        ProviderSettingsCard(state = providerState, onEvent = onProviderEvent)
+        MinecraftGroup(
+            state = bridgeState,
+            onEvent = onBridgeEvent,
+            onOpenMinecraft = onOpenMinecraft,
+        )
+        DataGroup()
+        AboutGroup(onOpenAbout = onOpenAbout)
+    }
+}
 
-        SettingsCard(
-            title = "Appearance",
-            subtitle = "Choose how CraftMind looks on this device.",
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                ThemeMode.entries.forEach { option ->
-                    val selected = themeMode == option
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clickable(role = Role.RadioButton, onClick = { onThemeModeSelected(option) })
-                            .semantics { this.selected = selected }
-                            .padding(end = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+@Composable
+private fun AppearanceGroup(
+    themeMode: ThemeMode,
+    onThemeModeSelected: (ThemeMode) -> Unit,
+) {
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "Appearance",
+            title = "Theme",
+            subtitle = "Your choice is saved on this device and applied the next time the app draws.",
+        )
+        Column {
+            ThemeMode.entries.forEach { option ->
+                val isSelected = themeMode == option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = CraftMindLayout.minTouchTarget)
+                        .clickable(role = Role.RadioButton, onClick = { onThemeModeSelected(option) })
+                        .semantics { this.selected = isSelected }
+                        .padding(end = CraftMindLayout.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = isSelected, onClick = null)
+                    Column(
+                        modifier = Modifier.padding(start = CraftMindLayout.sm),
+                        verticalArrangement = Arrangement.spacedBy(CraftMindLayout.xxs),
                     ) {
-                        RadioButton(selected = selected, onClick = null)
-                        Text(
-                            text = option.label(),
-                            modifier = Modifier.padding(start = 8.dp),
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
+                        Text(text = option.label(), style = CraftMindType.bodyLarge)
+                        Text(text = option.explanation(), style = CraftMindType.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
+        CraftMindNotice(
+            tone = CraftMindTone.INFORMATIVE,
+            message = "Motion follows your device's accessibility settings: when animations are removed, CraftMind " +
+                "switches state instantly instead of transitioning. No status is ever replaced by an animation.",
+        )
+    }
+}
 
-        ProviderSettingsCard(state = providerState, onEvent = onProviderEvent)
-
-        SettingsCard(
-            title = "Minecraft bridge",
-            subtitle = "Optional: AI plans and local history work without a bridge. Pair a supported private-LAN Fabric server only when you want to build in game; execution requires preflight and your separate final confirmation.",
-        ) {
-            MinecraftBridgeSettingsContent(state = bridgeState, onEvent = onBridgeEvent)
+/**
+ * Account group (Phase 16 §8).
+ *
+ * Local mode is presented as a complete state, not a shortcoming, and the group never offers an action that cannot lead
+ * anywhere: when authentication is unavailable it says why instead of showing a dead sign-in button. All account detail
+ * lives one tap away on the account screen, so Settings stays a summary.
+ */
+@Composable
+private fun AccountGroup(
+    summary: AccountSettingsSummary,
+    onEvent: (AccountUiEvent) -> Unit,
+    onOpenAccount: () -> Unit,
+) {
+    val action = summary.primaryAction
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "Account",
+            title = summary.title,
+            subtitle = "Optional. CraftMind works fully on this device without an account.",
+            trailing = { CraftMindStatusBadge(label = summary.badgeLabel, tone = summary.badgeTone) },
+        )
+        Text(
+            text = summary.detail,
+            style = CraftMindType.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        summary.identityName?.let { name ->
+            CraftMindKeyValueRow(label = "Signed in as", value = name)
         }
-
-        SettingsCard(
-            title = "About",
-            subtitle = "CraftMind · AI Minecraft Builder",
-        ) {
-            Text("Describe it. Show it. Build it.", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "Configured target 1.0.0 · BuildPlan v2 · Android 8+ · Minecraft 1.20.1 / Fabric Loader 0.16.10",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        summary.actionUnavailableReason?.let { reason ->
+            CraftMindNotice(tone = CraftMindTone.CAUTION, message = reason)
         }
-
-        SettingsCard(
-            title = "Privacy & data",
-            subtitle = "AI requests go directly to Google Gemini over HTTPS. Google’s terms govern provider-side processing and retention.",
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                PrivacyDisclosure(
-                    heading = "YOUR KEY",
-                    body = "The API key you supply is encrypted with a key in Android Keystore and kept in app-private no-backup storage. It is used for direct Google requests and is never sent to the Minecraft bridge or a CraftMind server.",
+            when (action) {
+                null -> Unit
+                AccountAction.SignOut -> CraftMindSecondaryButton(
+                    text = action.label,
+                    onClick = { onEvent(AccountUiEvent.SignOutRequested) },
                 )
-                PrivacyDisclosure(
-                    heading = "AI REQUESTS",
-                    body = "When you generate a plan, your prompt and any chosen visual input go directly to Google over HTTPS. For supported video, this device reads bounded byte ranges and sends up to five sampled frames; the direct video URL is not sent to the AI model. Refinement uses text notes and does not resend images or fetch the video again.",
-                )
-                PrivacyDisclosure(
-                    heading = "ON THIS DEVICE",
-                    body = "Accepted plan versions and reference metadata (including a saved video URL and temporary image URI details) are kept in app-private local history. CraftMind has no account or cloud sync; Android app backups are disabled. Raw image, video, and sampled-frame bytes are not kept in build history.",
-                )
-                PrivacyDisclosure(
-                    heading = "MINECRAFT",
-                    body = "Pairing uses pinned private-LAN HTTPS. Only an accepted plan can proceed after server preflight and your separate confirmation. Progress is based on bridge reports; placed blocks cannot be rolled back by CraftMind.",
+
+                else -> CraftMindSecondaryButton(
+                    text = action.label,
+                    onClick = { onEvent(AccountUiEvent.RetryRequested) },
                 )
             }
+            CraftMindTertiaryButton(text = "Account details", onClick = onOpenAccount)
         }
     }
-
 }
 
 @Composable
-private fun PrivacyDisclosure(heading: String, body: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text(
-            heading,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
+private fun MinecraftGroup(
+    state: BridgePairingState,
+    onEvent: (BridgePairingEvent) -> Unit,
+    onOpenMinecraft: () -> Unit,
+) {
+    val summary = remember(state) { minecraftConnectionSummary(state) }
+    var controlsExpanded by remember { mutableStateOf(false) }
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "Minecraft",
+            title = "Bridge and runtime",
+            subtitle = "Pairing is optional: AI plans and local history work without a bridge. Building in game " +
+                "needs an authenticated, compatible runtime.",
+            trailing = {
+                CraftMindStatusBadge(label = summary.badge ?: "Loading", tone = summary.badgeTone)
+            },
         )
         Text(
-            body,
-            style = MaterialTheme.typography.bodyMedium,
+            text = summary.headline,
+            style = CraftMindType.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = summary.detail,
+            style = CraftMindType.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        summary.unavailableReason?.let { reason ->
+            CraftMindKeyValueRow(label = "Building", value = reason)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
+        ) {
+            CraftMindSecondaryButton(text = "Open Minecraft", onClick = onOpenMinecraft)
+        }
+        CraftMindExpandableSection(
+            title = "Pairing and session controls",
+            summary = if (controlsExpanded) "Hide the bridge controls" else "Pair, connect, refresh, revoke, or forget",
+            expanded = controlsExpanded,
+            onToggle = { controlsExpanded = !controlsExpanded },
+        ) {
+            MinecraftBridgeSettingsContent(state = state, onEvent = onEvent)
+        }
+    }
+}
+
+@Composable
+private fun DataGroup() {
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "Data",
+            title = "Privacy and storage",
+            subtitle = "What leaves this device, what stays on it, and what CraftMind never does.",
+        )
+        CraftMindDetailLines(
+            listOf(
+                "Your API key is encrypted with a key in Android Keystore and kept in app-private no-backup storage. " +
+                    "It is used for direct provider requests and is never sent to the Minecraft bridge or a CraftMind " +
+                    "server.",
+                "When you generate a plan, your prompt and any chosen visual input go directly to your AI provider " +
+                    "over HTTPS. The provider's terms govern provider-side processing and retention.",
+                "For a supported public video reference, this device reads bounded byte ranges and sends at most five " +
+                    "sampled frames; the video URL itself is not sent to the model. Refinement uses saved text notes " +
+                    "and never re-downloads the video.",
+                "Accepted plan versions and reference metadata stay in local history on this device. Raw image bytes, " +
+                    "video bytes, and sampled frames are never stored in build history.",
+                "Pairing uses pinned private-LAN HTTPS. Only an accepted plan can proceed, after a server preflight " +
+                    "and your separate confirmation. Placed blocks cannot be rolled back by CraftMind.",
+            ),
+        )
+        CraftMindDivider()
+        CraftMindKeyValueRow(
+            label = "Accounts",
+            value = "Optional, and not available in this build: there is no account service yet, and nothing is synced.",
+        )
+        CraftMindKeyValueRow(label = "Analytics", value = "None. No tracking or telemetry is collected.")
+        CraftMindKeyValueRow(label = "Android backup", value = "Disabled for app data.")
+        CraftMindKeyValueRow(label = "AI backend", value = "None hosted by CraftMind; requests go to your provider.")
+    }
+}
+
+@Composable
+private fun AboutGroup(onOpenAbout: () -> Unit) {
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "About",
+            title = "CraftMind · AI Minecraft Builder",
+            subtitle = "Describe it. Show it. Build it.",
+        )
+        CraftMindKeyValueRow(label = "Developer", value = "Sarthak Bharambe")
+        CraftMindKeyValueRow(label = "Application ID", value = com.craftmind.app.BuildConfig.APPLICATION_ID)
+        CraftMindKeyValueRow(
+            label = "Version",
+            value = "${com.craftmind.app.BuildConfig.VERSION_NAME} " +
+                "(${com.craftmind.app.BuildConfig.VERSION_CODE})",
+        )
+        CraftMindKeyValueRow(label = "Certified target", value = "Minecraft Java 1.20.1 · Fabric Loader 0.16.10")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm, Alignment.End),
+        ) {
+            CraftMindTertiaryButton(text = "Open About", onClick = onOpenAbout)
+        }
     }
 }
 
@@ -170,29 +311,36 @@ private fun ProviderSettingsCard(
     val activeProvider = state.providers.firstOrNull { it.id == state.activeProviderId }
     var providerMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var capabilitiesExpanded by remember { mutableStateOf(false) }
 
-    SettingsCard(
-        title = "AI provider",
-        subtitle = "Keys belong to providers. Model choice is stored separately and requires a live connection test.",
-    ) {
-        if (state.providers.isEmpty()) {
-            Text(
-                "Loading AI provider setup…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    CraftMindCard {
+        CraftMindSectionHeader(
+            eyebrow = "AI providers",
+            title = "Provider, key, and model",
+            subtitle = "Keys belong to providers. The model choice is stored separately and requires a live " +
+                "connection test.",
+        )
+
+        when {
+            state.providers.isEmpty() -> CraftMindNotice(
+                tone = CraftMindTone.INFORMATIVE,
+                message = "Loading the AI provider setup saved on this device…",
             )
-        } else if (state.providers.size > 1) {
-            Column {
-                OutlinedButton(onClick = { providerMenuExpanded = true }) {
-                    Text(activeProvider?.displayName ?: "Choose provider")
-                }
+
+            state.providers.size > 1 -> Column {
+                CraftMindSecondaryButton(
+                    text = activeProvider?.displayName ?: "Choose provider",
+                    onClick = { providerMenuExpanded = true },
+                    icon = Icons.Default.ArrowDropDown,
+                )
                 DropdownMenu(
                     expanded = providerMenuExpanded,
                     onDismissRequest = { providerMenuExpanded = false },
+                    shape = CraftMindShapes.md,
                 ) {
                     state.providers.forEach { provider ->
                         DropdownMenuItem(
-                            text = { Text(provider.displayName) },
+                            text = { Text(provider.displayName, style = CraftMindType.bodyLarge) },
                             onClick = {
                                 providerMenuExpanded = false
                                 onEvent(ProviderSettingsEvent.SelectProvider(provider.id))
@@ -201,103 +349,119 @@ private fun ProviderSettingsCard(
                     }
                 }
             }
-        } else if (activeProvider != null) {
-            Text(activeProvider.displayName, style = MaterialTheme.typography.titleMedium)
-        } else {
-            Text(
-                "No supported provider adapter is installed.",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
+
+            activeProvider != null -> Text(
+                text = activeProvider.displayName,
+                style = CraftMindType.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+
+            else -> CraftMindNotice(
+                tone = CraftMindTone.NEGATIVE,
+                title = "No provider adapter installed",
+                message = "This build has no supported AI provider adapter, so no plan can be generated.",
             )
         }
 
         activeProvider?.let { provider ->
-            Text(
-                text = if (state.savedCredentialExists) {
-                    "An API key is saved encrypted on this device. Its value is never displayed."
+            CraftMindNotice(
+                tone = if (state.savedCredentialExists) CraftMindTone.POSITIVE else CraftMindTone.CAUTION,
+                title = if (state.savedCredentialExists) "API key saved" else "No API key saved",
+                message = if (state.savedCredentialExists) {
+                    "A key is stored encrypted on this device. Its value is never displayed, and it is never sent to " +
+                        "the Minecraft bridge."
                 } else {
-                    "No saved API key. Add your provider-owned key below."
+                    "Add your own key from ${provider.displayName}. CraftMind has no hosted AI backend and no shared key."
                 },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
             OutlinedTextField(
                 value = state.keyDraft,
                 onValueChange = { onEvent(ProviderSettingsEvent.KeyDraftChanged(it)) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Provider API key" },
                 label = { Text(if (state.savedCredentialExists) "Replace API key" else "Provider API key") },
                 placeholder = { Text("Paste a key from ${provider.displayName}") },
                 singleLine = true,
-                enabled = !state.isSavingCredential,
+                shape = CraftMindShapes.sm,
                 visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                ),
+                supportingText = {
+                    Text(
+                        text = "Masked while you type, and never shown again after saving.",
+                        style = CraftMindType.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(CraftMindLayout.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CraftMindPrimaryButton(
+                    text = if (state.savedCredentialExists) "Replace key" else "Save key",
                     onClick = { onEvent(ProviderSettingsEvent.SaveCredential) },
-                    enabled = state.keyDraft.isNotBlank() && !state.isSavingCredential,
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    if (state.isSavingCredential) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(if (state.savedCredentialExists) "Replace key" else "Save key")
-                    }
-                }
+                    enabled = state.keyDraft.isNotBlank(),
+                    loading = state.isSavingCredential,
+                    fullWidth = false,
+                )
                 if (state.savedCredentialExists) {
-                    OutlinedButton(
+                    CraftMindDestructiveButton(
+                        text = "Remove key",
                         onClick = { onEvent(ProviderSettingsEvent.RemoveCredential) },
                         enabled = !state.isSavingCredential,
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Remove key") }
+                    )
                 }
             }
 
-            OutlinedButton(
+            CraftMindSecondaryButton(
+                text = if (state.connection is ProviderConnectionState.Testing) "Testing provider…" else "Test connection",
                 onClick = { onEvent(ProviderSettingsEvent.TestConnection) },
-                enabled = state.savedCredentialExists &&
-                    !state.isSavingCredential && !state.isSavingSelection &&
-                    state.connection !is ProviderConnectionState.Testing,
-                shape = RoundedCornerShape(14.dp),
-            ) {
-                if (state.connection is ProviderConnectionState.Testing) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Text("  Testing provider…")
-                } else {
-                    Text("Test connection")
-                }
-            }
+                enabled = state.savedCredentialExists && !state.isSavingCredential && !state.isSavingSelection,
+                loading = state.connection is ProviderConnectionState.Testing,
+            )
 
             ConnectionStatus(state.connection)
 
             if (state.connection is ProviderConnectionState.Verified) {
                 val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
-                Text("Choose model", style = MaterialTheme.typography.titleSmall)
+                CraftMindDivider()
+                Text(
+                    text = "Choose model",
+                    style = CraftMindType.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
                 Column {
-                    OutlinedButton(
+                    CraftMindSecondaryButton(
+                        text = selectedModel?.displayName ?: "Select a verified model",
                         onClick = { modelMenuExpanded = true },
                         enabled = !state.isSavingSelection,
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        Text(selectedModel?.displayName ?: "Select a verified model")
-                    }
+                        icon = Icons.Default.ArrowDropDown,
+                    )
                     DropdownMenu(
                         expanded = modelMenuExpanded,
                         onDismissRequest = { modelMenuExpanded = false },
+                        shape = CraftMindShapes.md,
                     ) {
                         state.models.forEach { model ->
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text(model.displayName)
-                                        Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(model.displayName, style = CraftMindType.bodyLarge)
                                         Text(
-                                            when {
-                                                model.capabilities.vision && model.capabilities.multipleImages -> "Text + one-image and multi-frame video vision"
-                                                model.capabilities.vision -> "Text + one-image vision · multi-frame video unavailable"
-                                                else -> "Text only · image/video analysis unavailable"
-                                            },
-                                            style = MaterialTheme.typography.labelSmall,
+                                            text = model.id,
+                                            style = CraftMindType.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Text(
+                                            text = modelCapabilitySummary(model),
+                                            style = CraftMindType.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
@@ -310,103 +474,110 @@ private fun ProviderSettingsCard(
                         }
                     }
                 }
-                Text(
-                    text = if (provider.capabilities.vision) {
-                        "Image requests use one locally prepared JPEG, PNG, or WebP. Video requests are separately limited to direct HTTPS MP4/WebM files on raw.githubusercontent.com: byte ranges only, no redirects, and at most five sampled frames. A model must be individually labeled Multi-image Vision; frames go directly to that selected provider."
-                    } else {
-                        "This provider adapter does not support image or video-frame analysis."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                val semanticRefinementSupported = provider.capabilities.textGeneration &&
-                    provider.capabilities.structuredOutput == com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE &&
-                    selectedModel != null &&
-                    selectedModel.capabilities.textGeneration &&
-                    selectedModel.capabilities.structuredOutput == com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE
-                Text(
-                    text = when {
-                        selectedModel == null -> "Select a model to check the text and JSON capabilities required for semantic refinement."
-                        semanticRefinementSupported -> "Selected model supports the required text and structured JSON capabilities for semantic refinement."
-                        else -> "Selected model lacks a required text or JSON capability. CraftMind will reject refinement without switching or downgrading."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (semanticRefinementSupported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                selectedModel?.let { model ->
-                    Text(
-                        when {
-                            model.capabilities.vision && model.capabilities.multipleImages -> "Selected model is verified for one-image input and bounded multi-image video-frame analysis. Video bytes stay on-device except for bounded HTTPS range reads; sampled images are sent directly to this provider. Refinement uses saved text notes only and never re-downloads the video. Provider retention is governed by its terms."
-                            model.capabilities.vision -> "Selected model is verified for one-image input only. Video analysis is blocked unless you select a model labeled Multi-image Vision."
-                            else -> "Selected model is text-only for visual references. Image/video analysis is blocked until you choose a model labeled Vision."
+
+                CraftMindExpandableSection(
+                    title = "Model capabilities and limits",
+                    summary = selectedModel?.displayName ?: "Select a model to see what it can do",
+                    expanded = capabilitiesExpanded,
+                    onToggle = { capabilitiesExpanded = !capabilitiesExpanded },
+                ) {
+                    CraftMindDetailLines(
+                        buildList {
+                            add(
+                                if (provider.capabilities.vision) {
+                                    "Image requests use one locally prepared JPEG, PNG, or WebP. Video requests are " +
+                                        "limited to direct HTTPS MP4/WebM files on raw.githubusercontent.com: byte " +
+                                        "ranges only, no redirects, and at most five sampled frames."
+                                } else {
+                                    "This provider adapter does not support image or video-frame analysis."
+                                },
+                            )
+                            val semanticRefinementSupported = provider.capabilities.textGeneration &&
+                                provider.capabilities.structuredOutput ==
+                                com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE &&
+                                selectedModel != null &&
+                                selectedModel.capabilities.textGeneration &&
+                                selectedModel.capabilities.structuredOutput ==
+                                com.craftmind.app.domain.ai.StructuredOutputMode.JSON_MIME_TYPE
+                            add(
+                                when {
+                                    selectedModel == null ->
+                                        "Select a model to check the text and JSON capabilities required for semantic refinement."
+
+                                    semanticRefinementSupported ->
+                                        "The selected model supports the text and structured JSON capabilities required for semantic refinement."
+
+                                    else ->
+                                        "The selected model lacks a required text or JSON capability. CraftMind rejects refinement rather than switching or downgrading models."
+                                },
+                            )
+                            selectedModel?.let { model ->
+                                add(
+                                    when {
+                                        model.capabilities.vision && model.capabilities.multipleImages ->
+                                            "The selected model is verified for one-image input and bounded multi-image video-frame analysis. Video bytes stay on-device except for bounded HTTPS range reads; sampled frames are sent directly to this provider."
+
+                                        model.capabilities.vision ->
+                                            "The selected model is verified for one-image input only. Video analysis is blocked unless you select a model labeled Multi-image Vision."
+
+                                        else ->
+                                            "The selected model is text-only for visual references. Image and video analysis are blocked until you choose a model labeled Vision."
+                                    },
+                                )
+                            }
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (model.capabilities.vision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
 
         state.message?.let { message ->
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = message,
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
+            CraftMindNotice(
+                tone = CraftMindTone.INFORMATIVE,
+                message = message,
+                onDismiss = { onEvent(ProviderSettingsEvent.DismissMessage) },
+            )
         }
     }
 }
 
 @Composable
 private fun ConnectionStatus(state: ProviderConnectionState) {
-    val text = when (state) {
-        ProviderConnectionState.Unverified -> "Not verified. Run a live test to check the saved key and model list."
-        ProviderConnectionState.Testing -> "A real provider request is in progress."
-        is ProviderConnectionState.Verified -> "Verified by live API response · ${state.compatibleModelCount} compatible model(s)."
-        is ProviderConnectionState.Failed -> "Connection test failed (${state.code.name.lowercase().replace('_', ' ')})."
+    val tone = when (state) {
+        ProviderConnectionState.Unverified -> CraftMindTone.INFORMATIVE
+        ProviderConnectionState.Testing -> CraftMindTone.INFORMATIVE
+        is ProviderConnectionState.Verified -> CraftMindTone.POSITIVE
+        is ProviderConnectionState.Failed -> CraftMindTone.NEGATIVE
     }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall,
-        color = if (state is ProviderConnectionState.Failed) MaterialTheme.colorScheme.error
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    val text = when (state) {
+        ProviderConnectionState.Unverified -> "Not verified yet. Run a live test to check the saved key and model list."
+        ProviderConnectionState.Testing -> "A real provider request is in progress."
+        is ProviderConnectionState.Verified ->
+            "Verified by a live API response · ${state.compatibleModelCount} compatible model(s)."
+
+        is ProviderConnectionState.Failed ->
+            "Connection test failed (${state.code.name.lowercase().replace('_', ' ')}). No raw response or secret is shown."
+    }
+    CraftMindNotice(tone = tone, message = text)
 }
 
-@Composable
-private fun SettingsCard(
-    title: String,
-    subtitle: String,
-    content: @Composable () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, style = MaterialTheme.typography.titleLarge)
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            content()
-        }
-    }
+/** Capability line shown in the model picker; mirrors the composer's own wording. */
+private fun modelCapabilitySummary(model: com.craftmind.app.domain.ai.AiModel): String = when {
+    model.capabilities.vision && model.capabilities.multipleImages ->
+        "Text + one-image and multi-frame video vision"
+
+    model.capabilities.vision -> "Text + one-image vision · multi-frame video unavailable"
+    else -> "Text only · image and video analysis unavailable"
 }
 
 private fun ThemeMode.label(): String = when (this) {
     ThemeMode.SYSTEM -> "System"
     ThemeMode.LIGHT -> "Light"
     ThemeMode.DARK -> "Dark"
+}
+
+private fun ThemeMode.explanation(): String = when (this) {
+    ThemeMode.SYSTEM -> "Follow this device's light or dark setting."
+    ThemeMode.LIGHT -> "Always use the light palette."
+    ThemeMode.DARK -> "Always use the dark palette."
 }

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -35,12 +34,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.craftmind.app.domain.ai.AiErrorCode
+import com.craftmind.app.designsystem.CraftMindCard
+import com.craftmind.app.designsystem.CraftMindExpandableSection
+import com.craftmind.app.designsystem.CraftMindEyebrow
+import com.craftmind.app.designsystem.CraftMindLayout
+import com.craftmind.app.designsystem.CraftMindPrimaryButton
+import com.craftmind.app.designsystem.CraftMindShapes
+import com.craftmind.app.designsystem.CraftMindTertiaryButton
+import com.craftmind.app.designsystem.CraftMindType
 import com.craftmind.app.domain.buildplan.BuildDiff
 import com.craftmind.app.domain.buildplan.BuildDiffWarning
 import com.craftmind.app.domain.buildplan.BuildPlan
 import com.craftmind.app.domain.buildplan.BuildPlanLimits
 import com.craftmind.app.domain.buildplan.BuildRequestSnapshot
 import com.craftmind.app.domain.buildplan.LocalBuildRecord
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 import com.craftmind.app.domain.minecraft.LocalBuildExecutionRecord
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
@@ -51,8 +59,14 @@ import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityDi
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
 import com.craftmind.app.presentation.settings.BridgePairingState
+import com.craftmind.app.presentation.settings.TARGET_RUNTIME_DETECTED_AUTOMATICALLY
+import com.craftmind.app.presentation.settings.adapterSummaryLines
+import com.craftmind.app.presentation.settings.availabilityLabel
+import com.craftmind.app.presentation.settings.bridgeSummaryLines
+import com.craftmind.app.presentation.settings.detectionStatusLabel
 import com.craftmind.app.presentation.settings.runtimeFactsLabel
 import com.craftmind.app.presentation.settings.runtimeIdentityLabel
+import com.craftmind.app.presentation.settings.runtimeSummaryLines
 import com.craftmind.app.presentation.settings.unavailableReason
 import kotlinx.coroutines.delay
 import java.net.URI
@@ -75,6 +89,8 @@ fun PlanReviewScreen(
     onExecutionEvent: (BuildExecutionEvent) -> Unit = {},
     onDismiss: () -> Unit,
     compatibilityResolver: MinecraftCompatibilityResolver = DefaultMinecraftCompatibility.resolver,
+    /** Opens the Minecraft destination, where an unavailable runtime can actually be fixed (§7). */
+    onOpenMinecraft: () -> Unit = {},
 ) {
     var refinementDraft by remember(record?.recordId) { mutableStateOf("") }
     val currentRecord = record?.let { selected ->
@@ -106,6 +122,17 @@ fun PlanReviewScreen(
     val runtimeDescriptor = bridgeConnection?.capabilities?.runtimeDescriptor
     val planCompatibility = remember(displayedPlan, runtimeDescriptor) {
         runtimeDescriptor?.let { compatibilityResolver.resolve(displayedPlan, it) }
+    }
+    // Phase 13: Build Review shows the automatically detected runtime for the authenticated session. The plan-level
+    // pipeline result is recomputed whenever the connection or the displayed plan changes; it is never cached from a
+    // previous session and never lets the user pick a runtime.
+    val runtimeResolution = remember(bridgeConnection, displayedPlan) {
+        bridgeConnection?.let { connected ->
+            compatibilityResolver.runtimeGate.resolvePlan(
+                displayedPlan,
+                connected.runtimeReport(BuildConfig.VERSION_NAME),
+            )
+        }
     }
     val planRequirements = remember(displayedPlan) { BuildPlanRequirements.from(displayedPlan) }
     val registeredProfileSummary = remember(compatibilityResolver) {
@@ -148,19 +175,20 @@ fun PlanReviewScreen(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Surface(
-            modifier = Modifier.fillMaxSize().padding(12.dp).imePadding(),
-            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.fillMaxSize().padding(CraftMindLayout.md).imePadding(),
+            shape = CraftMindShapes.xl,
             color = MaterialTheme.colorScheme.background,
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize().padding(CraftMindLayout.cardInset),
+                verticalArrangement = Arrangement.spacedBy(CraftMindLayout.md),
             ) {
-                Text("Plan review", style = MaterialTheme.typography.headlineMedium)
+                CraftMindEyebrow("Build review")
+                Text("Plan review", style = CraftMindType.headline)
                 Text(
-                    "AI-generated and validated · construction requires independent server preflight and final confirmation",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    "AI-generated and validated · construction requires independent server preflight and your final confirmation",
+                    style = CraftMindType.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Column(
                     modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
@@ -325,21 +353,41 @@ fun PlanReviewScreen(
                             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
                             .take(MAX_BLOCK_SUMMARY)
                     }
-                    ReviewCard("Block summary") {
-                        blockCounts.forEach { (blockId, count) -> Text("$blockId  × $count", style = MaterialTheme.typography.bodySmall) }
-                        if (displayedPlan.operations.map { it.blockId }.distinct().size > MAX_BLOCK_SUMMARY) {
-                            Text("Showing the $MAX_BLOCK_SUMMARY most-used block types.", style = MaterialTheme.typography.bodySmall)
+                    var materialsExpanded by remember { mutableStateOf(false) }
+                    ReviewCard("Materials") {
+                        Text(
+                            "${displayedPlan.operations.map { it.blockId }.distinct().size} block type(s) · ${displayedPlan.operations.size} placements",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        CraftMindExpandableSection(
+                            title = "Block counts",
+                            summary = "Most-used block types in this plan",
+                            expanded = materialsExpanded,
+                            onToggle = { materialsExpanded = !materialsExpanded },
+                            ) {
+                            blockCounts.forEach { (blockId, count) -> Text("$blockId  × $count", style = MaterialTheme.typography.bodySmall) }
+                            if (displayedPlan.operations.map { it.blockId }.distinct().size > MAX_BLOCK_SUMMARY) {
+                                Text("Showing the $MAX_BLOCK_SUMMARY most-used block types.", style = MaterialTheme.typography.bodySmall)
+                        }
                         }
                     }
 
-                    ReviewCard("Placement preview (first ${minOf(displayedPlan.operations.size, MAX_VISIBLE_OPERATIONS)} of ${displayedPlan.operations.size})") {
-                        displayedPlan.operations.take(MAX_VISIBLE_OPERATIONS).forEach { operation ->
-                            val state = operation.blockState.entries.joinToString { (key, value) -> "$key=$value" }
-                            Text(
-                                "${operation.sequence + 1}. ${operation.blockId} at (${operation.position.x}, ${operation.position.y}, ${operation.position.z})" +
-                                    if (state.isEmpty()) "" else " [$state]",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                    var placementsExpanded by remember { mutableStateOf(false) }
+                    ReviewCard("Placement detail") {
+                        CraftMindExpandableSection(
+                            title = "Placement preview",
+                            summary = "First ${minOf(displayedPlan.operations.size, MAX_VISIBLE_OPERATIONS)} of ${displayedPlan.operations.size} placements",
+                            expanded = placementsExpanded,
+                            onToggle = { placementsExpanded = !placementsExpanded },
+                            ) {
+                            displayedPlan.operations.take(MAX_VISIBLE_OPERATIONS).forEach { operation ->
+                                val state = operation.blockState.entries.joinToString { (key, value) -> "$key=$value" }
+                                Text(
+                                    "${operation.sequence + 1}. ${operation.blockId} at (${operation.position.x}, ${operation.position.y}, ${operation.position.z})" +
+                                        if (state.isEmpty()) "" else " [$state]",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                        }
                         }
                     }
 
@@ -351,6 +399,10 @@ fun PlanReviewScreen(
                         bridgeState = bridgeState,
                         executionState = executionState,
                         onEvent = onExecutionEvent,
+                        onOpenMinecraft = {
+                            dismissReview()
+                            onOpenMinecraft()
+                        },
                     )
 
                     if (record != null) {
@@ -377,9 +429,7 @@ fun PlanReviewScreen(
                         }
                     }
                 }
-                Button(onClick = dismissReview, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                    Text("Done reviewing")
-                }
+                CraftMindPrimaryButton(text = "Done reviewing", onClick = dismissReview)
             }
         }
     }
@@ -394,6 +444,7 @@ private fun ConstructionExecutionCard(
     bridgeState: BridgePairingState,
     executionState: BuildExecutionState,
     onEvent: (BuildExecutionEvent) -> Unit,
+    onOpenMinecraft: () -> Unit = {},
 ) {
     val flow = executionState.flow
     val matchingFlow = when (flow) {
@@ -438,6 +489,46 @@ private fun ConstructionExecutionCard(
         matchingFlow !is BuildExecutionFlow.PreviewReady
 
     ReviewCard("Minecraft compatibility and available limits") {
+        Text(TARGET_RUNTIME_DETECTED_AUTOMATICALLY, style = MaterialTheme.typography.titleSmall)
+        if (runtimeResolution == null) {
+            Text(
+                "Target Runtime: not detected — no authenticated bridge session is available.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        } else {
+            val resolution = runtimeResolution
+            Text(
+                resolution.detection.detectionStatusLabel(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (resolution.detection.isDetected) {
+                resolution.runtimeSummaryLines().forEach { fact ->
+                    Text(fact, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "Bridge: ${resolution.bridgeSummaryLines().joinToString(" · ")}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Adapter: ${resolution.adapterSummaryLines().joinToString(" · ")}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                resolution.runtimeSummaryLines().forEach { fact ->
+                    Text(fact, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                }
+            }
+            if (!resolution.canExecute) {
+                Text("Build unavailable", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                Text(
+                    "No BuildPlan will be sent for execution. ${resolution.availabilityLabel()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
         Text(
             "Compatibility: ${planCompatibility?.status?.name ?: MinecraftCompatibilityStatus.UNKNOWN.name}",
             style = MaterialTheme.typography.titleSmall,
@@ -540,6 +631,8 @@ private fun ConstructionExecutionCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.tertiary,
             )
+            // Never a context-free disabled button: the reason is above, and this is the way to act on it.
+            CraftMindTertiaryButton(text = "Open Minecraft", onClick = onOpenMinecraft)
         }
         if (executionState.loadFailed) {
             Text("Local execution history could not be read. Construction is disabled until storage is available.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -568,12 +661,13 @@ private fun ConstructionExecutionCard(
                 current.errorCode?.let { Text("Local execution status could not be persisted ($it). Do not continue until local storage is available.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
+                        shape = CraftMindShapes.sm,
                         onClick = { showFinalConfirmation = true },
                         enabled = constructionEnabled && eligibleSavedVersion && !executionState.isLoading &&
                             !executionState.loadFailed && current.errorCode == null && remainingSeconds > 0,
-                        shape = RoundedCornerShape(14.dp),
                     ) { Text("Review final confirmation") }
                     OutlinedButton(
+                        shape = CraftMindShapes.sm,
                         onClick = { onEvent(BuildExecutionEvent.DismissPreview) },
                         enabled = constructionEnabled,
                     ) { Text("Cancel preview") }
@@ -603,6 +697,7 @@ private fun ConstructionExecutionCard(
                         },
                         confirmButton = {
                             Button(
+                                shape = CraftMindShapes.sm,
                                 onClick = {
                                     showFinalConfirmation = false
                                     onEvent(BuildExecutionEvent.Confirm)
@@ -612,7 +707,7 @@ private fun ConstructionExecutionCard(
                             ) { Text("Confirm and start construction") }
                         },
                         dismissButton = {
-                            TextButton(onClick = { showFinalConfirmation = false }) { Text("Not now") }
+                            TextButton(shape = CraftMindShapes.sm, onClick = { showFinalConfirmation = false }) { Text("Not now") }
                         },
                     )
                 }
@@ -637,7 +732,7 @@ private fun ConstructionExecutionCard(
                 Text("Bridge operation did not reach a usable preview: ${current.reasonCode}. No successful placement is claimed.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 current.detailMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (current.retryPrepare && constructionEnabled && eligibleSavedVersion) {
-                    OutlinedButton(onClick = { onEvent(BuildExecutionEvent.RetryPrepare) }) { Text("Run a new preflight") }
+                    OutlinedButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildExecutionEvent.RetryPrepare) }) { Text("Run a new preflight") }
                 }
                 activeRecord?.let { record ->
                     ExecutionStatus(
@@ -681,9 +776,9 @@ private fun ConstructionExecutionCard(
             (activeRecord == null || activeRecordIsTerminal)
         ) {
             Button(
+                shape = CraftMindShapes.sm,
                 onClick = { record?.let { onEvent(BuildExecutionEvent.Prepare(it)) } },
                 enabled = canStartPreflight,
-                shape = RoundedCornerShape(14.dp),
             ) { Text("Preflight with Minecraft bridge") }
         }
     }
@@ -722,12 +817,12 @@ private fun ExecutionStatus(
     if (bridgeRecordMissing) Text("The authenticated bridge returned no record for this execution ID. Local history is retained; CraftMind will not restart or mark it complete.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     if (cancellationRequested) Text("Cancellation was requested; wait for a bridge-reported terminal status.", style = MaterialTheme.typography.bodySmall)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = onRefresh, enabled = constructionEnabled && !refreshing) {
+        OutlinedButton(shape = CraftMindShapes.sm, onClick = onRefresh, enabled = constructionEnabled && !refreshing) {
             if (refreshing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
             else Text("Refresh bridge status")
         }
         if (record.phase in setOf(MinecraftExecutionPhase.PREPARED, MinecraftExecutionPhase.QUEUED, MinecraftExecutionPhase.RUNNING)) {
-            TextButton(onClick = onCancel, enabled = constructionEnabled) { Text("Request cancellation") }
+            TextButton(shape = CraftMindShapes.sm, onClick = onCancel, enabled = constructionEnabled) { Text("Request cancellation") }
         }
     }
 }
@@ -775,9 +870,9 @@ private fun RefinementCard(
             state !is BuildRefinementState.Reverting
         ) {
             Button(
+                shape = CraftMindShapes.sm,
                 onClick = onRefine,
                 enabled = isCurrent && draft.isNotBlank() && !isBusy,
-                shape = RoundedCornerShape(14.dp),
             ) { Text("Generate refinement") }
         }
         when (state) {
@@ -786,14 +881,14 @@ private fun RefinementCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                     Text("Waiting for a real AI refinement response…", style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { onEvent(BuildRefinementEvent.Cancel) }) { Text("Cancel") }
+                    TextButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.Cancel) }) { Text("Cancel") }
                 }
             }
             is BuildRefinementState.ReadyForReview -> {
                 Text("Candidate is validated. Accept only if the proposed changes look right; earlier versions stay saved.", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onEvent(BuildRefinementEvent.Accept) }, enabled = !isBusy) { Text("Accept candidate") }
-                    OutlinedButton(onClick = { onEvent(BuildRefinementEvent.Discard) }, enabled = !isBusy) { Text("Discard") }
+                    Button(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.Accept) }, enabled = !isBusy) { Text("Accept candidate") }
+                    OutlinedButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.Discard) }, enabled = !isBusy) { Text("Discard") }
                 }
             }
             is BuildRefinementState.Accepting -> {
@@ -804,20 +899,20 @@ private fun RefinementCard(
             }
             is BuildRefinementState.ValidationFailed -> {
                 Text(validationMessage(state.error), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
+                TextButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
             }
             is BuildRefinementState.Failed -> {
                 Text(refinementMessage(state.code), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (state.retryable && state.stage == RefinementFailureStage.PROVIDER) {
-                        OutlinedButton(onClick = { onEvent(BuildRefinementEvent.Retry) }) { Text("Retry") }
+                        OutlinedButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.Retry) }) { Text("Retry") }
                     }
-                    TextButton(onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
+                    TextButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
                 }
             }
             is BuildRefinementState.Cancelled -> {
                 Text("Refinement cancelled. The previous saved version is unchanged.", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
+                TextButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
             }
             is BuildRefinementState.Accepted -> Text("Version ${state.record.version} saved locally. No Minecraft world was changed.", style = MaterialTheme.typography.bodySmall)
             is BuildRefinementState.Reverting -> {
@@ -829,7 +924,7 @@ private fun RefinementCard(
             is BuildRefinementState.Reverted -> Text("Version ${state.record.restoredFromVersion} restored as Version ${state.record.version}. This changed only local history.", style = MaterialTheme.typography.bodySmall)
             is BuildRefinementState.HistoryFailure -> {
                 Text(refinementMessage(state.code), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
+                TextButton(shape = CraftMindShapes.sm, onClick = { onEvent(BuildRefinementEvent.DismissResult) }) { Text("Dismiss") }
             }
             BuildRefinementState.Idle -> Unit
         }
@@ -844,7 +939,7 @@ private fun RefinementCard(
                             Text(version.changeSummary ?: version.plan.metadata.title, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (isCurrent && version.version < record.version && !isBusy) {
-                            TextButton(onClick = {
+                            TextButton(shape = CraftMindShapes.sm, onClick = {
                                 onEvent(BuildRefinementEvent.RestoreVersion(record, version.version))
                             }) { Text("Restore") }
                         }
@@ -911,18 +1006,15 @@ private fun ProposedChangesCard(diff: BuildDiff) {
     }
 }
 
+/**
+ * One review section. Every section in Build Review uses this wrapper, so the whole screen shares the design
+ * system's surface, hairline border, radius, inset, and title treatment (§7).
+ */
 @Composable
 private fun ReviewCard(title: String, content: @Composable () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            content()
-        }
+    CraftMindCard {
+        Text(title, style = CraftMindType.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+        content()
     }
 }
 

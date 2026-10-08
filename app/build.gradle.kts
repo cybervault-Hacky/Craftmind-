@@ -49,6 +49,18 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+
+        // The address of the CraftMind account service (Phase 17).
+        //
+        // Supplied per build — `-PcraftmindAccountBaseUrl=…` or `CRAFTMIND_ACCOUNT_BASE_URL` — and never committed: the
+        // repository contains no service address and no credential. Deliberately empty by default, because an empty
+        // value is a real configuration meaning "this build has no account service"; the app then reports that it has
+        // none instead of offering a sign-in that cannot work. A supplied value must be absolute HTTPS, which
+        // AccountServiceConfiguration enforces before the first request is built.
+        val accountBaseUrl = (project.findProperty("craftmindAccountBaseUrl") as String?)
+            ?: System.getenv("CRAFTMIND_ACCOUNT_BASE_URL")
+            ?: ""
+        buildConfigField("String", "CRAFTMIND_ACCOUNT_BASE_URL", "\"$accountBaseUrl\"")
     }
 
     if (releaseSigningConfigured) {
@@ -94,6 +106,9 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig generation is off by default in AGP 8, and the app reads BuildConfig.VERSION_NAME in the bridge
+        // wire codec and the execution pipeline, plus VERSION_NAME / VERSION_CODE / APPLICATION_ID on the About screen.
+        buildConfig = true
     }
 
     packaging {

@@ -22,10 +22,21 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.craftmind.app.domain.minecraft.BridgeConnectionState
 
+/**
+ * Bridge session controls and the authenticated runtime detail.
+ *
+ * Shared by Settings and the Minecraft destination so both drive exactly the same real pairing, connection,
+ * refresh, revoke, and forget operations — there is no second implementation and no visual mock-up.
+ *
+ * @param showRuntimeCompatibility false when the hosting screen renders the compatibility, certification, and
+ *   execution-permission panels itself (the Minecraft destination does, with the shared design system), so the same
+ *   facts are never printed twice on one screen.
+ */
 @Composable
 internal fun MinecraftBridgeSettingsContent(
     state: BridgePairingState,
     onEvent: (BridgePairingEvent) -> Unit,
+    showRuntimeCompatibility: Boolean = true,
 ) {
     if (!state.isProfileLoaded) {
         Text(
@@ -118,10 +129,19 @@ internal fun MinecraftBridgeSettingsContent(
             val runtime = capabilities.runtimeDescriptor
             val compatibility = state.compatibility
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                MinecraftRuntimeCompatibilityBlock(
-                    runtime = runtime,
-                    compatibility = compatibility,
+                Text("Minecraft Runtime", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Detected automatically from the authenticated bridge · pipeline ${state.runtimeResolution?.phase?.displayName ?: "not started"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (showRuntimeCompatibility) {
+                    MinecraftRuntimeCompatibilityBlock(
+                        runtime = runtime,
+                        compatibility = compatibility,
+                        resolution = state.runtimeResolution,
+                    )
+                }
                 if (!runtime.isBedrock) {
                     Text(
                         "Registered Java profile requirement: " +
@@ -140,7 +160,7 @@ internal fun MinecraftBridgeSettingsContent(
                 Text("Cancellation: ${if (capabilities.cancellation) "reported available" else "unavailable"}", style = MaterialTheme.typography.bodySmall)
                 Text("Current origin dimension: ${capabilities.dimensionId ?: "not selected"}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Pairing authenticates and pins this bridge, but does not establish compatibility. BuildPlan v2 is sent only when the resolver returns SUPPORTED, capability and limit checks pass, server preflight succeeds, and you explicitly confirm. Provider keys remain on this device.",
+                    "Edition, Minecraft version, loader, bridge, protocol, and adapter are detected automatically; CraftMind never asks you to choose them and never offers a manual execution override. Pairing authenticates and pins this bridge, but does not establish compatibility. BuildPlan v2 is sent only when the resolver returns SUPPORTED, capability and limit checks pass, server preflight succeeds, and you explicitly confirm. Provider keys remain on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

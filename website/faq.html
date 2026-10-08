@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="Honest answers about CraftMind's release status, AI provider requirements, Minecraft compatibility, credential storage, and local build history.">
+  <title>FAQ — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <a href="index.html">Home</a>
+        <a href="how-it-works.html">How it works</a>
+        <a href="features.html">Features</a>
+        <a href="download.html">Download</a>
+        <a href="about.html">About</a>
+        <a href="faq.html" aria-current="page">FAQ</a>
+        <a href="download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+        <p class="crumbs"><a href="index.html">Home</a> <span aria-hidden="true">/</span> <span>FAQ</span></p>
+      <p class="eyebrow">FAQ</p>
+      <h1 id="page-title">Questions,<br>answered honestly.</h1>
+      <p class="lead">Every answer below describes implemented behaviour only. If something is not implemented yet, it says so.</p>
+    </section>
+    <section class="section container" aria-labelledby="faq-title">
+      <div class="section-heading">
+        <p class="eyebrow">SUPPORT &amp; HELP</p>
+        <h2 id="faq-title">Common questions.</h2>
+        <p>Still stuck? The repository's issue tracker is the only support channel this project publishes.</p>
+      </div>
+      <div class="faq-list">
+        <article class="faq-item">
+          <h3>Why can't I download the app yet?</h3>
+          <p>No signed APK has been built, installed, or published. The download button stays disabled until a real, signed artifact exists, and CraftMind will never publish a placeholder APK.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Do I need a Minecraft server to use CraftMind?</h3>
+          <p>No. Planning, review, refinement, and local history all work without a bridge. You only need a bridge if you want an accepted plan executed in a Minecraft world.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Which Minecraft versions are supported?</h3>
+          <p>Minecraft Java 1.20.1 with Fabric Loader 0.16.10 and Fabric API 0.92.2+1.20.1 is the certified production target. It is the only runtime that can be authorized to build.</p>
+        </article>
+        <article class="faq-item">
+          <h3>What about Bedrock or older Java versions?</h3>
+          <p>Bedrock and legacy Java runtimes (1.7.10 and 1.12.2) are recognized and reported as experimental. No runtime certification has been performed for them, so building is unavailable — CraftMind does not approximate a nearby version and never crosses editions.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Do I need my own AI key?</h3>
+          <p>Yes. CraftMind has no AI backend. You save your own Google Gemini API key in Settings, choose a model, and provider errors, quotas, and terms stay between you and Google.</p>
+        </article>
+        <article class="faq-item">
+          <h3>What can I use as a visual reference?</h3>
+          <p>One local JPEG, PNG, or WebP image, or one narrowly supported public MP4/WebM file URL on raw.githubusercontent.com that supports byte ranges. Web pages, playlists, social-video links, redirects, and private sources are not accepted.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Where is my API key stored?</h3>
+          <p>Encrypted with AES-GCM using a key held by the Android Keystore, in app-private no-backup storage. It is never sent to the Minecraft bridge, and the app never displays it back to you in full.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Where are my builds stored?</h3>
+          <p>On your device, in app-private storage, as versioned records with their refinements and diffs. Build history is not synced to an account service, and the app includes no telemetry.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Can a build in my world be undone?</h3>
+          <p>No. The app cannot roll back Minecraft block placement. That is why execution requires a server preflight and a separate, explicit confirmation before any block is placed.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Why does a runtime say 'building unavailable'?</h3>
+          <p>Execution passes four gates: authenticated runtime detection, exact adapter selection, compatibility and limit resolution, and a session-bound authorization. Any gate that fails stops the build and states its reason instead of offering a context-free disabled button.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Is there a marketplace, subscription, or account system?</h3>
+          <p>The app and repository implement authentication and account-security flows, but the app needs a configured account-service URL and no production endpoint or email provider is operated by this repository. There is no cloud sync, marketplace, subscription, or payment feature. Account deletion is unavailable.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Does the website track me?</h3>
+          <p>No. The site is static HTML and CSS with no analytics, no tracking scripts, and no remote fonts or assets.</p>
+        </article>
+      </div>
+      <p style="margin-top:28px"><a class="text-link" href="download.html">Release status <span aria-hidden="true">→</span></a></p>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="how-it-works.html">How it works</a>
+        <a href="features.html">Features</a>
+        <a href="download.html">Download</a>
+        <a href="about.html">About</a>
+        <a href="faq.html">FAQ</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

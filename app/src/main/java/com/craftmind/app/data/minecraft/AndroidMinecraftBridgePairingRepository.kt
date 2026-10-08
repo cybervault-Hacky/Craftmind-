@@ -20,8 +20,10 @@ import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
 import com.craftmind.app.domain.minecraft.MinecraftBridgePairingRepository
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
+import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeCompatibilityBinding
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
 import com.craftmind.app.domain.minecraft.compatibility.failureReasonCode
 import com.craftmind.bridge.protocol.BridgeCrypto
@@ -74,6 +76,13 @@ class AndroidMinecraftBridgePairingRepository(
     private val mutableConnectionState = MutableStateFlow<BridgeConnectionState>(BridgeConnectionState.Disconnected)
     private var activeSession: ActiveSession? = null
     private var expiryJob: Job? = null
+
+    /**
+     * Phase 13: memory-only execution bindings, keyed by execution ID. Each entry records the authenticated session
+     * and exact Minecraft runtime for which compatibility was resolved at preflight. A changed runtime, session,
+     * adapter, or world session invalidates the entry instead of letting an older answer authorize a build.
+     */
+    private val preparedExecutionBindings = mutableMapOf<String, MinecraftRuntimeCompatibilityBinding>()
 
     override val connectionState = mutableConnectionState.asStateFlow()
     override val profile: Flow<TrustedMinecraftBridge?> = profileRepository.profile
@@ -281,7 +290,9 @@ class AndroidMinecraftBridgePairingRepository(
                         val response = postAuthenticated(session, CAPABILITIES_PATH, body)
                         requireResponse(response, body.requestId, "capabilities.response")
                         val capabilities = readCapabilities(response.payload, session.profile)
-                        activeSession = session.copy(capabilities = capabilities)
+                        val refreshed = session.copy(capabilities = capabilities)
+                        bindRuntime(refreshed, previousBinding = session.runtimeBinding)
+                        activeSession = refreshed
                     } finally {
                         BridgeCrypto.zero(body.bytes)
                     }
@@ -303,8 +314,15 @@ class AndroidMinecraftBridgePairingRepository(
             withContext(Dispatchers.IO) {
                 val session = activeSession ?: fail("BRIDGE_SESSION_UNAVAILABLE")
                 val capabilities = session.capabilities ?: fail("BRIDGE_CAPABILITIES_UNAVAILABLE")
-                val compatibility = compatibilityResolver.resolve(record.plan, capabilities.runtimeDescriptor)
-                if (!compatibility.canExecute) fail(compatibility.failureReasonCode())
+                // Phase 13: preflight re-runs detection, descriptor validation, adapter selection, and compatibility
+                // resolution against the runtime that is authenticated right now, and binds the answer to it.
+                val authorization = compatibilityResolver.runtimeGate.authorizeExecution(
+                    report = session.runtimeReport(capabilities),
+                    requirements = BuildPlanRequirements.from(record.plan),
+                    previousBinding = session.runtimeBinding,
+                )
+                if (!authorization.authorized) fail(authorization.reasonCode)
+                preparedExecutionBindings[executionId] = authorization.binding ?: fail(authorization.reasonCode)
                 if (record.plan.status != BuildStatus.READY || record.plan.metadata.schemaVersion != BridgeProtocol.BUILD_PLAN_SCHEMA_VERSION ||
                     record.plan.metadata.intent == null || record.plan.operations.isEmpty() ||
                     record.plan.operations.size > capabilities.maximumValidatedOperations) {
@@ -352,6 +370,15 @@ class AndroidMinecraftBridgePairingRepository(
                     fail("WORLD_SESSION_CHANGED")
                 }
                 if (preview.expiresAtEpochMillis <= System.currentTimeMillis()) fail("PREFLIGHT_EXPIRED")
+                // Phase 13 time-of-check/time-of-use protection: the runtime authenticated at execution start must
+                // still be the runtime this execution was prepared for. A changed session, Minecraft version,
+                // loader, bridge, adapter, or world session aborts instead of sending the BuildPlan.
+                val startAuthorization = compatibilityResolver.runtimeGate.authorizeExecution(
+                    report = session.runtimeReport(capabilities),
+                    requirements = BuildPlanRequirements.runtimeExecution,
+                    previousBinding = preparedExecutionBindings[preview.executionId],
+                )
+                if (!startAuthorization.authorized) fail(startAuthorization.reasonCode)
                 val payload = JsonObject().apply {
                     addProperty("executionId", preview.executionId)
                     addProperty("preflightToken", preview.preflightToken)
@@ -369,6 +396,9 @@ class AndroidMinecraftBridgePairingRepository(
                                         snapshot.worldSessionId != preview.worldSessionId || snapshot.resolvedOrigin != preview.resolvedOrigin) {
                                         fail("BRIDGE_RESPONSE_MISMATCH")
                                     }
+                                    // The bound eligibility was consumed by this execution; nothing cached may
+                                    // authorize a later one.
+                                    preparedExecutionBindings.remove(preview.executionId)
                                 }
                         }
                         "execution.start.rejected" -> {
@@ -434,6 +464,7 @@ class AndroidMinecraftBridgePairingRepository(
                         fail("BRIDGE_RESPONSE_INVALID")
                     }
                     val state = BridgeProtocolCodec.nullableString(response.payload, "state", 16)
+                    preparedExecutionBindings.remove(executionId)
                     MinecraftCancellationResult(outcome, state?.let(::parseExecutionPhase),
                         BridgeProtocolCodec.nullableString(response.payload, "reasonCode", 64))
                 } finally {
@@ -497,7 +528,9 @@ class AndroidMinecraftBridgePairingRepository(
                     val capabilitiesResponse = postAuthenticated(active, CAPABILITIES_PATH, requestBody)
                     requireResponse(capabilitiesResponse, requestBody.requestId, "capabilities.response")
                     val capabilities = readCapabilities(capabilitiesResponse.payload, profile)
-                    return active.copy(capabilities = capabilities)
+                    val authenticatedSession = active.copy(capabilities = capabilities)
+                    bindRuntime(authenticatedSession, previousBinding = null)
+                    return authenticatedSession
                 } finally {
                     BridgeCrypto.zero(requestBody.bytes)
                 }
@@ -906,7 +939,7 @@ class AndroidMinecraftBridgePairingRepository(
         val session = activeSession ?: return
         val capabilities = session.capabilities ?: return
         mutableConnectionState.value = BridgeConnectionState.Connected(
-            session.profile, capabilities, session.authenticatedAtEpochMillis,
+            session.profile, capabilities, session.authenticatedAtEpochMillis, session.sessionId,
         )
         expiryJob?.cancel()
         expiryJob = sessionScope.launch {
@@ -925,6 +958,35 @@ class AndroidMinecraftBridgePairingRepository(
         expiryJob?.cancel()
         expiryJob = null
         activeSession = null
+        preparedExecutionBindings.clear()
+    }
+
+    /**
+     * Builds the only detection input Phase 13 accepts: the authenticated runtime report bound to this session,
+     * this paired bridge identity, and the app version this client actually requested.
+     */
+    private fun ActiveSession.runtimeReport(capabilities: BridgeCapabilitiesSnapshot) = capabilities.runtimeReport(
+        sessionId = sessionId,
+        requestedAppVersion = BuildConfig.VERSION_NAME,
+        authenticated = true,
+        authenticatedAtEpochMillis = authenticatedAtEpochMillis,
+        expectedBridgeId = profile.bridgeId,
+        expectedIdentityFingerprint = profile.tlsFingerprint,
+    )
+
+    /**
+     * Re-runs detection and compatibility resolution for a freshly read runtime report and binds the result to the
+     * session. A cached descriptor is historical information only: when the authenticated runtime changes, every
+     * prepared execution binding is invalidated so nothing stale can authorize a build.
+     */
+    private fun bindRuntime(session: ActiveSession, previousBinding: MinecraftRuntimeCompatibilityBinding?) {
+        val capabilities = session.capabilities ?: return
+        val resolution = compatibilityResolver.runtimeGate.resolveRuntime(session.runtimeReport(capabilities))
+        session.runtimeBinding = resolution.binding
+        val previousIdentity = previousBinding?.identity
+        if (previousIdentity != null && !previousIdentity.hasSameRuntime(resolution.detection.runtimeIdentity)) {
+            preparedExecutionBindings.clear()
+        }
     }
 
     private fun publishFailure(error: Exception) {
@@ -950,6 +1012,8 @@ class AndroidMinecraftBridgePairingRepository(
         val authenticatedAtEpochMillis: Long,
         var nextSequence: Long = 1L,
         val capabilities: BridgeCapabilitiesSnapshot? = null,
+        /** Compatibility resolved for this exact authenticated session and runtime; never reused across sessions. */
+        var runtimeBinding: MinecraftRuntimeCompatibilityBinding? = null,
     )
 
     private data class EncodedEnvelope(val requestId: String, val timestampEpochMillis: Long, val bytes: ByteArray)
