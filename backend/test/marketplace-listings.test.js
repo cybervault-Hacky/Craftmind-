@@ -221,11 +221,11 @@ function seededCreator(service, handle, displayName) {
 // ------------------------------------------------------------------ A. persistence (scenarios 1–3)
 
 describe("Phase 25 listing persistence", () => {
-  it("1. initializes the fresh schema at v8 with the listing table, constraints, indexes, and audit types", async () => {
+  it("1. initializes the fresh schema at v9 with the listing table, constraints, indexes, and audit types", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 8);
+    assert.equal(SCHEMA_VERSION, 9);
     const version = service.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version;
-    assert.equal(version, 8);
+    assert.equal(version, 9);
     const columns = service.database.prepare("PRAGMA table_info(marketplace_listings)").all().map((row) => row.name);
     for (const column of ["listing_id", "creator_id", "title", "description", "category", "edition",
       "minecraft_versions", "loaders", "tags", "image_references", "status", "published_at", "created_at", "updated_at"]) {
@@ -262,7 +262,7 @@ describe("Phase 25 listing persistence", () => {
     }), /NOT NULL|CHECK constraint failed/);
   });
 
-  it("2. migrates a version 7 database to v8 without losing data or audit history", () => {
+  it("2. migrates a version 7 database to v9 without losing data or audit history", () => {
     const database = new DatabaseSync(temporaryDatabasePath());
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("PRAGMA recursive_triggers = ON");
@@ -283,8 +283,8 @@ describe("Phase 25 listing persistence", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 7").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 8);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
+    assert.equal(SCHEMA_VERSION, 9);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 7").get().applied_at, appliedAt);
     // Prior rows survive with their values.
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_p24'").get().display_name, "Phase24");
@@ -309,7 +309,7 @@ describe("Phase 25 listing persistence", () => {
     database.close();
   });
 
-  it("3. re-running the v8 migration is a no-op", () => {
+  it("3. re-running the migration is a no-op", () => {
     const database = new DatabaseSync(temporaryDatabasePath());
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -318,7 +318,7 @@ describe("Phase 25 listing persistence", () => {
     const indexes = database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%'").get().count;
     migrateToVersion(database, SCHEMA_VERSION);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, versions);
-    assert.equal(versions, 8);
+    assert.equal(versions, 9);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%'").get().count, indexes);
     database.close();
   });

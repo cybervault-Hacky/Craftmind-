@@ -61,6 +61,21 @@ import {
   searchPublishedListings,
   updateListingForSession,
 } from "./listing-api.js";
+import {
+  awardJobForSession,
+  cancelJobForSession,
+  createJobForSession,
+  ownJobDetailForSession,
+  ownJobsForSession,
+  ownProposalDetailForSession,
+  ownProposalsForSession,
+  publicJob,
+  searchOpenJobs,
+  submitProposalForSession,
+  updateJobForSession,
+  updateProposalForSession,
+  withdrawProposalForSession,
+} from "./hire-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -261,7 +276,7 @@ function statusForEmailDelivery(result, emailDelivery) {
  * changes, so a source or session already under an active Phase 20 protection is throttled here too — the controls are
  * reused exactly as they are, not duplicated.
  */
-const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/", "/creator/", "/servers/", "/onboarding/"];
+const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/", "/creator/", "/servers/", "/onboarding/", "/buyer/"];
 
 function isSecuritySensitiveRoute(pathKey) {
   return SECURITY_SENSITIVE_PREFIXES.some((prefix) => pathKey.startsWith(prefix));
@@ -289,6 +304,10 @@ function routeSecurityCategory(pathKey) {
   // Phase 24 onboarding saves are credential-bearing state changes about the account itself; both verbs share the
   // path, so the category covers the read and the write together, exactly as it does for /creator/profile.
   if (pathKey === "/onboarding/buyer" || pathKey === "/onboarding/seller") return "SESSION";
+  // Phase 26 hire routes: buyer job management (/buyer/jobs…) and creator proposals (/creator/proposal…) are
+  // session-scoped reads and writes — the same shape as /creator/listing. The public /marketplace/jobs reads stay
+  // ordinary request-category traffic.
+  if (pathKey.startsWith("/buyer/jobs") || pathKey.startsWith("/creator/proposal")) return "SESSION";
   return "REQUEST";
 }
 
@@ -751,6 +770,40 @@ export function createAccountService({ database, configuration, logger = console
       const searchParams = new URL(request.url ?? "/", "http://listing.local").searchParams;
       return { status: 200, payload: searchPublishedListings(database, searchParams) };
     }],
+    // Phase 26 Hire a Builder. Buyers manage their own job requests under /buyer/jobs (session-derived ownership
+    // only); creators manage proposals under /creator/proposal; the public discovers OPEN jobs under
+    // /marketplace/jobs. Job creation and proposal submission each spend their own dedicated rate budget.
+    ["POST /buyer/jobs", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "job-write", request, "", configuration.rateLimit.jobWrite);
+      return { status: 201, payload: createJobForSession(database, configuration, token, body) };
+    }],
+    ["GET /buyer/jobs", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "hire-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: ownJobsForSession(database, configuration, token) };
+    }],
+    ["GET /marketplace/jobs", async (request) => {
+      consumeLimit(limits, "job-search", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://hire.local").searchParams;
+      return { status: 200, payload: searchOpenJobs(database, searchParams) };
+    }],
+    ["GET /creator/proposal", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "hire-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: ownProposalsForSession(database, configuration, token) };
+    }],
+    ["POST /creator/proposal", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "proposal-submit", request, "", configuration.rateLimit.proposalWrite);
+      return { status: 201, payload: submitProposalForSession(database, configuration, token, body) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -980,6 +1033,106 @@ export function createAccountService({ database, configuration, logger = console
       handler: (request, _context, listingId) => {
         consumeLimit(limits, "listing-search", request, "", configuration.rateLimit.creatorProfileRead);
         return { status: 200, payload: publicListing(database, decodeURIComponent(listingId)) };
+      },
+    },
+    // Phase 26 hire routes. Job and proposal ids are validated inside the handlers (shape + ownership); the
+    // router only ever sees the route pattern in the request log, never a probeable id list.
+    {
+      method: "GET",
+      name: "/buyer/jobs/:id",
+      pattern: /^\/buyer\/jobs\/([^/]{1,64})$/,
+      handler: (request, _context, jobId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "hire-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: ownJobDetailForSession(database, configuration, token, decodeURIComponent(jobId)) };
+      },
+    },
+    {
+      method: "PATCH",
+      name: "/buyer/jobs/:id",
+      pattern: /^\/buyer\/jobs\/([^/]{1,64})$/,
+      handler: async (request, _context, jobId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "job-write", request, "", configuration.rateLimit.jobWrite);
+        return {
+          status: 200,
+          payload: updateJobForSession(database, configuration, token, decodeURIComponent(jobId), body),
+        };
+      },
+    },
+    {
+      method: "POST",
+      name: "/buyer/jobs/:id/cancel",
+      pattern: /^\/buyer\/jobs\/([^/]{1,64})\/cancel$/,
+      handler: (request, _context, jobId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "job-write", request, "", configuration.rateLimit.jobWrite);
+        return { status: 200, payload: cancelJobForSession(database, configuration, token, decodeURIComponent(jobId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/buyer/jobs/:id/award",
+      pattern: /^\/buyer\/jobs\/([^/]{1,64})\/award$/,
+      handler: async (request, _context, jobId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "job-write", request, "", configuration.rateLimit.jobWrite);
+        return {
+          status: 200,
+          payload: awardJobForSession(database, configuration, token, decodeURIComponent(jobId), body),
+        };
+      },
+    },
+    {
+      method: "GET",
+      name: "/marketplace/jobs/:id",
+      pattern: /^\/marketplace\/jobs\/([^/]{1,64})$/,
+      handler: (request, _context, jobId) => {
+        consumeLimit(limits, "job-search", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: publicJob(database, decodeURIComponent(jobId)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/creator/proposal/:id",
+      pattern: /^\/creator\/proposal\/([^/]{1,64})$/,
+      handler: (request, _context, proposalId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "hire-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: ownProposalDetailForSession(database, configuration, token, decodeURIComponent(proposalId)) };
+      },
+    },
+    {
+      method: "PATCH",
+      name: "/creator/proposal/:id",
+      pattern: /^\/creator\/proposal\/([^/]{1,64})$/,
+      handler: async (request, _context, proposalId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "proposal-write", request, "", configuration.rateLimit.proposalWrite);
+        return {
+          status: 200,
+          payload: updateProposalForSession(database, configuration, token, decodeURIComponent(proposalId), body),
+        };
+      },
+    },
+    {
+      method: "POST",
+      name: "/creator/proposal/:id/withdraw",
+      pattern: /^\/creator\/proposal\/([^/]{1,64})\/withdraw$/,
+      handler: (request, _context, proposalId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "proposal-write", request, "", configuration.rateLimit.proposalWrite);
+        return { status: 200, payload: withdrawProposalForSession(database, configuration, token, decodeURIComponent(proposalId)) };
       },
     },
   ];

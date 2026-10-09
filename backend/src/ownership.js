@@ -24,8 +24,10 @@ import { AUDIT_ACTOR_KIND, appendAuditRecord } from "./audit.js";
 export const RESOURCE_KIND = Object.freeze({
   CREATOR_PROFILE: "CREATOR_PROFILE",
   SERVER_WORKSPACE: "SERVER_WORKSPACE",
-  /** Reserved for the marketplace phase; no code path resolves it yet. */
   MARKETPLACE_LISTING: "MARKETPLACE_LISTING",
+  /** Phase 26: buyer job requests and the proposals on them. */
+  BUYER_JOB: "BUYER_JOB",
+  JOB_PROPOSAL: "JOB_PROPOSAL",
 });
 
 const RESOURCE_KINDS = new Set(Object.values(RESOURCE_KIND));

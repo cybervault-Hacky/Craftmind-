@@ -123,6 +123,22 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "PATCH /creator/listing/:id",
   "POST /creator/listing/:id/publish",
   "POST /creator/listing/:id/archive",
+  // Phase 26: Hire a Builder. Public OPEN-job discovery, the buyer's own job lifecycle, and the creator's own
+  // proposals — all session-scoped where they change something; the service derives every owner from the token
+  // and the browser never sends an owner, a status, or an award.
+  "GET /marketplace/jobs",
+  "GET /marketplace/jobs/:id",
+  "GET /buyer/jobs",
+  "POST /buyer/jobs",
+  "GET /buyer/jobs/:id",
+  "PATCH /buyer/jobs/:id",
+  "POST /buyer/jobs/:id/cancel",
+  "POST /buyer/jobs/:id/award",
+  "GET /creator/proposal",
+  "POST /creator/proposal",
+  "GET /creator/proposal/:id",
+  "PATCH /creator/proposal/:id",
+  "POST /creator/proposal/:id/withdraw",
 ]);
 
 /** The one anonymous route the site may call. It returns the public projection of an ACTIVE creator profile. */
@@ -162,6 +178,20 @@ const CREATOR_LISTING_METHODS = Object.freeze([
   "listMyListings", "createDraft", "updateDraft", "publishListing", "unpublishListing",
   "duplicateListing", "deleteDraft", "listMedia", "uploadMedia",
 ]);
+
+/**
+ * The Hire a Builder surface (Phase 26). Two public reads over OPEN jobs; everything else is session-scoped and
+ * owner-derived on the server. No method here ever sends an owner id, a status, a creator id, or an award choice
+ * beyond the one proposal id the buyer selected — those are the server's to decide.
+ */
+const HIRE_METHODS = Object.freeze([
+  "searchJobs", "getJob",
+  "listMyJobs", "createJob", "updateJob", "cancelJob", "awardProposal",
+  "listMyProposals", "getOwnedJob", "submitProposal", "updateProposal", "withdrawProposal",
+]);
+
+const JOB_ID_PATTERN = /^job_[0-9a-fA-F-]{36}$/;
+const PROPOSAL_ID_PATTERN = /^prp_[0-9a-fA-F-]{36}$/;
 
 /** The same eight categories the service stores and validates; a fixed vocabulary, so no lookup is required. */
 const MARKETPLACE_CATEGORIES = Object.freeze([
@@ -517,6 +547,85 @@ function createListingCreatorAdapter(account) {
   });
 }
 
+/**
+ * The Hire a Builder surface over the account service (Phase 26).
+ *
+ * Public reads serve OPEN jobs only; every write and every owned read is session-scoped, with the owner derived
+ * from the bearer token. `refusedNotUnauthenticated` lets a typed 403 (missing entitlement, missing agreement,
+ * closed job) surface the server's own actionable message instead of pretending the visitor is signed out. No
+ * method here computes a status, an award, or a proposal count — those arrive only as the service's response.
+ */
+function createHireAdapter(account) {
+  const contract = [...HIRE_METHODS];
+  if (!account.configured) {
+    return unconfigured("hire", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  const signedInOnly = (implementation) => async (...args) => {
+    if (!account.signedIn) {
+      return Object.freeze({
+        status: RESULT.UNAUTHORIZED,
+        reason: REASON.NOT_SIGNED_IN,
+        message: "Sign in to post hire requests, review proposals, and manage your own proposals from the account service.",
+      });
+    }
+    return implementation(...args);
+  };
+  const token = () => account.session.accessToken;
+  const search = (params = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null || value === "") continue;
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return requestJson(account.origin, `/marketplace/jobs${suffix ? `?${suffix}` : ""}`);
+  };
+  return Object.freeze({
+    configured: true,
+    name: "hire",
+    contract,
+    get signedIn() { return account.signedIn; },
+    // Public reads: OPEN jobs only, served by the service; nothing is computed here.
+    searchJobs: search,
+    async getJob(jobId) {
+      if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return rejected("That address is not a valid job identifier.");
+      return requestJson(account.origin, `/marketplace/jobs/${jobId}`);
+    },
+    // The buyer's own surface. Ownership, lifecycle, and the award decision are all decided server-side.
+    listMyJobs: signedInOnly(() => requestJson(account.origin, "/buyer/jobs", { token: token() })),
+    getOwnedJob: signedInOnly((jobId) => {
+      if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return rejected("That address is not a valid job identifier.");
+      return requestJson(account.origin, `/buyer/jobs/${jobId}`, { token: token() });
+    }),
+    createJob: signedInOnly((body) => requestJson(account.origin, "/buyer/jobs", { method: "POST", body, token: token(), refusedNotUnauthenticated: true })),
+    updateJob: signedInOnly((jobId, body) => {
+      if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return rejected("That address is not a valid job identifier.");
+      return requestJson(account.origin, `/buyer/jobs/${jobId}`, { method: "PATCH", body, token: token(), refusedNotUnauthenticated: true });
+    }),
+    cancelJob: signedInOnly((jobId) => {
+      if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return rejected("That address is not a valid job identifier.");
+      return requestJson(account.origin, `/buyer/jobs/${jobId}/cancel`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    awardProposal: signedInOnly((jobId, proposalId) => {
+      if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return rejected("That address is not a valid job identifier.");
+      if (typeof proposalId !== "string" || !PROPOSAL_ID_PATTERN.test(proposalId)) return rejected("That address is not a valid proposal identifier.");
+      return requestJson(account.origin, `/buyer/jobs/${jobId}/award`, { method: "POST", body: { proposalId }, token: token(), refusedNotUnauthenticated: true });
+    }),
+    // The creator's own proposals. The server enforces eligibility, ownership, and the one-live-proposal rule.
+    listMyProposals: signedInOnly(() => requestJson(account.origin, "/creator/proposal", { token: token() })),
+    submitProposal: signedInOnly((body) => requestJson(account.origin, "/creator/proposal", { method: "POST", body, token: token(), refusedNotUnauthenticated: true })),
+    updateProposal: signedInOnly((proposalId, body) => {
+      if (typeof proposalId !== "string" || !PROPOSAL_ID_PATTERN.test(proposalId)) return rejected("That address is not a valid proposal identifier.");
+      return requestJson(account.origin, `/creator/proposal/${proposalId}`, { method: "PATCH", body, token: token(), refusedNotUnauthenticated: true });
+    }),
+    withdrawProposal: signedInOnly((proposalId) => {
+      if (typeof proposalId !== "string" || !PROPOSAL_ID_PATTERN.test(proposalId)) return rejected("That address is not a valid proposal identifier.");
+      return requestJson(account.origin, `/creator/proposal/${proposalId}/withdraw`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+  });
+}
+
 /** The integration boundary consumed by the page controllers. */
 export function createAdapters() {
   const config = siteConfiguration();
@@ -534,6 +643,10 @@ export function createAdapters() {
     // analytics, and payments stay documented and inert — nothing in this phase sells anything.
     marketplace: createMarketplaceAdapter(account),
     creator: createListingCreatorAdapter(account),
+    // Phase 26: hire requests and proposals read and write the account service when one is configured, and answer
+    // with the same honest unavailable states as before when one is not. No payment, escrow, or milestone surface
+    // exists behind an award — it records which builder a buyer selected, nothing more.
+    hire: createHireAdapter(account),
     orders: unconfigured("orders", ["listSalesOrders", "listPurchases", "getOrder"]),
     reviews: unconfigured("reviews", ["listReviewsForListing", "listReviewsForCreator", "submitReview"]),
     analytics: unconfigured("analytics", ["listingViews", "listingSaves", "conversion", "revenue", "topListings", "trafficSources"]),

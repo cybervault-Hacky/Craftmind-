@@ -72,6 +72,13 @@ ROUTES = (
     ("onboarding/seller.html", "onboarding-seller", None, ("data-seller-status", "data-seller-form")),
     ("marketplace/index.html", "marketplace-home", "marketplace/index.html", ("data-catalog-region", "data-catalog-search", "data-catalog-status", "data-saved-region", "data-featured-region", "data-creators-region")),
     ("marketplace/build.html", "marketplace-build", "marketplace/index.html", ("data-build-region",)),
+    # Phase 26: Hire a Builder — the public open-jobs directory, one job detail, and the buyer/creator workspaces.
+    # All five live inside the marketplace section (the Marketplace entry stays marked current) and render no side nav.
+    ("marketplace/hire.html", "hire-directory", "marketplace/index.html", ("data-hire-form", "data-hire-search", "data-hire-edition", "data-hire-version", "data-hire-status", "data-jobs-region", "data-hire-prev", "data-hire-next", "data-hire-page")),
+    ("marketplace/job.html", "hire-job", "marketplace/index.html", ("data-job-region", "data-proposal-form", "data-proposal-status", "data-proposal-signin")),
+    ("marketplace/hire-post.html", "hire-post", "marketplace/index.html", ("data-job-form-region", "data-job-form-shell", "data-job-form", "data-job-form-status", "data-job-created-link")),
+    ("marketplace/hire-manage.html", "hire-manage", "marketplace/index.html", ("data-manage-region", "data-manage-status")),
+    ("marketplace/hire-proposals.html", "hire-proposals", "marketplace/index.html", ("data-proposals-region", "data-proposals-status")),
     ("membership/index.html", "membership", "membership/index.html", ("data-plan-grid", "data-membership-state", "data-plan-comparison", "data-period-toggle")),
     ("creators/index.html", "creators", "creators/index.html", ("data-creators-directory",)),
     ("creators/profile.html", "creator-profile", "creators/index.html", ("data-creator-profile", "data-creator-listings", "data-creator-reviews")),

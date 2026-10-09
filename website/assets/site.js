@@ -9,6 +9,7 @@
 
 import { initAccount } from "./account.js";
 import { initCreatorAnalytics, initCreatorDashboard, initCreatorEarnings, initCreatorListings, initCreatorOrders, initCreatorReviews, initListingWizard } from "./creator-studio.js";
+import { initHireDirectory, initHireJob, initHireManage, initHirePost, initHireProposals } from "./hire.js";
 import { initMarketplace, initMarketplaceDirectory } from "./marketplace.js";
 import { initMembership } from "./membership.js";
 import { initBuyerOnboarding, initOnboardingHub, initSellerOnboarding, initSignIn } from "./onboarding.js";
@@ -67,6 +68,12 @@ function initCurrentPage() {
   if (page === "onboarding") initOnboardingHub();
   if (page === "onboarding-buyer") initBuyerOnboarding();
   if (page === "onboarding-seller") initSellerOnboarding();
+  // Phase 26: Hire a Builder — directory, detail, buyer post/manage, and creator proposals.
+  if (page === "hire-directory") initHireDirectory(document.querySelector('[data-page="hire-directory"]'));
+  if (page === "hire-job") initHireJob(document.querySelector('[data-page="hire-job"]'));
+  if (page === "hire-post") initHirePost(document.querySelector('[data-page="hire-post"]'));
+  if (page === "hire-manage") initHireManage(document.querySelector('[data-page="hire-manage"]'));
+  if (page === "hire-proposals") initHireProposals(document.querySelector('[data-page="hire-proposals"]'));
 }
 
 markScripted();

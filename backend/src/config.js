@@ -322,6 +322,10 @@ export function loadConfiguration(environment = process.env, options = {}) {
       // budget that protects the write.
       onboardingWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_ONBOARDING_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_ONBOARDING_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       onboardingRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_ONBOARDING_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_ONBOARDING_READ_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 26: posting and managing hire requests, and submitting or amending proposals, are bounded state
+      // changes with dedicated budgets — a busy buyer cannot spend a creator's proposal budget and vice versa.
+      jobWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_JOB_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_JOB_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      proposalWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_PROPOSAL_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_PROPOSAL_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

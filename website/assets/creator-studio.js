@@ -61,6 +61,12 @@ export function initCreatorDashboard(root = document.querySelector('[data-page="
     if (!panels) return;
     panels.innerHTML = [
       ["Listings and drafts", listingsMessage, "Open the listings layout", "listings/index.html", listingsAvailable],
+      // Phase 26: entry point into Hire a Builder — the directory itself renders the honest state when no
+      // account service is configured, so the link is always valid but its "available" badge tracks the service.
+      ["Hire a Builder", adapters.hire.configured
+        ? "Open job requests from buyers: browse the directory, read a job, and send a proposal from its page."
+        : "Job requests and proposals need a connected account service; the directory says so until one exists.",
+        "Open the job directory", "../marketplace/hire.html", adapters.hire.configured],
       ["Sales and orders", "Your sales data will appear here once marketplace selling is available.", "Open the orders layout", "orders/index.html", false],
       ["Earnings and payouts", "Earnings appear here only after a real payout service can settle real sales.", "Open the earnings layout", "earnings/index.html", false],
       ["Reviews", "Reviews from buyers appear here once the marketplace can serve them.", "Open the reviews layout", "reviews/index.html", false],
