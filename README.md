@@ -407,6 +407,85 @@ not as a debt. Full contract: [`docs/referrals-and-attribution.md`](docs/referra
   payments, commissions, refunds, payouts, subscriptions, purchased credits, cash referral rewards and Trusted Seller
   status remain out of scope, and Phases 28–29 stay deferred.
 
+## Phase 33 — production hardening: startup, HTTP bounds, database recovery, observability
+
+Phase 33 changes **no product surface**. It hardens the runtime that already exists — configuration validation before
+anything is opened, request and shutdown bounds, liveness versus readiness, log hygiene, and a rehearsed
+database backup/restore path — and writes down plainly what still depends on infrastructure this repository does not
+have. No dependency was added, no `.env` file or `.env.example` was touched, and no hosting provider, container
+platform, reverse proxy or monitoring service was assumed or invented. Full operational contract:
+[`docs/production-operations.md`](docs/production-operations.md).
+
+- **Startup is staged, and a refusal happens before anything is half-open.** `src/index.js` now runs five named
+  stages (runtime, configuration, database, service, bind), each with one owner. `src/config.js` gained the checks that
+  were missing: `HOST` is validated as a bindable host or `host:port` (a real IPv6 form is accepted,
+  `HOST=0.0.0.0:8787` is refused rather than silently mis-parsed), body and rate-limit keys are bounded, access-token
+  TTL must be shorter than refresh-token TTL for both credential pairs, the security protection window cannot exceed its
+  own maximum, and the three server timeouts plus the grace window are cross-checked against each other because
+  Node's own defaults make some configured combinations unreachable. A refusal is actionable but never repeats a
+  configured value — proven by putting a sentinel string in every secret-ish field and asserting it appears nowhere in
+  the output. A failed start closes what it opened and exits **2**, distinct from a clean shutdown's `0`.
+- **Liveness and readiness are now different questions.** One new route, `GET /live` (no database probe, so a pod is
+  not pulled from rotation for a slow migration or a locked file); `GET /health` keeps every field earlier suites
+  assert (`status`, `service`, `schemaVersion`) and *additionally* answers `database: "reachable"` and
+  `schema: "current"`. When the database is unreadable, readiness returns `503` with categories only
+  (`{status:"unavailable",database:"unreachable",failure:"CLOSED"}`) — never an error message, driver name, file path
+  or row count.
+- **HTTP bounds are enforced, and one of them was chosen by measurement.** `REQUEST_TIMEOUT_MS`, `HEADERS_TIMEOUT_MS`,
+  `KEEP_ALIVE_TIMEOUT_MS` and `SHUTDOWN_GRACE_MS` are configurable within validated ranges and carried onto the
+  `http.Server`. Measured on Node 22: `requestTimeout` bounds receiving the head but does **not** reap a client that
+  sends a head, declares a large body and then stalls, so `server.timeout` (socket inactivity) is set from the same
+  bound and the pair is validated against `keepAliveTimeout`. A client disconnect is now `account_http_client_aborted`
+  plus `status: 499` in the log only — no security signal and no internal-error line, which is what it used to be
+  — while a typed refusal outranks socket state, so an oversized body still receives its `413` even though reading it
+  early destroys the request. Security headers, exact-origin CORS, `Content-Type` gating, streaming body caps, the
+  existing rate limiters and every auth, marketplace and referral contract are unchanged; no redundant middleware was
+  added to make the count of checks look larger.
+- **Shutdown is safe to repeat.** Idle connections close, in-flight work gets the grace window, the remainder is
+  force-closed, and the database handle is closed once. A second signal — or a signal after a failed bind — is a
+  no-op, which is the property a supervisor's SIGTERM-then-SIGKILL actually depends on.
+- **Backups use a mechanism that exists, and restore was rehearsed.** This runtime's `node:sqlite` has no online-backup
+  API (`database.backup` is absent), so `scripts/backup-database.mjs` takes the snapshot with `VACUUM INTO` on a
+  **read-only** handle — never `openDatabase()`, which would run migrations against the live file. The snapshot is
+  verified (`integrity_check`, schema watermark) and deleted if verification fails, written `0600` in a `0700`
+  directory, and refused outright inside `backend/public`. `restore-database.mjs` supports `--dry-run` and requires
+  `--force` to replace an existing target, removing stale `-wal`/`-shm` sidecars only in that explicit case. There is
+  **no automated backup scheduler** and none is claimed: the repository ships a command you can schedule, and
+  `docs/production-operations.md` names the rotation, off-box copy and rehearsal that a real deployment still needs.
+- **Redaction is structural, not a filter.** One JSON line per request with the router's *pattern* (`/marketplace/*`)
+  rather than the concrete path, so a log file cannot become a list of handles and slugs; the only request-derived
+  string that reaches a line is that pattern, so `\n` in a URL cannot split a log line. Bodies, `Authorization`
+  headers, tokens, passwords, signing secrets, referral attributions, report notes and dispute statements are never
+  logged; an internal failure logs `errorType` and discards the message on purpose, with the `requestId` (also
+  returned to the client) as the correlation handle. No external monitoring service is claimed.
+- **Deployment preparation, minus the theatre.** `scripts/check_deployment_readiness.py` verifies that every key the
+  backend actually reads is documented, that the runtime floor agrees across `config.js`, `package.json` and `README.md`,
+  and that the CI example's environment still parses — it runs against this repository today and reports
+  **107 configuration keys, all documented**. Running it surfaced real pre-existing drift: 31 keys in `config.js`
+  were written down nowhere, and they are now documented. The pipeline ships as `ci-workflow.yml.example` and is
+  **not installed**, because adding a workflow would claim a hosted runner this repository does not have; the backend
+  declares zero dependencies, so there is deliberately no invented lockfile.
+- **The new suite caught two defects in this phase's own code, and both were fixed rather than asserted around:** a
+  `let closing` in its temporal dead zone made a busy port crash with a `ReferenceError` instead of refusing cleanly,
+  and a restore into a fresh path reported `replaced: true`, claiming a clobber that had not happened.
+- **Verification status:** `cd backend && npm test` → **393/393 pass across 76 suites** (baseline 357 preserved, plus
+  a new `test/production-hardening.test.js`: 36 tests over 7 suites), `node --check` → clean across **77** backend
+  files, `python3 scripts/check_deployment_readiness.py` → PASS, `python3 scripts/check_release_config.py` → PASS,
+  `python3 scripts/check_website.py` → PASS (41 pages, 1179 links, website untouched), `git diff --check` clean. A
+  **25-check** end-to-end rehearsal ran against real processes: fresh boot migrates to v12, a genuine v11 database
+  built with the app's own migrator is upgraded by a real boot, repeated startup neither duplicates nor advances the
+  watermark, `POST /auth/register` still returns 201 through the hardened path, a snapshot's contents and `0600` mode
+  are verified, the live file is untouched by backing it up, restore refuses without `--force`, and **the restored
+  database boots the service**. Phases 30–32 are pinned by explicit assertions, not by hope: schema v12, 108
+  `ErrorCode` keys, 102 registered audit action types, the `/health` shape, the Phase 31 window contract, the referral
+  route surface and result codes, and the immutability trigger. `ANDROID_BUILD = NOT_RUN` (no Gradle/network
+  provisioning here), **no browser E2E or device test was run** (this phase has no UI surface), no deployment, no
+  restore rehearsal against real infrastructure, and no external service was contacted. Residual risks stated rather
+  than papered over: development-mode CORS still trusts the `Host` header, `x-forwarded-proto` can satisfy the HTTPS
+  gate if the app is exposed directly instead of behind the TLS terminator that sets it, no monitoring or alerting is
+  wired, no CI is installed, and there is **no downgrade path** — rolling back means restoring a pre-upgrade backup.
+
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.

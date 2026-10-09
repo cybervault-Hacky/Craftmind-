@@ -4,6 +4,7 @@
  */
 
 import { createServer } from "node:http";
+import { livenessPayload, readiness } from "./health.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -162,7 +163,17 @@ const SECURITY_HEADERS = Object.freeze({
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 });
 
+function isSendable(response) {
+  // A client that hung up mid-request is normal traffic, not a failure to report: writing to a finished or destroyed
+  // response only raises ERR_HTTP_HEADERS_SENT from inside the handler that was already trying to answer.
+  return Boolean(response) && response.writableEnded !== true && response.destroyed !== true && response.headersSent !== true;
+}
+
 function sendJson(response, status, payload, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   const body = Buffer.from(JSON.stringify(payload), "utf8");
   response.writeHead(status, {
     ...SECURITY_HEADERS,
@@ -174,11 +185,19 @@ function sendJson(response, status, payload, requestId, extraHeaders = {}) {
 }
 
 function sendNoContent(response, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   response.writeHead(204, { ...SECURITY_HEADERS, "X-Request-Id": requestId, ...extraHeaders });
   response.end();
 }
 
 function sendDeveloperAsset(response, status, body, contentType, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   const bytes = Buffer.from(body, "utf8");
   response.writeHead(status, {
     ...SECURITY_HEADERS,
@@ -300,6 +319,24 @@ function safeQuery(request) {
     if (error instanceof AccountApiError) throw error;
     throw new AccountApiError(ErrorCode.CREDIT_OPERATION_INVALID);
   }
+}
+
+/**
+ * Distinguishes "the client stopped caring" from "the service failed". A request that is aborted, a socket reset in
+ * flight, and the premature close that a `for await` over the body reports are all the same event, and treating it as
+ * an internal failure would both page an operator for nothing and spend a caller's malformed-request budget on a
+ * browser tab that was closed.
+ */
+function isClientAbort(error, request, response) {
+  // A typed refusal outranks the socket's state. Reading the body with `for await` destroys the request stream when
+  // the loop exits early, so an oversized body arrives here with `request.destroyed === true` — and that is a 413 the
+  // client is entitled to, not a disconnect. Only an error with no answer of its own counts as an abort.
+  if (error instanceof AccountApiError) return false;
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED", "ABORTED"].includes(code)) return true;
+  if (code === "ERR_STREAM_PREMATURE_CLOSE") return request?.aborted === true || request?.complete === false;
+  if (response?.destroyed === true || request?.aborted === true) return true;
+  return /premature close/i.test(String(error?.message ?? "")) && request?.aborted === true;
 }
 
 async function enforceNonEnumeratingResponseFloor(startedAt) {
@@ -1114,7 +1151,15 @@ export function createAccountService({ database, configuration, logger = console
         }),
       };
     }],
-    ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth", schemaVersion: SCHEMA_VERSION } })],
+    // Liveness answers "is this process serving" and touches nothing; readiness answers "may it be given traffic"
+    // and checks the database handle plus the migration watermark. Both are deliberately unauthenticated, and the
+    // unavailable body stays a category rather than an error message: a probe consumer must never need to read a
+    // failure detail to do its job, and a caller must never receive one.
+    ["GET /health", async () => {
+      const state = readiness(database);
+      return { status: state.httpStatus, payload: state.payload };
+    }],
+    ["GET /live", async () => ({ status: 200, payload: livenessPayload() })],
   ]);
 
   /**
@@ -1588,8 +1633,11 @@ export function createAccountService({ database, configuration, logger = console
       if (asset) sendDeveloperAsset(response, status, asset.body, asset.contentType, requestId, corsHeaders);
       else sendJson(response, status, payload, requestId, corsHeaders);
     } catch (error) {
+      const aborted = isClientAbort(error, request, response);
       const typed = error instanceof AccountApiError ? error : new AccountApiError(ErrorCode.UNKNOWN_ERROR);
-      status = typed.status;
+      // 499 is the conventional "client closed request" code and it exists only in the log: there is no socket left
+      // to answer, and inventing a 500 here would make ordinary browser behaviour look like a server fault.
+      status = aborted ? 499 : typed.status;
       // The single security ingestion point for rejected requests. Account/session references are resolved internally
       // and stored only as opaque identifiers. A route that already recorded a richer signal (it knows the attempted
       // account) marks the error so the same failure is never counted twice.
@@ -1605,6 +1653,11 @@ export function createAccountService({ database, configuration, logger = console
       } catch (signalError) {
         logger.warn?.(JSON.stringify({ event: "security_signal_failed", errorType: signalError?.name ?? "Error" }));
       }
+      if (aborted) {
+        // Nothing to record and nothing to log at error level: the request never became a completed attempt, so it is
+        // not evidence about the client and not an incident.
+        return;
+      }
       if (!(error instanceof AccountApiError)) {
         // The class name is safe; the message may contain a body or provider response and is discarded.
         logger.error?.(JSON.stringify({ event: "account_request_internal_failure", errorType: error?.name ?? "Error", requestId }));
@@ -1612,7 +1665,7 @@ export function createAccountService({ database, configuration, logger = console
       sendError(response, typed, requestId, corsHeaders);
     } finally {
       const logEntry = {
-        event: "account_http_request",
+        event: status === 499 ? "account_http_client_aborted" : "account_http_request",
         method: request.method,
         route: logRoute,
         status,
@@ -1622,6 +1675,22 @@ export function createAccountService({ database, configuration, logger = console
       logger.info?.(JSON.stringify(logEntry));
     }
   });
+
+  /*
+   * Bounded socket lifetimes. Without these, Node's 300-second default request window lets a client hold a connection
+   * open with a dribbling body indefinitely, occupying a request slot for minutes on an endpoint whose legitimate
+   * bodies are kilobytes. The values are configuration, validated at startup, and 0 restores Node's behaviour.
+   */
+  const runtimeBounds = configuration.server ?? {};
+  server.requestTimeout = runtimeBounds.requestTimeoutMs ?? 30_000;
+  server.headersTimeout = runtimeBounds.headersTimeoutMs ?? 10_000;
+  server.keepAliveTimeout = runtimeBounds.keepAliveTimeoutMs ?? 5_000;
+  // `requestTimeout` covers receiving the head; measured on Node 22, a client that sends a head, declares a large
+  // body and then stops is *not* reaped by it once the request has been dispatched to a handler. `server.timeout` is
+  // the socket-inactivity bound that closes exactly that gap, and it is set from the same configured value so there
+  // is one knob. It stays above `keepAliveTimeout` (validated in config) so an idle keep-alive connection is closed
+  // by the idle timer, which is the one meant to decide that, not by an inactivity trip.
+  server.timeout = runtimeBounds.requestTimeoutMs ?? 30_000;
 
   server.once("close", () => clearInterval(cleanupTimer));
   return server;

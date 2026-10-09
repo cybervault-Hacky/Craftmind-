@@ -204,8 +204,13 @@ What is missing, precisely:
 1. **Signed issuance.** `apiBaseUrl` is injected at serve time by `renderSite()` (`__CRAFTMIND_API_BASE__` →
    `config.publicBaseUrl`) and `validateRegistrationInput()` already rejects a `referralCode` that fails
    `^CM-[0-9A-F]{12}$` — enough for a *typed* code, not for a *link*, because an unsigned query parameter is
-   attacker-forgeable at scale. A link needs an HMAC over `{code, issuedAt, kid}` with its own secret; the repo's
-   `scripts/rotate-guest-signing-key.mjs` is the existing pattern for a signing secret plus rotation.
+   attacker-forgeable at scale. A link needs an HMAC over `{code, issuedAt, kid}` with its own secret. The repo has the
+   primitive to build on and none of the machinery around it: `backend/src/ids.js` already derives keyed digests with
+   `createHmac("sha256", authSecret)` under purpose-separating prefixes (`securitySourceDigest`, `securityAccountDigest`,
+   `tokenDigest`), but there is **no** dedicated signing secret, no key-id concept, and no rotation script anywhere in
+   this repository. Reusing `AUTH_SECRET` would not be free either: those digests are stored in rows, so rotating the
+   secret invalidates what is already written — a link-signing key has to be its own, separable secret with a `kid`
+   before rotation can mean anything.
 2. **A pre-session verification path.** Token verification today lives inside authenticated handlers; a
    pre-registration consumer would need that primitive exposed with its own bounded budget.
 3. **A disclosure surface.** The stored attribution has to be visible to the account it describes before capture ships

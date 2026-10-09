@@ -1,0 +1,78 @@
+# Install as `.github/workflows/ci.yml` from a checkout with workflow-write permission.
+#
+# Like `website/github-pages-workflow.yml.example`, this ships as an example rather than an active workflow: this
+# repository configures no runner, no deployment target and no cloud credential, so a workflow that pretended to
+# publish anything would be theatre. Every step below is a command that was run locally and passed; nothing here
+# deploys, provisions, or contacts a hosted service.
+#
+# The checks are deliberately the repository's own: the test suite (which is where migrations, HTTP behaviour and
+# privacy contracts are proven), a syntax sweep, and the three static checkers. Zero dependencies are installed,
+# because the backend declares none — so there is nothing to cache and nothing for a supply chain to slip into.
+
+name: Verify CraftMind backend and website
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Node.js ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is 22.5 for `node:sqlite`; 22.x and 24.x are what an operator can actually deploy today.
+        node: ["22", "24"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Confirm the declared runtime floor is enforceable
+        run: node -e "const {MINIMUM_NODE_VERSION}=await import('./backend/src/config.js');const [maj,min]=process.versions.node.split('.').map(Number);if(maj<MINIMUM_NODE_VERSION.major||(maj===MINIMUM_NODE_VERSION.major&&min<MINIMUM_NODE_VERSION.minor)){console.error('runner Node predates the documented floor');process.exit(1)}" --input-type=module
+
+      - name: Syntax-check every backend module and test
+        run: |
+          set -e
+          find backend/src backend/test backend/scripts \( -name '*.js' -o -name '*.mjs' \) | while read -r file; do
+            node --check "$file"
+          done
+
+      - name: Run the backend suite (includes migration, HTTP, and privacy contracts)
+        run: npm test
+        working-directory: backend
+
+  repository-checks:
+    name: Website, release configuration, deployment readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify website structure and links
+        run: python3 scripts/check_website.py
+
+      - name: Verify Android release configuration and tracked-file secrets
+        run: python3 scripts/check_release_config.py
+
+      - name: Verify runtime, configuration documentation, and backup tooling invariants
+        run: python3 scripts/check_deployment_readiness.py
