@@ -132,8 +132,8 @@ function audits(service, actionType) {
 describe("Phase 30 migration and schema (v11)", () => {
   it("opens at v11 with the dispute tables, triggers, and the widened audit vocabulary", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 11);
-    assert.equal(service.database.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 11);
+    assert.equal(SCHEMA_VERSION, 12);
+    assert.equal(service.database.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 12);
     for (const table of ["order_disputes", "order_dispute_statements", "order_dispute_positions"]) {
       assert.ok(service.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table);
     }
@@ -152,14 +152,14 @@ describe("Phase 30 migration and schema (v11)", () => {
     try {
       const seeded = openDatabase(file);
       migrateToVersion(seeded, 10);
-      assert.equal(SCHEMA_VERSION, 11);
+      assert.equal(SCHEMA_VERSION, 12);
       seeded.exec(`INSERT INTO users (user_id, email, email_canonical, password_hash, display_name, status, email_verified_at, created_at, updated_at)
         VALUES ('usr_seed', 'seed@example.test', 'seed@example.test', 'scrypt$x', 'Seed', 'ACTIVE', '2026-01-01', '2026-01-01', '2026-01-01')`);
       seeded.prepare("INSERT INTO admin_audit_log (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json) VALUES (?,?,?,?,?,?,?,?,'{}')")
         .run("aud_seed", "SYSTEM", null, "ORDER_CREATED", "usr_seed", null, "2026-01-01", "SUCCESS");
       seeded.close();
       const upgraded = openDatabase(file);
-      assert.equal(upgraded.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get().c, 11);
+      assert.equal(upgraded.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get().c, 12);
       assert.equal(upgraded.prepare("SELECT outcome FROM admin_audit_log WHERE audit_id = 'aud_seed'").get().outcome, "SUCCESS");
       // The v11 CHECK now accepts a dispute action the v10 log refused; append-only still holds.
       upgraded.prepare("INSERT INTO admin_audit_log (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json) VALUES ('aud_d', 'SYSTEM', NULL, 'DISPUTE_OPENED', 'usr_seed', NULL, '2026-01-02', 'SUCCESS', '{}')").run();

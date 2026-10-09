@@ -95,7 +95,7 @@ function audits(service, actionType) {
 describe("Phase 30 schema (trust tables, no money)", () => {
   it("opens at v11 with the trust tables and widened audit vocabulary", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 11);
+    assert.equal(SCHEMA_VERSION, 12);
     for (const table of ["marketplace_reports", "marketplace_blocks"]) {
       assert.ok(service.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table);
     }

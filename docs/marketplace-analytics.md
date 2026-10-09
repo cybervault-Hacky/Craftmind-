@@ -25,6 +25,17 @@ the bearer token and runs each request inside the shared serialized read transac
 consistent snapshot. No request body is read and **no `userId`/`creatorId` parameter is ever consulted** — the scope
 key for the personal view is the session, and the overview is not account-scoped at all.
 
+### Added by Phase 32 (same endpoint, no new analytics engine)
+
+Referral attribution is the only *marketing* activity the platform records, so it is derived here rather than measured
+by a second service: `operations.referrals`, `trends.referralsAttributed`, and the personal
+`creatorAnalytics.referrals` block. See
+[Referral tracking & campaign attribution](referrals-and-attribution.md) for the definitions and the counting rule
+(each referred account once, at observation). `unavailable` gained `conversionRate` (no impression/click source) and
+`referralRewards` (no payouts), and `excluded` gained `referralCodes`, `referralRelationships`, and `referralEmails`.
+The Phase 31 contract above is unchanged: same response shape, same windows, same `400 INVALID_REQUEST` on a bad
+`window`, unknown query parameters still ignored.
+
 ## Metric definitions (authoritative)
 
 Every response embeds a `definitions` object; these are the meanings, stated so a consumer never re-derives them:

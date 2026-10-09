@@ -49,11 +49,18 @@ export const UNAVAILABLE_METRICS = Object.freeze([
   Object.freeze({ key: "engagement", reason: "Clicks and interactions with listings are not tracked; there is no event source to aggregate." }),
   Object.freeze({ key: "ratings", reason: "No review or rating service exists yet (the creator/server capability flags remain FUTURE)." }),
   Object.freeze({ key: "revenue", reason: "Monetization is out of scope: no money field is read, so no revenue figure exists to report." }),
+  // Phase 31 metrics that Phase 32 explicitly does NOT create. `conversionRate` is the trap this phase refuses:
+  // attributed registrations are a numerator with no measured denominator, so any rate would be invented arithmetic.
+  Object.freeze({ key: "conversionRate", reason: "Attribution records claims but not visits or impressions, so there is no measured denominator for a conversion rate." }),
+  Object.freeze({ key: "referralRewards", reason: "Referral rewards are deferred monetization (Phases 28-29): a referral grants nothing, so there is no reward, payout, or spend to report." }),
 ]);
 
 /** Signals that are captured elsewhere and deliberately kept out of analytics. */
 export const EXCLUDED_FROM_ANALYTICS = Object.freeze([
   "rateLimitCounts", "abuseIndicators", "securityIncidents", "auditLog", "reporterIdentity", "reportNotes",
+  // Phase 32: a referral code is a shareable handle and the attribution row names two accounts. Neither belongs in a
+  // global aggregate, where a rare code or a one-person campaign could single an account out by inference.
+  "referralCodes", "referralRelationships", "referralEmails",
 ]);
 
 /** Precise meaning of every reported metric, embedded in each response so numbers are never re-interpreted wrongly. */
@@ -74,6 +81,11 @@ export const DEFINITIONS = Object.freeze({
   "revisions.requests": "Rows in milestone_revision_requests (REVISION or SCOPE_CHANGE).",
   "disputes": "Roll-ups over order_disputes by status/outcome/reason category. No text, parties, or ids.",
   "reports": "Roll-ups over marketplace_reports by category/state. No reporter, target, note, or subject id.",
+  // Phase 32. The wording matters: "attributed" counts accounts, not claim attempts.
+  "referrals.total": "Rows in referral_attributions — one per *referred account*, so repeated claims of one code count once, never once per event.",
+  "referrals.verified": "Attribution where both server-side account facts hold: the referred account has verified its own email (`users.email_verified_at`) and the referrer's account is ACTIVE. No client can assert either.",
+  "referrals.observed": "Attribution recorded from a valid claim that is not verified — the referrer's account is not live. Reported as its own number; never promoted silently into `verified`.",
+  "referrals.bySource": "Attribution counted per existing `referral_source` answer, over the selected window. No code, account, or pair is exposed.",
   activity: "Counts of events whose recorded timestamp falls within the selected window; the window end is `generatedAt`.",
   window: "Bounded range: N calendar days up to `generatedAt` (UTC), or all-time when window is `all`.",
 });
@@ -186,6 +198,9 @@ export function overviewAnalytics(database, filters, { now = Date.now() } = {}) 
     ordersCreated: dailyTrend(database, "orders", "created_at", since),
     ordersCompleted: dailyTrend(database, "orders", "completed_at", since, { extraWhere: "status = 'COMPLETED'" }),
     listingsPublished: dailyTrend(database, "marketplace_listings", "published_at", since, { extraWhere: "status = 'PUBLISHED'" }),
+    // Attributed registrations per UTC day. Bucketed on `observed_at` because that is when the claim was recorded;
+    // days with no attribution are absent, not zero-filled.
+    referralsAttributed: dailyTrend(database, "referral_attributions", "observed_at", since),
   };
 
   // --- Operations roll-ups. Category/state only; no subject ids, reporters, targets, notes, or text. ---
@@ -209,6 +224,26 @@ export function overviewAnalytics(database, filters, { now = Date.now() } = {}) 
     byCategory: Object.freeze(reportCategory),
   };
 
+  // Phase 32 referral attribution. `referral_attributions` is one row per referred account, so this counts
+  // registrations once no matter how often a code is claimed — the opposite of summing claim events. Only the state
+  // split and the existing source vocabulary are exposed; no code, no account, and never a (referrer, referred) pair.
+  const referralStatus = Object.fromEntries(
+    database.prepare("SELECT status AS k, COUNT(*) AS c FROM referral_attributions GROUP BY status").all().map((r) => [r.k, r.c]),
+  );
+  const referralSource = Object.fromEntries(
+    database.prepare(
+      `SELECT source AS k, COUNT(*) AS c FROM referral_attributions WHERE 1=1${time("observed_at")} GROUP BY source`,
+    ).all(...tp).map((r) => [r.k, r.c]),
+  );
+  const referrals = {
+    total: countRows(database, "SELECT COUNT(*) AS count FROM referral_attributions"),
+    verified: referralStatus.VERIFIED ?? 0,
+    observed: referralStatus.OBSERVED ?? 0,
+    attributedInWindow: countRows(database, `SELECT COUNT(*) AS count FROM referral_attributions WHERE 1=1${time("observed_at")}`, tp),
+    distinctCampaigns: countRows(database, `SELECT COUNT(DISTINCT campaign) AS count FROM referral_attributions WHERE campaign IS NOT NULL${time("observed_at")}`, tp),
+    bySource: Object.freeze(referralSource),
+  };
+
   return Object.freeze({
     scope: "marketplace_global_aggregates",
     generatedAt: nowIso(now),
@@ -216,7 +251,7 @@ export function overviewAnalytics(database, filters, { now = Date.now() } = {}) 
     snapshot: Object.freeze({ listings, jobs, orders, proposals, milestones }),
     activity: Object.freeze(activity),
     trends: Object.freeze(trends),
-    operations: Object.freeze({ disputes, reports }),
+    operations: Object.freeze({ disputes, reports, referrals }),
     unavailable: UNAVAILABLE_METRICS,
     excluded: EXCLUDED_FROM_ANALYTICS,
     definitions: DEFINITIONS,
@@ -292,11 +327,37 @@ export function creatorAnalytics(database, userId, filters, { now = Date.now() }
   const disputeStatus = Object.fromEntries(database.prepare("SELECT status AS k, COUNT(*) AS c FROM order_disputes WHERE opened_by = ? OR other_participant = ? GROUP BY status").all(userId, userId).map((r) => [r.k, r.c]));
   const disputes = { total: countRows(database, "SELECT COUNT(*) AS count FROM order_disputes WHERE opened_by = ? OR other_participant = ?", [userId, userId]), open: disputeStatus.OPEN ?? 0, resolved: disputeStatus.RESOLVED ?? 0 };
 
+  // Phase 32 referral posture for this account only. Whether a code exists, and how many attributed registrations
+  // point at it, are the account's own facts; the *code itself* is deliberately not echoed here (it is readable at
+  // its own endpoint), and the identity of anyone who used it is never included in either direction.
+  const hasReferralCode = database.prepare("SELECT 1 AS present FROM referral_codes WHERE user_id = ?").get(userId)?.present === 1;
+  const outbound = Object.fromEntries(
+    database.prepare("SELECT status AS k, COUNT(*) AS c FROM referral_attributions WHERE referrer_user_id = ? GROUP BY status").all(userId).map((r) => [r.k, r.c]),
+  );
+  const inbound = Object.fromEntries(
+    database.prepare("SELECT status AS k, COUNT(*) AS c FROM referral_attributions WHERE referred_user_id = ? GROUP BY status").all(userId).map((r) => [r.k, r.c]),
+  );
+  const referrals = Object.freeze({
+    hasCode: hasReferralCode,
+    attributedRegistrations: Object.freeze({
+      total: (outbound.OBSERVED ?? 0) + (outbound.VERIFIED ?? 0),
+      observed: outbound.OBSERVED ?? 0,
+      verified: outbound.VERIFIED ?? 0,
+    }),
+    // This account as the *referred* party. Status only: the referrer is never named back.
+    received: Object.freeze({
+      total: (inbound.OBSERVED ?? 0) + (inbound.VERIFIED ?? 0),
+      observed: inbound.OBSERVED ?? 0,
+      verified: inbound.VERIFIED ?? 0,
+    }),
+  });
+
   return Object.freeze({
     scope: "self_only",
     generatedAt: nowIso(now),
     window: Object.freeze({ label: filters.window, days: filters.days, sinceIso: since }),
     account: Object.freeze({ hasCreatorProfile: creatorId !== null, profileStatus: profile?.status ?? null, verificationStatus: profile?.verificationStatus ?? null }),
+    referrals,
     snapshot: Object.freeze({ listings, proposals, orders }),
     activity: Object.freeze({ milestonesApproved, milestoneTotal, deliverySubmissions, ordersWithDeliveries, revisionRequests }),
     disputes: Object.freeze(disputes),

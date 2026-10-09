@@ -131,6 +131,10 @@ export const ErrorCode = Object.freeze({
   MARKETPLACE_BLOCKED: "MARKETPLACE_BLOCKED",
   MARKETPLACE_BLOCK_NOT_FOUND: "MARKETPLACE_BLOCK_NOT_FOUND",
 
+  // Phase 32 referral and campaign attribution. Only one code is added: an unrecognized, own, or otherwise unusable
+  // referral code is deliberately *not* a distinct code, so the API can never be queried as an existence oracle.
+  REFERRAL_CLAIM_CONFLICT: "REFERRAL_CLAIM_CONFLICT",
+
   // Phase 20 security event, incident, and automated response layer
   SECURITY_EVENT_INVALID: "SECURITY_EVENT_INVALID",
   SECURITY_ACTION_UNKNOWN: "SECURITY_ACTION_UNKNOWN",
@@ -258,6 +262,7 @@ const STATUS_BY_CODE = Object.freeze({
   [ErrorCode.ORDER_DISPUTED]: 409,
   [ErrorCode.MARKETPLACE_BLOCKED]: 403,
   [ErrorCode.MARKETPLACE_BLOCK_NOT_FOUND]: 404,
+  [ErrorCode.REFERRAL_CLAIM_CONFLICT]: 409,
   [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
@@ -368,6 +373,7 @@ const SAFE_MESSAGES = Object.freeze({
   [ErrorCode.ORDER_DISPUTED]: "This order has an open dispute, so it cannot be completed or cancelled while the dispute is open. Resolve or withdraw the dispute first. No money moves in this phase.",
   [ErrorCode.MARKETPLACE_BLOCKED]: "A block between these two accounts prevents this connection.",
   [ErrorCode.MARKETPLACE_BLOCK_NOT_FOUND]: "No block matches that request, so nothing was changed.",
+  [ErrorCode.REFERRAL_CLAIM_CONFLICT]: "This account already carries a referral attribution, and attribution is not overwritten. Nothing was changed.",
   [ErrorCode.NETWORK_ERROR]: "The account service could not complete the network request.",
   [ErrorCode.BACKEND_UNAVAILABLE]: "The account service cannot serve this request right now.",
   [ErrorCode.UNKNOWN_ERROR]: "The account service could not complete this request.",

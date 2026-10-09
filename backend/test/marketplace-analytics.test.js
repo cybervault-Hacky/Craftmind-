@@ -172,7 +172,7 @@ describe("Phase 31 analytics routing and session authorization", () => {
     const service = await newService();
     const a = await account(service, `ana-${sfx()}@example.test`);
     // Phase 30 left the schema at v11 with 102 registered action types; analytics must not move either.
-    assert.equal(SCHEMA_VERSION, 11);
+    assert.equal(SCHEMA_VERSION, 12);
     assert.equal(REGISTERED_AUDIT_ACTION_TYPES.size, 102);
     const before = service.database.prepare("SELECT COUNT(*) AS count FROM admin_audit_log").get().count;
     for (let i = 0; i < 5; i += 1) { await overview(service, a.accessToken); await creatorView(service, a.accessToken); }

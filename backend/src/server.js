@@ -113,6 +113,12 @@ import {
   creatorAnalyticsForSession,
   overviewAnalyticsForSession,
 } from "./marketplace-analytics-api.js";
+import {
+  claimReferralForSession,
+  confirmReferralForSession,
+  myReferralSummaryForSession,
+  referralCodeForSession,
+} from "./referrals-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -357,6 +363,9 @@ function routeSecurityCategory(pathKey) {
   // Phase 31 analytics reads are session-scoped over the caller's own relationships (and a global, non-identifying
   // overview that still requires a session), so they share the SESSION category with the trust routes above.
   if (pathKey.startsWith("/marketplace/analytics")) return "SESSION";
+  // Phase 32 referral routes are self-only session writes and reads. They are NOT registration routes: a referral
+  // claim can never create or reach an account, so it stays out of the credential-attack categories entirely.
+  if (pathKey.startsWith("/marketing/referrals")) return "SESSION";
   return "REQUEST";
 }
 
@@ -951,6 +960,37 @@ export function createAccountService({ database, configuration, logger = console
       consumeLimit(limits, "analytics-read", request, "", configuration.rateLimit.creatorProfileRead);
       const searchParams = new URL(request.url ?? "/", "http://analytics.local").searchParams;
       return { status: 200, payload: creatorAnalyticsForSession(database, configuration, token, searchParams) };
+    }],
+    // Phase 32 referrals and campaign attribution. All four are session-scoped and self-only: identity is the bearer
+    // token, no route takes an account id, and there is deliberately no administrative or listing surface here. Writes
+    // borrow the tight trust-write budget under their own `referral-write` bucket, so claim attempts are bounded per
+    // origin without adding a new knob to the environment, and a referral burst cannot spend the trust or order budget.
+    ["POST /marketing/referrals/code", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: referralCodeForSession(database, configuration, token) };
+    }],
+    ["POST /marketing/referrals/claim", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      const payload = claimReferralForSession(database, configuration, token, body);
+      // 201 the first time an account is attributed; 200 when the same code is re-submitted, which changes nothing.
+      return { status: payload.idempotent ? 200 : 201, payload };
+    }],
+    ["POST /marketing/referrals/verify", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: confirmReferralForSession(database, configuration, token) };
+    }],
+    ["GET /marketing/referrals/me", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: myReferralSummaryForSession(database, configuration, token) };
     }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],

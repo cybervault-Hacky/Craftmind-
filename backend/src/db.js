@@ -1284,6 +1284,67 @@ const MIGRATIONS = [
          BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
     ],
   },
+  {
+    // Phase 32: referral identifiers and marketing campaign attribution.
+    //
+    // Two new tables and nothing else — no existing table is rebuilt. The audit log is deliberately left alone:
+    // a referral relationship is private between exactly two accounts, so copying it into the append-only audit log
+    // would create a second, much broader place where that relationship can be read (the log is developer-visible by
+    // design). The attribution row *is* the durable record, timestamps and all, so this phase needs no new action
+    // types and no `CHECK` widening — `SCHEMA_VERSION` moves for the tables, not to make the phase look larger.
+    //
+    // `referral_codes` is 1:1 with an account and holds only an opaque CSPRNG code that is not derived from the
+    // account id, the email, or a counter, so codes cannot be guessed or enumerated. `referral_attributions` is 1:1
+    // with the *referred* account, and that UNIQUE is what makes "count each registration once" and "a later claim
+    // cannot silently overwrite an earlier one" database facts rather than conventions. A BEFORE UPDATE trigger
+    // freezes every column except the one-way OBSERVED -> VERIFIED promotion. Campaign fields are CHECK-constrained
+    // to lowercase token shapes that structurally cannot carry a URL, a query string, or a credential.
+    version: 12,
+    statements: [
+      `CREATE TABLE referral_codes (
+         code TEXT PRIMARY KEY
+           CHECK (length(code) = 15 AND substr(code, 1, 3) = 'CM-' AND substr(code, 4) NOT GLOB '*[^0-9A-F]*'),
+         user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL
+       )`,
+      `CREATE TABLE referral_attributions (
+         attribution_id TEXT PRIMARY KEY,
+         referred_user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+         referrer_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         code TEXT NOT NULL REFERENCES referral_codes(code) ON DELETE CASCADE,
+         source TEXT NOT NULL CHECK (source IN (
+           'YOUTUBE', 'INSTAGRAM', 'GOOGLE', 'REDDIT', 'DISCORD', 'FRIEND_REFERRAL', 'MINECRAFT_COMMUNITY', 'OTHER'
+         )),
+         medium TEXT CHECK (medium IS NULL OR (length(medium) BETWEEN 1 AND 40 AND medium NOT GLOB '*[^a-z0-9-]*')),
+         campaign TEXT CHECK (campaign IS NULL OR (length(campaign) BETWEEN 1 AND 64 AND campaign NOT GLOB '*[^a-z0-9_-]*')),
+         status TEXT NOT NULL DEFAULT 'OBSERVED' CHECK (status IN ('OBSERVED', 'VERIFIED')),
+         observed_at TEXT NOT NULL,
+         verified_at TEXT,
+         -- A referral is a relationship between two different accounts; self-attribution is unrepresentable.
+         CHECK (referrer_user_id <> referred_user_id),
+         -- The status and its timestamp are one fact, not two that can disagree.
+         CHECK ((status = 'OBSERVED' AND verified_at IS NULL) OR (status = 'VERIFIED' AND verified_at IS NOT NULL))
+       )`,
+      `CREATE INDEX referral_attributions_by_referrer ON referral_attributions(referrer_user_id, status, observed_at)`,
+      `CREATE INDEX referral_attributions_by_observed ON referral_attributions(observed_at)`,
+      // Everything but the one-way promotion is frozen, enforced by the database and not only by the service.
+      `CREATE TRIGGER referral_attributions_immutable BEFORE UPDATE ON referral_attributions
+         BEGIN SELECT RAISE(ABORT, 'referral attribution is immutable once recorded')
+          WHERE NEW.attribution_id <> OLD.attribution_id
+             OR NEW.referred_user_id <> OLD.referred_user_id
+             OR NEW.referrer_user_id <> OLD.referrer_user_id
+             OR NEW.code <> OLD.code
+             OR NEW.source <> OLD.source
+             OR COALESCE(NEW.medium, '') <> COALESCE(OLD.medium, '')
+             OR COALESCE(NEW.campaign, '') <> COALESCE(OLD.campaign, '')
+             OR NEW.observed_at <> OLD.observed_at
+             OR OLD.status = 'VERIFIED'
+             OR (NEW.status = 'VERIFIED' AND NEW.verified_at IS NULL)
+             OR (NEW.status = 'OBSERVED' AND NEW.verified_at IS NOT NULL);
+         END`,
+    ],
+  },
 ];
 
 export const AUDIT_ACTION_TYPES = Object.freeze({

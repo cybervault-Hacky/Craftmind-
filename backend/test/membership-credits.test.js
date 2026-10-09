@@ -942,9 +942,9 @@ describe("Phase 22 migration and data preservation", () => {
       "security_events", "security_actions", "security_notifications", "security_rate_limit_state"]) {
       assert.equal(tables.includes(preserved), true, preserved);
     }
-    assert.equal(SCHEMA_VERSION, 11);
+    assert.equal(SCHEMA_VERSION, 12);
     const health = await call(service.baseUrl, "GET", "/health");
-    assert.equal(health.body.schemaVersion, 11);
+    assert.equal(health.body.schemaVersion, 12);
     // The one audit log stays append-only, with all three of its triggers recreated by the v5 rebuild.
     const triggers = service.database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all().map((row) => row.name);
     for (const trigger of ["admin_audit_log_no_update", "admin_audit_log_no_delete", "admin_audit_log_no_replacement",
@@ -997,8 +997,8 @@ describe("Phase 22 migration and data preservation", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 4").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 11);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 11);
+    assert.equal(SCHEMA_VERSION, 12);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 12);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 4").get().applied_at, appliedAt);
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_legacy'").get().display_name, "Legacy");
     assert.equal(database.prepare("SELECT device_label FROM sessions WHERE session_id = 'ses_legacy'").get().device_label, "Legacy device");

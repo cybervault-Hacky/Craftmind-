@@ -360,6 +360,53 @@ stand up a second analytics store, add a table or migration, or introduce a new 
   `python3 scripts/check_website.py` → PASS (41 pages, website unchanged); `python3 scripts/check_release_config.py` → PASS;
   `node --check` → PASS. `ANDROID_BUILD = NOT_RUN`. No browser/device E2E, deployment, external review, or provider call is claimed.
 
+## Phase 32 — referral tracking & marketing campaign attribution
+
+Phase 32 records **who brought whom** and **which campaign a claimed account arrived with**, on the existing
+session-authenticated architecture: a CSPRNG code per account, one immutable attribution per referred account, and
+three normalized campaign fields. No rewards, no payouts, no cash referral program — a referral is stored as a fact,
+not as a debt. Full contract: [`docs/referrals-and-attribution.md`](docs/referrals-and-attribution.md).
+
+- **Four self-only routes, no new identity surface.** `POST /marketing/referrals/code` (idempotent: one code per
+  account, ever), `POST /marketing/referrals/claim`, `POST /marketing/referrals/verify`, and
+  `GET /marketing/referrals/me`. Identity is always the bearer token; the referrer is resolved from the **code row**
+  by the server, and `strictBody` means `{"userId":…}`, `{"referrerUserId":…}` or `{"status":"VERIFIED"}` is a
+  refusal rather than something to be second-guessed.
+- **Integrity is enforced by the database.** `UNIQUE (referred_user_id)` means one attribution per account with no
+  check-then-insert window (five concurrent claims converge on one row), `CHECK (referrer_user_id <> referred_user_id)`
+  makes self-referral unrepresentable, and a `BEFORE UPDATE` trigger freezes a finalized attribution — everything
+  except the one-way `OBSERVED → VERIFIED` promotion, so a recorded relationship can never be quietly re-pointed.
+- **Observed and verified are different facts, in storage and in every response.** `OBSERVED` means a valid claim was
+  recorded; `VERIFIED` means two columns the server owns both hold — the referred account's `users.email_verified_at`
+  is non-null **and** the referrer's `users.status = 'ACTIVE'`. Never a client assertion, never mere registration, and
+  `verifiedAt` is the account's real verification time rather than the time someone called the endpoint. An account
+  suspended for abuse stops accumulating verified referrals while the record itself survives.
+- **Campaign fields are labels, not URLs.** `source` reuses the existing `REFERRAL_SOURCES` allowlist from onboarding,
+  so marketing reporting and the signup survey speak one vocabulary; `medium` (≤40) and `campaign` (≤64) are
+  trimmed, lower-cased and pattern-constrained by both the service and a table `CHECK`, so `https://…?ref=SECRET`
+  cannot be stored and over-length input is refused instead of silently truncated. Nothing reads a query string,
+  cookie, `localStorage`, referrer URL or device identifier, and no third-party analytics SDK is introduced.
+- **Privacy is the default response shape.** Unknown, malformed and self-claims return one identical `400`, so the
+  endpoint is not an existence oracle; a referrer sees counts and never a list of who used their code; a referee sees
+  `referrerDisclosed: false` and no id or email; there is no `supporters` field to add later. Private referral
+  relationships are deliberately **not** copied into the developer-visible security audit log — `REGISTERED_AUDIT_ACTION_TYPES`
+  stays 102, and the table is the durable record instead.
+- **Additive v12 migration, extended rather than duplicated analytics.** Two tables, two indexes and one trigger in
+  the repo's existing migration sequence (tested by upgrading a real v11 database that is first asserted to lack both
+  tables), with the referral metrics derived inside the Phase 31 analytics service. Only three numbers moved in
+  existing suites — the schema version, the `schema_migrations` row count, and the `ErrorCode` key count — and every
+  earlier contract (windows, `?window=5d → 400`, unknown query keys ignored) still holds.
+- **Website integration: none, on purpose.** The site already collects a self-reported `referralSource` survey answer,
+  and there is no secure binding to wire: a `?ref=` link needs server-issued link signing, a pre-session verification
+  path, and a disclosure surface in settings — the document names all three as the prerequisite, instead of shipping
+  an attacker-forgeable query parameter and a decorative button.
+- **Verification status:** `cd backend && npm test` → **357/357 pass across 69 suites** (new `referrals.test.js`: 32
+  tests over 9 suites), `python3 scripts/check_website.py` → PASS (41 pages, website unchanged),
+  `python3 scripts/check_release_config.py` → PASS, `node --check` → PASS, `git diff --check` clean.
+  `ANDROID_BUILD = NOT_RUN`. No browser/device E2E, deployment, external review, or payment-provider call is claimed;
+  payments, commissions, refunds, payouts, subscriptions, purchased credits, cash referral rewards and Trusted Seller
+  status remain out of scope, and Phases 28–29 stay deferred.
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.

@@ -206,6 +206,8 @@ describe("account service security", () => {
       "order_milestones",
       "orders",
       "password_recovery_tokens",
+      "referral_attributions",
+      "referral_codes",
       "schema_migrations",
       "security_actions",
       "security_events",

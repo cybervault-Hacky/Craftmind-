@@ -131,6 +131,28 @@ export function newDisputeStatementId() {
   return `dst_${randomUUID()}`;
 }
 
+// Phase 32 — referral codes and campaign attribution. A referral code is the one identifier in this system that a
+// human has to type, paste, or say out loud, so it is deliberately short and unambiguous: `CM-` plus 12 hex
+// characters from the CSPRNG (hex excludes the letters that get confused for digits, and uppercase removes
+// case-for-case mismatch when a code is read back). It is random, not derived from an account id, an email, a
+// handle, or a counter — so a code reveals nothing about its owner and a whole namespace cannot be enumerated.
+export const REFERRAL_CODE_PATTERN = /^CM-[0-9A-F]{12}$/;
+
+export function newReferralCode() {
+  return `CM-${randomBytes(6).toString("hex").toUpperCase()}`;
+}
+
+/** Case- and whitespace-tolerant on the way in, strict on the way through: `cm-1a2b…` resolves, garbage never does. */
+export function normalizeReferralCode(value) {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim().toUpperCase().replace(/\s+/g, "");
+  return REFERRAL_CODE_PATTERN.test(candidate) ? candidate : null;
+}
+
+export function newReferralAttributionId() {
+  return `rat_${randomUUID()}`;
+}
+
 /**
  * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
  * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.
