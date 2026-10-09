@@ -109,6 +109,10 @@ import {
   setDisputePositionForSession,
   withdrawDisputeForSession,
 } from "./order-dispute-api.js";
+import {
+  creatorAnalyticsForSession,
+  overviewAnalyticsForSession,
+} from "./marketplace-analytics-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -350,6 +354,9 @@ function routeSecurityCategory(pathKey) {
   // under /orders/, which the line above routes here.)
   if (pathKey.startsWith("/marketplace/reports") || pathKey.startsWith("/marketplace/blocks")
     || pathKey.startsWith("/marketplace/disputes") || pathKey === "/marketplace/trust") return "SESSION";
+  // Phase 31 analytics reads are session-scoped over the caller's own relationships (and a global, non-identifying
+  // overview that still requires a session), so they share the SESSION category with the trust routes above.
+  if (pathKey.startsWith("/marketplace/analytics")) return "SESSION";
   return "REQUEST";
 }
 
@@ -926,6 +933,24 @@ export function createAccountService({ database, configuration, logger = console
       consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
       const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
       return { status: 200, payload: listMyDisputesForSession(database, configuration, token, searchParams) };
+    }],
+    // Phase 31 analytics. Both are session-scoped aggregate READS (no body, no client-supplied id): the identity
+    // that scopes the personal view is the bearer token, and the overview requires a live session purely so analytics
+    // are not anonymous. They reuse the creator-read budget under a dedicated `analytics-read` bucket, so a burst
+    // here cannot spend the trust or order buckets (and vice versa). No write, no audit, no money.
+    ["GET /marketplace/analytics/overview", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "analytics-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://analytics.local").searchParams;
+      return { status: 200, payload: overviewAnalyticsForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/analytics/creator", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "analytics-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://analytics.local").searchParams;
+      return { status: 200, payload: creatorAnalyticsForSession(database, configuration, token, searchParams) };
     }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],

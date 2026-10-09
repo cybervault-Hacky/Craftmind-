@@ -331,6 +331,35 @@ Phase 19/20 audit/rate-limit/authorization machinery rather than standing up a p
   every module → PASS. `ANDROID_BUILD = NOT_RUN` (no toolchain here). No live deployment, browser/device E2E, external
   security review, or payment-provider call is performed or claimed.
 
+## Phase 31 — marketplace analytics & insights (read-only)
+
+Phase 31 adds a **derived, non-collecting** analytics layer over the same Phase 23–30 tables. It reuses the session
+auth, the `SESSION` security category, the shared read transaction, and the error/rate-limit conventions — it does not
+stand up a second analytics store, add a table or migration, or introduce a new dependency. Full contract:
+[`docs/marketplace-analytics.md`](docs/marketplace-analytics.md).
+
+- **Two authorized reads.** `GET /marketplace/analytics/overview` returns coarse whole-marketplace aggregates (listing
+  and job counts, order lifecycle totals, milestone/delivery/revision activity, and dispute/report roll-ups by
+  category/state). `GET /marketplace/analytics/creator` returns an account's **own** listings, submitted proposals,
+  creator-side orders, milestone/delivery/revision work, and disputes it is a party to. Both require a session; neither
+  accepts a client-supplied identity.
+- **Correct by construction.** A completed *order* is counted separately from an approved *milestone*, and one order
+  with several milestones is never fanned out into several orders — order totals read `orders`, while delivery
+  submissions and distinct delivered orders are reported apart. Every metric's definition is embedded in the response.
+- **Honest about gaps.** Signals the platform does not record — listing views, clicks, ratings, revenue — are returned
+  under `unavailable` with a reason, never as a zero that looks like "no activity." Security, abuse, and rate-limit
+  counters are explicitly `excluded`: analytics never read the audit log or security signals, and reads are not audited.
+- **Privacy enforced server-side.** The personal view is scoped by the token, not by any id in the request, so a
+  cross-account read is unrepresentable; the global overview carries no ids or per-account breakdown and cannot
+  enumerate who reported whom. Report notes/reporters/targets and dispute statements/parties are never surfaced.
+- **Analytics-only.** No payments, commissions, refunds, payouts, subscriptions, or purchased credits (Phases 28–29
+  stay deferred), and no website dashboard is fabricated — the site has no authenticated backend-bound dashboard yet,
+  which is documented as the prerequisite rather than worked around insecurely.
+- **Verification status:** `cd backend && npm test` → **325/325 pass across 60 suites** (new `marketplace-analytics.test.js`:
+  19 tests over 7 suites), with no schema change (`SCHEMA_VERSION` stays 11, audit vocabulary stays 102).
+  `python3 scripts/check_website.py` → PASS (41 pages, website unchanged); `python3 scripts/check_release_config.py` → PASS;
+  `node --check` → PASS. `ANDROID_BUILD = NOT_RUN`. No browser/device E2E, deployment, external review, or provider call is claimed.
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
