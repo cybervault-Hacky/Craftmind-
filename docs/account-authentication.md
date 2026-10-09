@@ -36,7 +36,7 @@ One technology, one process, no frameworks: a small **Node.js** service using on
 * `guest_identities` — original anonymous identity/link data is preserved.
 * `email_verification_tokens` and `password_recovery_tokens` — only purpose-separated HMAC-SHA256 token digests, user IDs, issue/expiry/consumption timestamps. Clear tokens are never stored in SQLite.
 
-Every migration runs transactionally and is idempotently tracked. Existing users, sessions, guest identities, and account statuses are preserved. Phase 18 migration v2 contains only account/verification/recovery tables; Phase 19 migration v3 adds the separate developer/control-plane tables documented in [`developer-control-plane.md`](developer-control-plane.md). There are still no subscription, payment, credit, gift, ban/moderation, or marketplace tables.
+Every migration runs transactionally and is idempotently tracked. Existing users, sessions, guest identities, and account statuses are preserved. Phase 18 migration v2 contains only account/verification/recovery tables; Phase 19 migration v3 adds the separate developer/control-plane tables documented in [`developer-control-plane.md`](developer-control-plane.md); Phase 20 migration v4 adds the isolated security-response tables and rebuilds the audit log with an explicit actor kind, documented in [`autonomous-security-response.md`](autonomous-security-response.md). There are still no subscription, payment, credit, gift, ban/moderation, or marketplace tables.
 
 `DATABASE_URL` is a SQLite file path (or `:memory:` in tests only). SQLite is chosen because it is embedded, has no
 network, and needs no second service to run: the smallest thing that genuinely persists accounts.

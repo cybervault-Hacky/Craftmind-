@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="The CraftMind creator public-profile editor interface: it reads the real creator profile state from the account service and refuses to save from the page.">
+  <title>Public profile · Creator studio — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="../../favicon.svg">
+  <link rel="stylesheet" href="../../styles.css">
+  <script type="module" src="../../assets/site.js"></script>
+  <script type="module" src="../../assets/creator-profile.js"></script>
+</head>
+<body data-page="creator-profile-edit">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="../../index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="../../index.html">Home</a>
+        <a href="../../marketplace/index.html">Marketplace</a>
+        <a href="../../membership/index.html">Membership</a>
+        <a href="../../creators/index.html">Creators</a>
+        <a href="../../how-it-works.html">How it works</a>
+        <a href="../../features.html">Features</a>
+        <a href="../../download.html">Download</a>
+        <a href="../../about.html">About</a>
+        <a href="../../faq.html">FAQ</a>
+        <a href="../../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+    <div class="container context-strip">
+      <p class="context-label"><span class="badge badge--muted">Creator studio</span> <span data-context-line="Interface foundation. Listing storage, orders, earnings, and analytics are not implemented."></span></p>
+      <p class="context-current"><span class="subtle">Preview first</span> <a class="text-link" href="../../marketplace/index.html?preview=1">See the marketplace layout</a></p>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="../../index.html">Home</a> <span aria-hidden="true">/</span> <a href="../index.html">Creator studio</a> <span aria-hidden="true">/</span> <span>Public profile</span></p>
+      <p class="eyebrow">PUBLIC PROFILE</p>
+      <h1 id="page-title">How buyers<br>see you.</h1>
+      <p class="lead">A creator profile carries a display name, a handle, a bio, and the categories you work in. Profiles
+      are stored by the account service and owned by the account: the panel below reads your real profile state from it.
+      This page does not write through a browser form yet, so it refuses to save rather than pretend.</p>
+    </section>
+
+    <section class="page-section container">
+      <div class="stack-lg" data-creator-status></div>
+      <div class="app-shell" style="margin-top:26px">
+        <nav class="side-nav" aria-label="Creator studio navigation">
+          <h2 id="creator-nav-title">Creator studio</h2>
+          <ul>
+            <li><a href="../index.html">Dashboard</a></li>
+            <li><a href="../listings/index.html">Listings</a></li>
+            <li><a href="../listings/new.html">Create listing</a></li>
+            <li><a href="../orders/index.html">Orders</a></li>
+            <li><a href="../earnings/index.html">Earnings</a></li>
+            <li><a href="../reviews/index.html">Reviews</a></li>
+            <li><a href="../analytics/index.html">Analytics</a></li>
+            <li><a href="../profile/index.html" aria-current="page">Public profile</a></li>
+            <li><a href="../settings/index.html">Settings</a></li>
+          </ul>
+        </nav>
+        <div class="stack-lg">
+          <div class="panel">
+            <div class="panel-head"><div><h3>Profile details</h3><p class="small muted">Everything a buyer would see on your public profile.</p></div><span class="badge badge--planned">Not available yet</span></div>
+            <form class="stack-lg" data-creator-profile-form novalidate>
+              <div class="field">
+                <label for="creator-display-name">Display name</label>
+                <input class="input" id="creator-display-name" name="displayName" maxlength="40" disabled aria-describedby="creator-display-name-hint">
+                <span class="field-hint" id="creator-display-name-hint">Up to 40 characters. Saving from this page is not implemented yet.</span>
+              </div>
+              <div class="field">
+                <label for="creator-bio">Bio</label>
+                <textarea class="textarea" id="creator-bio" name="bio" maxlength="600" disabled aria-describedby="creator-bio-hint"></textarea>
+                <span class="field-hint" id="creator-bio-hint">Up to 600 characters. Nothing you type is uploaded or stored.</span>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="creator-primary-category">Primary category</label>
+                  <select class="select" id="creator-primary-category" name="primaryCategory" disabled>
+                    <option value="">Choose…</option>
+                    <option value="Structures">Structures</option>
+                    <option value="Landscaping">Landscaping</option>
+                    <option value="Interiors">Interiors</option>
+                    <option value="Redstone">Redstone</option>
+                  </select>
+                  <span class="field-hint">Used to group your listings.</span>
+                </div>
+                <div class="field">
+                  <label for="creator-links">Profile links</label>
+                  <input class="input" id="creator-links" name="links" maxlength="200" disabled aria-describedby="creator-links-hint">
+                  <span class="field-hint" id="creator-links-hint">Optional. Links are validated before publishing once that exists.</span>
+                </div>
+              </div>
+              <div class="state-actions">
+                <button type="submit" class="button button-primary" disabled>Save profile · not available</button>
+                <a class="button button-secondary" href="../../creators/profile.html">See the public profile layout</a>
+              </div>
+            </form>
+          </div>
+          <div class="banner banner--planned" role="note">
+            <span class="banner-mark">DISABLED ON PURPOSE</span>
+            <p>The fields above are disabled rather than editable-and-unsavable, so nothing you type can be lost or
+            mistaken for a saved profile. The creator service implements profile creation and updates over its API; saving
+            from this page is a later phase, and the panel above always shows what the server actually holds.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="../../index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="../../marketplace/index.html">Marketplace</a>
+        <a href="../../membership/index.html">Membership</a>
+        <a href="../../creator/index.html">Creator studio</a>
+        <a href="../../account/index.html">Account</a>
+        <a href="../../privacy.html">Privacy</a>
+        <a href="../../terms.html">Terms</a>
+        <a href="../../download.html">Download</a>
+        <a href="../../faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

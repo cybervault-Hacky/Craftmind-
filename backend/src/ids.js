@@ -40,6 +40,112 @@ export function newGrantId() {
   return `grt_${randomUUID()}`;
 }
 
+export function newSecurityEventId() {
+  return `sev_${randomUUID()}`;
+}
+
+export function newSecurityIncidentId() {
+  return `inc_${randomUUID()}`;
+}
+
+export function newSecurityActionId() {
+  return `act_${randomUUID()}`;
+}
+
+export function newSecurityNotificationId() {
+  return `ntf_${randomUUID()}`;
+}
+
+export function newSecurityProtectionId() {
+  return `prt_${randomUUID()}`;
+}
+
+export function newMembershipId() {
+  return `mbr_${randomUUID()}`;
+}
+
+export function newMembershipTransitionId() {
+  return `mtr_${randomUUID()}`;
+}
+
+export function newCreditTransactionId() {
+  return `crd_${randomUUID()}`;
+}
+
+export function newCreatorId() {
+  return `crt_${randomUUID()}`;
+}
+
+export function newCreatorHistoryId() {
+  return `cth_${randomUUID()}`;
+}
+
+export function newServerId() {
+  return `srv_${randomUUID()}`;
+}
+
+export function newServerMemberId() {
+  return `svm_${randomUUID()}`;
+}
+
+export function newListingId() {
+  return `lst_${randomUUID()}`;
+}
+
+export function newJobId() {
+  return `job_${randomUUID()}`;
+}
+
+export function newProposalId() {
+  return `prp_${randomUUID()}`;
+}
+
+export function newOrderId() {
+  return `ord_${randomUUID()}`;
+}
+
+export function newMilestoneId() {
+  return `mil_${randomUUID()}`;
+}
+
+export function newDeliveryId() {
+  return `dlv_${randomUUID()}`;
+}
+
+export function newRevisionId() {
+  return `rev_${randomUUID()}`;
+}
+
+/**
+ * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
+ * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.
+ */
+export function securitySourceDigest(authSecret, address) {
+  return createHmac("sha256", authSecret)
+    .update("craftmind:security-source-v1:", "utf8")
+    .update(String(address ?? "unknown"), "utf8")
+    .digest("hex")
+    .slice(0, 40);
+}
+
+/**
+ * Opaque account correlation handle used when a failed authentication names an account that does not (or may not)
+ * exist. Security detection must be able to count repeated attempts against the same address without storing the
+ * address itself, so only this keyed digest is ever written.
+ */
+export function securityAccountDigest(authSecret, canonicalEmail) {
+  return `ref_${createHmac("sha256", authSecret)
+    .update("craftmind:security-account-v1:", "utf8")
+    .update(String(canonicalEmail ?? "unknown"), "utf8")
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
+/** Opaque incident handle shown to developers (for example `SEC-4F2C91A7`); never derived from account data. */
+export function newIncidentReference() {
+  return `SEC-${randomBytes(5).toString("hex").toUpperCase()}`;
+}
+
 export function newToken() {
   return randomBytes(TOKEN_BYTES).toString("base64url");
 }
@@ -55,6 +161,25 @@ export function developerTokenDigest(authSecret, purpose, token) {
     .update(`craftmind:developer:${purpose}:`, "utf8")
     .update(token, "utf8")
     .digest("base64url");
+}
+
+/**
+ * Idempotency handle for a credit operation.
+ *
+ * A client-supplied idempotency key is never stored as presented: the database keeps `HMAC(AUTH_SECRET, user ‖
+ * operation ‖ key)`, exactly like session and one-time tokens. A stolen database copy therefore cannot be used to
+ * replay a credit operation or to learn the key a client sent, and the same key from a different account or for a
+ * different operation can never collide.
+ */
+export function creditOperationDigest(authSecret, { userId, operation, idempotencyKey }) {
+  return `cred_${createHmac("sha256", authSecret)
+    .update("craftmind:credit-operation-v1:", "utf8")
+    .update(String(userId ?? ""), "utf8")
+    .update("\u0000", "utf8")
+    .update(String(operation ?? ""), "utf8")
+    .update("\u0000", "utf8")
+    .update(String(idempotencyKey ?? ""), "utf8")
+    .digest("hex")}`;
 }
 
 /** Purpose-separated digest for email verification and password-recovery tokens. */

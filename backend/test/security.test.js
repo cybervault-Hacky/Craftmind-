@@ -179,6 +179,12 @@ describe("account service security", () => {
 
     assert.deepEqual(tables, [
       "admin_audit_log",
+      "buyer_jobs",
+      "buyer_onboarding",
+      "creator_profiles",
+      "creator_status_history",
+      "credit_ledger",
+      "credit_operation_keys",
       "developer_access_grants",
       "developer_accounts",
       "developer_action_confirmations",
@@ -186,12 +192,33 @@ describe("account service security", () => {
       "developer_sessions",
       "email_verification_tokens",
       "guest_identities",
+      "job_proposals",
+      "marketplace_listings",
+      "membership_accounts",
+      "membership_transitions",
+      "milestone_deliveries",
+      "milestone_revision_requests",
+      "order_milestones",
+      "orders",
       "password_recovery_tokens",
       "schema_migrations",
+      "security_actions",
+      "security_events",
+      "security_incidents",
+      "security_notifications",
+      "security_rate_limit_state",
+      "seller_onboarding",
+      "server_members",
+      "server_workspaces",
       "sessions",
       "users",
     ]);
-    for (const forbidden of ["subscription", "payment", "credit", "gift", "ban", "marketplace"]) {
+    // Phase 22 added an internal membership and build-credit ledger, so `credit` is no longer a forbidden substring —
+    // the ban exists to stop a *payment* system appearing without its phase. Phase 25 added `marketplace_listings`
+    // by name (listings and discovery only: no checkout, no price, no settlement), so `marketplace` is no longer a
+    // forbidden substring either. Those payment words remain forbidden, and the credit tables are internal
+    // allocations with no purchase, price, or settlement behind them.
+    for (const forbidden of ["subscription", "payment", "gift", "ban", "invoice", "price", "payout"]) {
       assert.equal(
         tables.some((name) => name.includes(forbidden)),
         false,

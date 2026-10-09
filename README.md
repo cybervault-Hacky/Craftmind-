@@ -130,7 +130,7 @@ same implementations as Phases 1–14. Full detail:
 - **Minecraft screen with honest states.** `MinecraftConnectionSummary` maps the real profile, session, detector, selector, resolver, and certification gate onto 12 stages — including disconnected, detecting runtime, runtime changed, session expired, compatible, experimental, and incompatible — and offers only the actions that apply. A certified target reads `Minecraft Java · 1.20.1 · Fabric · Compatible · Certified production target`; an experimental one reads `Experimental · Runtime certification not performed · Building unavailable`.
 - **Settings and About.** Settings is Appearance / AI providers / Minecraft / Data / About, with keys always masked and the Keystore-backed credential handling untouched. About states the developer (Sarthak Bharambe), the application ID, version and versionCode from the installed build, the certified target, acknowledgements, licences, and the Privacy/Terms/website entries — and claims no company, team, office, history, customers, investors, partnerships, awards, funding, or certification; Terms is marked as a draft requiring final legal review.
 - **Accessibility and motion are requirements.** AA contrast in both palettes, ≥48dp touch targets everywhere, labels and content descriptions, keyboard/focus behaviour, honest error wording, and a real reduced-motion observer that collapses every duration to zero while state changes still render. No looping, glowing, particle, or decorative animation exists anywhere.
-- **Website: eight pages, not one.** `index`, `how-it-works`, `features`, `download`, `about`, `faq`, `privacy`, and `terms` share one navigation (`Home / How it works / Features / Download / About / FAQ`) and one footer, in a dependency-free static site with no JavaScript, no remote fonts, no analytics, and no CDN requests. `scripts/check_website.py` enforces the architecture, honest copy, and the download policy.
+- **Website: eight pages, not one.** `index`, `how-it-works`, `features`, `download`, `about`, `faq`, `privacy`, and `terms` share one navigation (`Home / How it works / Features / Download / About / FAQ`) and one footer, in a dependency-free static site with no remote fonts, no analytics, and no CDN requests. `scripts/check_website.py` enforced the architecture, honest copy, and the download policy. (Phase 15 shipped these pages with no JavaScript at all; Phase 21 later added progressive-enhancement modules and the new sections — see the Phase 21 section below.)
 - **Download stays unavailable.** No signed APK exists, so `download.html` owns the site's single disabled `DOWNLOAD APK` control and the copy says the release has not yet been built, installed, or published. No APK, AAB, keystore, or key material is committed, and GitHub is not the primary download path.
 - **Status in this build:** `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution in this environment), `REAL_RUNTIME_TESTS = NOT_PERFORMED`. Verification in this phase: design-system tests 15/15 PASS, the JVM suite at 358 run / 5 known-pre-existing failures before the sandbox was reset, the website and release-configuration checks PASS, and whole-tree Kotlin syntax plus raw-colour scans clean. Compose rendering and the instrumented tests were not executed here.
 
@@ -174,6 +174,120 @@ Phase 19 supersedes Phase 18's prior out-of-scope note **only** by adding a dist
 - **Provider-neutral AI only.** An injected adapter can propose at most one registered role-filtered tool. It receives no database/configuration/secrets; unknown/malformed proposals fail, and high-impact actions still need separate operator confirmation. No adapter or live provider integration is bundled; deterministic fake providers exercise the boundary.
 - **Migration/security.** SQLite schema v3 adds isolated developer accounts/sessions/bootstrap state, audited confirmations/grants, and an append-oriented audit log. Developer rate limits are configurable and currently in-memory/process-local. The dashboard is not linked from the eight-page public website; Android remains Home / Builds / Minecraft / Settings and includes no developer credentials or AI key.
 - **Verification status:** `cd backend && npm test` → 73/73 passed; backend JavaScript syntax checks, `python3 scripts/check_website.py` (8 pages), `python3 scripts/check_release_config.py`, and `git diff --check` passed. Android build/device tests, live AI/email provider calls, hosted network integration, an independent security audit, and production deployment are not claimed.
+
+## Phase 20 — Autonomous security response and threat detection
+
+Phase 20 adds a self-contained backend security layer to the account service: it watches authentication, session,
+rate-limit, authorization, and request patterns, and answers a predefined set of bounded threats immediately — with no
+human, no AI provider, and no external service in the detection or response path. Full contracts:
+[`docs/autonomous-security-response.md`](docs/autonomous-security-response.md).
+
+- **Closed, sanitized event model.** Fifteen registered event types feed one normalization boundary; unregistered,
+  oversized, or malformed signals are rejected. Credential-shaped values are redacted before storage, and no raw client
+  address or account identifier is ever written — sources and unknown accounts are keyed through keyed HMAC digests.
+- **Deterministic detection.** Eight explainable counting rules (brute force, developer sign-in failures, session
+  reuse, rate-limit abuse, unauthorized access, confirmation abuse, malformed requests, request bursts) compare
+  bounded windows against centralized thresholds; risk scoring adds bounded 0–100 context, and every escalation carries
+  the structured reasons that produced it.
+- **Progressive autonomous response.** Plans walk MEDIUM → HIGH → CRITICAL: tighten the specific subject first
+  (account, session, or source), add the subject remedy (session revocation, account protection), and only at CRITICAL
+  temporarily reject the abusive source and raise one developer alert. Every measure is expiring and reversible; a hard
+  rejection is only ever issued for a request source, and nothing can delete, ban, suspend, or change privileges.
+- **Policy-authorized tool registry.** Eight registered tools execute only with an unexpired authorization envelope
+  minted by the policy (`TTL ≤ 60 s`, `actor_kind = SYSTEM_SECURITY`), so a client, a developer session, or the AI can
+  never invoke an automated response directly. Enforced protections reuse the existing typed `RATE_LIMITED` (429 with
+  `Retry-After`) response, and a rejection caused by a protection is not counted as fresh abuse evidence.
+- **Audited and explainable.** Incidents deduplicate per (category, subject) and carry severity, risk score, reasons,
+  the actions taken (applied or benignly skipped), related events, and their audit trail. Retention is bounded: events
+  30 days, notifications 90 days, resolved incidents 180 days, released protections 7 days.
+- **Read-only Security Center.** Seven role-checked, bounded developer tools expose incidents, events, actions, and
+  alerts inside the Phase 19 dashboard. The optional AI summary receives a sanitized brief and may return prose only
+  (`MESSAGE_ONLY`, zero tools); a tool proposal in that mode is refused, and detection and protection work with no AI
+  provider configured at all.
+- **Migration/security.** SQLite schema v4 adds isolated security incidents, events, actions, notifications, and
+  rate-limit state, and rebuilds the audit log with an explicit `actor_kind` and `incident_id` while preserving every
+  existing row and its append-only guarantees.
+- **Verification status:** `cd backend && npm test` → 98/98 passed across 10 suites; `python3 scripts/check_website.py`
+  (8 pages) and `python3 scripts/check_release_config.py` passed. No live deployment, external security review,
+  multi-instance/shared-state test, or live AI/email provider call is claimed.
+
+Phase 21 built the complete interface and state architecture for the marketplace, creator studio, membership, and
+account center **before** any service exists behind them. It adds no marketplace backend, listing storage, search index,
+checkout, subscription, commission, payout, entitlement, or payment provider. Nothing can be bought, sold, published, or
+subscribed to, and every page says so. Full contracts:
+[`docs/marketplace-ui-foundation.md`](docs/marketplace-ui-foundation.md) and §10 of
+[`docs/premium-ui-ux-architecture.md`](docs/premium-ui-ux-architecture.md).
+
+## Phase 21 — marketplace, creator, membership, and account UI foundation
+
+- **Thirty pages on one shell.** Phase 15's eight product pages now share their navigation, footer, and `data-page`
+  controller key with the marketplace (`/marketplace`, `/marketplace/build`), membership (`/membership`), creators
+  (`/creators`, `/creators/profile`), account center (`/account` and six sub-pages), and creator studio (`/creator` plus
+  nine sub-pages). The developer control plane stays outside the site, backend-authorised, and unlinked.
+- **One state system.** `assets/state.js` defines loading / empty / populated / error / unauthorized / unavailable /
+  disabled / success, plus an always-present polite live region. Unavailable is the honest default for every
+  marketplace, creator, and membership surface; a success badge can never come from an unavailable render.
+- **One data boundary.** `assets/adapters.js` registers ten future services (marketplace, creator, orders, reviews,
+  analytics, membership, entitlements, payments, account) and answers with a typed `unavailable` result. It is the only
+  module that performs a network request, it implements only endpoints that already exist in `backend/`, and it requires
+  an explicitly configured HTTPS origin. No endpoint, key, or production URL is hardcoded.
+- **No fabricated data anywhere.** Sample records live in a clearly named `preview-catalog.js`, render only under
+  `?preview=1`, and are labelled "Preview data". Purchase, download, follow, plan, publish, and save-draft controls are
+  disabled with a stated reason; pricing shows "Your price / CraftMind fee / Estimated earnings" with the fee "Not
+  defined yet" and earnings "Unavailable"; membership plans read "Not priced yet"; orders, earnings, analytics, reviews,
+  and ratings render empty states, zeros, or em dashes rather than invented figures. Saving a card is in-memory only — no
+  browser storage, no cookie, no analytics.
+- **Creator studio with a real seven-step flow.** Details → Media → Minecraft compatibility → Pricing → Instructions →
+  Preview → Publish, with bounded lengths, character counters, `role="alert"` error summaries, `aria-invalid` fields, a
+  compatibility verdict from the app's own registry, an earnings-preview layout, an exact listing preview, and a publish
+  step that explains publishing is unavailable. Nothing is uploaded, stored, or published; the draft lives in the page.
+- **Compatibility reuse, not duplication.** `assets/compatibility.js` mirrors the app's editions, loaders, release
+  channels, BuildPlan limits (4096 operations, 96×64×96), and the single registered, certified runtime profile
+  (`java-fabric-1.20.1`, Minecraft 1.20.1, Fabric 0.16.10, Fabric API 0.92.2+1.20.1, Java 17), so the website cannot
+  offer a value CraftMind does not recognize.
+- **Accessibility and responsiveness are built in.** Keyboard-reachable mobile navigation, visible focus, one `h1` and
+  one main landmark per page, labelled fields, accessible form errors, tab/toggle state, a labelled progress bar, status
+  never conveyed by colour alone, reduced-motion-safe transitions, breakpoints at 1100 / 940 / 680 / 390 px, and data
+  tables that become labelled cards below 680 px.
+- **Phase 20 security is preserved.** No backend route, developer surface, session rule, rate limit, audit path, or
+  secret-redaction behaviour changed. The Android app is untouched: navigation stays Home / Builds / Minecraft /
+  Settings (`MainDestinationTest`), and no Kotlin source was modified.
+- **Verification status:** `python3 scripts/check_website.py` → PASS (30 pages, 884 links; architecture, navigation,
+  shells, hooks, honesty invariants, download policy); a local jsdom harness that renders each page and drives its
+  controller → 72/72 assertions PASS (not committed; no browser is installed here); a checker mutation test → 10/10
+  deliberate breakages rejected; `cd backend && npm test` → 98/98 across 10 suites; `python3 scripts/check_release_config.py`
+  → PASS; `node --check` on all ten website modules → PASS; `git diff --check` → clean.
+  `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution in this environment), and the Android test suite was
+  therefore not re-run — no Kotlin source changed, so its last recorded results stand.
+
+## Phase 22 — membership, entitlements, and build credits
+
+Phase 22 turns the Phase 21 membership screens into a real, server-authoritative foundation: normalized plans,
+plan entitlements, a deterministic free baseline for every registered account, an append-only credit ledger with
+grants, consumption, expiration, and reversal, typed entitlement checks, audited authenticated APIs, idempotency, and
+database-level concurrency safety. It integrates **no payment provider at all** — no Razorpay, Stripe, PayPal, UPI,
+cards, checkout, subscription billing, webhooks, invoices, payouts, or tax — and no plan is purchasable. Pro, Creator,
+and Server are defined, granted internally, and deliberately not for sale. Full contracts:
+[`docs/membership-entitlements-and-credits.md`](docs/membership-entitlements-and-credits.md).
+
+- **The server decides.** Membership state, entitlements, and the credit balance are resolved by the backend from its own
+  database. No endpoint accepts an account id, a plan, a status, a balance, or an entitlement from a client, so a
+  fabricated `{"plan":"PRO"}` or `{"credits":500}` has no path to travel. Credits are never a column on `users`: the
+  balance is derived from a ledger the database refuses to update or delete.
+- **Idempotent and atomic.** Every credit operation carries an idempotency key stored as an HMAC digest scoped to the
+  account and the operation, so a retry returns the original transaction instead of spending twice, and a reused key with
+  a different request is a typed conflict. Consumption runs inside `BEGIN IMMEDIATE`: of two simultaneous spends of 7
+  against a balance of 10, exactly one succeeds.
+- **Honest by construction.** Expired credits stop counting immediately and are reconciled in bounded batches on read
+  (no background job); an expired plan falls back to the free baseline rather than losing the product; the website shows
+  a real balance only when a service and a session exist and says "Credit balance unavailable" otherwise.
+- **One audit log, one rate limiter, one control plane.** Membership and credit events join the existing Phase 19/20
+  audit table; the five new developer tools (`inspectMembership`, `listCreditTransactions`, and the confirmable
+  `grantMembership`, `grantCredits`, `reverseCreditGrant`) reuse the existing registry, roles, and single confirmation
+  boundary. The Developer AI may inspect and propose a grant, but only a human confirmation executes one.
+- **Verification status:** `cd backend && npm test` → 125/125 passed across 16 suites; `python3 scripts/check_website.py`
+  → PASS (30 pages, 884 links); a jsdom check of the membership and credit states; `ANDROID_BUILD = NOT_RUN` (no Android
+  toolchain here). No live deployment, external security review, payment provider call, or live AI call is claimed.
 
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
@@ -247,7 +361,7 @@ The Android UI reports the authenticated session, bridge-reported edition/Minecr
 - Other provider adapters or user-configurable AI endpoints.
 - Manual build editing/design tools, block palettes, coordinate editors, templates, rollback, undo, or visual/screenshot verification of a constructed world.
 - Cloud sync, account-owned build history, cross-device settings, ads, premium tiers, or an AI gateway/provider-billing backend. The account service handles authentication only; local build history and BYOK provider credentials are not attached to accounts.
-- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; no real AI provider adapter is bundled or claimed. Account deletion remains unavailable; there is no public user account dashboard.
+- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard; Phase 21 adds only interface and state foundations for the marketplace, creator studio, membership, and account center, with no service behind them and no capability to purchase, sell, publish, or subscribe. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable.
 - Bedrock execution: no Bedrock bridge implementation exists here, no Bedrock version is runtime-certified, and the Bedrock block/state catalog is empty, so the Bedrock bridge never receives a BuildPlan. Bedrock cannot load the Java Fabric mod. No unsafe client automation (screen scraping, input simulation, injection, patching, anti-cheat/DRM/license bypass) is implemented or planned as a substitute.
 - Manual Minecraft runtime selection or override: there is no edition/Minecraft-version/loader/adapter picker, no nearest-version fallback, no cross-edition matching, and no "execute anyway" control. The runtime comes only from the authenticated bridge; a runtime that cannot be detected stays unknown and construction stays disabled.
 - Legacy/beta/snapshot/experimental execution: no legacy bridge, Forge mod, or legacy runtime integration exists here; the two declared legacy contracts are `EXPERIMENTAL` with `NOT_PERFORMED` certification and an empty block/state catalog, so a recognized legacy runtime is refused with a typed `RUNTIME_NOT_CERTIFIED` failure before any bridge call. Support would require a real runtime test recorded in the registry first.

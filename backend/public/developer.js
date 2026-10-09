@@ -275,6 +275,107 @@
     await loadOverview();
   }
 
+  function securityRecord(title, lines) {
+    const record = element("div", "record");
+    record.append(element("p", "", title));
+    for (const line of lines.filter(Boolean)) record.append(element("p", "muted", line));
+    return record;
+  }
+
+  async function loadSecurityCenter() {
+    try {
+      const overview = await tool("securityOverview");
+      const metrics = [
+        ["Status", overview.status], ["Open incidents", overview.openIncidents],
+        ["Critical incidents", overview.criticalIncidents], ["Investigating", overview.investigatingIncidents],
+        ["Active protections", overview.activeProtections], ["Unread alerts", overview.unreadNotifications],
+        ["Events (24h)", overview.eventsLast24h], ["Automated actions (24h)", overview.automatedActionsLast24h],
+      ];
+      const overviewTarget = $("#security-overview");
+      clear(overviewTarget);
+      for (const [label, value] of metrics) {
+        const card = element("div", "metric");
+        card.append(element("strong", "", value));
+        card.append(element("span", "muted", label));
+        overviewTarget.append(card);
+      }
+
+      const notifications = await tool("listSecurityNotifications", { limit: 25 });
+      const notificationTarget = $("#security-notifications");
+      clear(notificationTarget);
+      if (!notifications.notifications.length) notificationTarget.append(element("p", "muted", "No security alerts."));
+      for (const alert of notifications.notifications) {
+        notificationTarget.append(securityRecord(
+          `${alert.priority} · ${alert.title}`,
+          [alert.body, `${alert.createdAt} · incident ${alert.incidentReference ?? "n/a"} · ${alert.status}`],
+        ));
+      }
+
+      const actions = await tool("listSecurityActions", { limit: 25 });
+      const actionTarget = $("#security-actions");
+      clear(actionTarget);
+      if (!actions.actions.length) actionTarget.append(element("p", "muted", "No automated protections recorded yet."));
+      for (const action of actions.actions) {
+        actionTarget.append(securityRecord(
+          `${action.actionType} · ${action.result}${action.resultCode ? ` (${action.resultCode})` : ""}`,
+          [
+            `${action.occurredAt} · scope ${action.scope}${action.expiresAt ? ` · expires ${action.expiresAt}` : ""}`,
+            `policy ${action.policyId} · reversible ${action.reversible ? "yes" : "no"}${action.releasedAt ? ` · released ${action.releasedAt}` : ""}`,
+          ],
+        ));
+      }
+
+      const incidents = await tool("listSecurityIncidents", { limit: 25 });
+      const incidentTarget = $("#security-incidents");
+      const incidentSelect = $("#security-ai-incident");
+      clear(incidentTarget);
+      clear(incidentSelect);
+      incidentSelect.append(new Option("Whole security overview", ""));
+      if (!incidents.incidents.length) incidentTarget.append(element("p", "muted", "No incidents recorded."));
+      for (const incident of incidents.incidents) {
+        incidentTarget.append(securityRecord(
+          `${incident.severity} · ${incident.reference} · ${incident.threatCategory}`,
+          [
+            `Status ${incident.status} · risk ${incident.riskScore}/100 · ${incident.eventCount} signals`,
+            `Detected ${incident.detectedAt} · last activity ${incident.lastActivityAt}`,
+            incident.reasons.length ? `Reasons: ${incident.reasons.join("; ")}` : null,
+            incident.resolution ? `Resolution: ${incident.resolution}` : null,
+          ],
+        ));
+        incidentSelect.append(new Option(`${incident.severity} ${incident.reference}`, incident.incidentId));
+      }
+
+      const events = await tool("listSecurityEvents", { limit: 40 });
+      const eventTarget = $("#security-events");
+      clear(eventTarget);
+      if (!events.events.length) eventTarget.append(element("p", "muted", "No security events recorded."));
+      for (const event of events.events) {
+        eventTarget.append(securityRecord(
+          `${event.severity} · ${event.eventType} · ${event.result}`,
+          [`${event.occurredAt} · ${event.sourceCategory}${event.routeCategory ? ` · ${event.routeCategory}` : ""}${event.incidentId ? " · linked to an incident" : ""}`],
+        ));
+      }
+      return overview;
+    } catch (error) {
+      setNotice(error.message, "error");
+      return null;
+    }
+  }
+
+  async function loadSecurityAiStatus() {
+    try {
+      const status = await api("/developer/ai/status");
+      const submit = $("#security-ai-submit");
+      submit.disabled = !status.available;
+      if (!status.available) {
+        $("#security-ai-result").textContent = "Developer AI is unavailable in this service. Detection, incidents, and automated protections continue to run without it.";
+      }
+    } catch (error) {
+      $("#security-ai-result").textContent = error.message;
+      $("#security-ai-submit").disabled = true;
+    }
+  }
+
   async function loadDeveloperSessions() {
     try {
       const result = await api("/developer/auth/sessions");
@@ -310,7 +411,12 @@
       for (const event of result.events) {
         const record = element("article", "record");
         record.append(element("p", "", `${event.action} · ${event.outcome}`));
-        record.append(element("p", "muted", `${event.occurredAt} · Actor ${event.actorEmail}${event.targetEmail ? ` · Target ${event.targetEmail}` : ""}`));
+        record.append(element("p", "muted", [
+          event.occurredAt,
+          `Actor ${event.actorKind}${event.actorEmail ? ` (${event.actorEmail})` : ""}`,
+          event.targetEmail ? `Target ${event.targetEmail}` : null,
+          event.incidentId ? "Incident reference recorded" : null,
+        ].filter(Boolean).join(" · ")));
         const metadata = element("pre", "result", JSON.stringify(event.metadata));
         record.append(metadata);
         target.append(record);
@@ -370,6 +476,16 @@
     const tasks = [loadOverview(), loadAiStatus()];
     if (isOwner) tasks.push(loadConfigurationStatus());
     await Promise.all(tasks);
+    try {
+      // High-priority security alerts surface immediately when the dashboard opens (Phase 20 notification foundation).
+      const securityStatus = await tool("securityOverview");
+      if (securityStatus.unreadNotifications > 0 || securityStatus.criticalIncidents > 0) {
+        setNotice(
+          `Security alerts: ${securityStatus.unreadNotifications} unread alert(s); ${securityStatus.criticalIncidents} active critical incident(s); ${securityStatus.activeProtections} active automated protection(s). Open the Security center.`,
+          "error",
+        );
+      }
+    } catch { /* the security overview is informational; a failure must not block the dashboard */ }
   }
 
   $("#login-form").addEventListener("submit", async (event) => {
@@ -422,6 +538,10 @@
     button.addEventListener("click", async () => {
       showPanel(button.dataset.panel);
       if (selectedPanel === "security-panel") await loadDeveloperSessions();
+      if (selectedPanel === "security-center-panel") {
+        await loadSecurityCenter();
+        await loadSecurityAiStatus();
+      }
       if (selectedPanel === "audit-panel") await loadAudit();
       if (selectedPanel === "ai-panel") await loadAiStatus();
       if (selectedPanel === "config-panel") await loadConfigurationStatus();
@@ -453,6 +573,28 @@
 
   $("#refresh-dev-sessions").addEventListener("click", loadDeveloperSessions);
   $("#refresh-audit").addEventListener("click", loadAudit);
+  $("#refresh-security").addEventListener("click", async () => {
+    const overview = await loadSecurityCenter();
+    if (overview) setNotice("Security center refreshed from stored incident, event, and action records.", "success");
+  });
+
+  $("#security-ai-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const incidentId = $("#security-ai-incident").value;
+    const prompt = $("#security-ai-prompt").value.trim();
+    const result = $("#security-ai-result");
+    result.textContent = "Working…";
+    try {
+      const response = await api("/developer/ai/security-summary", {
+        method: "POST",
+        body: { ...(incidentId ? { incidentId } : {}), ...(prompt ? { prompt } : {}) },
+      });
+      result.textContent = response.message;
+      if (response.incidentReference) result.textContent += `\n\nIncident: ${response.incidentReference}`;
+    } catch (error) {
+      result.textContent = error.message;
+    }
+  });
 
   $("#ai-form").addEventListener("submit", async (event) => {
     event.preventDefault();

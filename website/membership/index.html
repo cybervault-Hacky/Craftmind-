@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="CraftMind membership plans as product interface only: monthly and yearly views, a capability comparison, and honest states because billing is not implemented.">
+  <title>Membership — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../assets/site.js"></script>
+</head>
+<body data-page="membership">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="../index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="../index.html">Home</a>
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html" aria-current="page">Membership</a>
+        <a href="../creators/index.html">Creators</a>
+        <a href="../how-it-works.html">How it works</a>
+        <a href="../features.html">Features</a>
+        <a href="../download.html">Download</a>
+        <a href="../about.html">About</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <span>Membership</span></p>
+      <p class="eyebrow">MEMBERSHIP · NOT YET SELLABLE</p>
+      <h1 id="page-title">Plans that say<br>what they are.</h1>
+      <p class="lead">CraftMind is free today. A Pro, Creator, and Server tier are designed but not built, so no price is
+      final and nothing can be purchased, upgraded, downgraded, or cancelled. Every plan below states its own status
+      instead of implying a subscription that does not exist.</p>
+    </section>
+
+    <section class="section container section-tight" aria-labelledby="plans-title">
+      <div class="row-between">
+        <div class="section-heading" style="margin-bottom:0">
+          <p class="eyebrow">PLANS</p>
+          <h2 id="plans-title">Four tiers, one honest status.</h2>
+          <p>Pricing is deliberately absent. A later phase defines the numbers; this phase defines the experience around them.</p>
+        </div>
+        <div class="stack">
+          <span class="field-label" id="period-label">Billing period</span>
+          <div class="segmented" role="group" aria-labelledby="period-label" data-period-toggle>
+            <button type="button" data-period="monthly" aria-pressed="true">Monthly</button>
+            <button type="button" data-period="yearly" aria-pressed="false">Yearly</button>
+          </div>
+          <p class="field-hint" data-period-note role="status" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div data-membership-metrics style="margin-top:26px"></div>
+      <div class="plan-grid" data-plan-grid></div>
+      <div class="state-card state-card--unavailable" data-membership-state role="region" aria-label="Your membership state" style="margin-top:26px"></div>
+      <div data-plan-comparison></div>
+    </section>
+
+    <section class="section container section-tight" aria-labelledby="billing-title">
+      <div class="split">
+        <div class="prose">
+          <h2 id="billing-title">Billing, explained honestly</h2>
+          <h3>Billing</h3>
+          <p>No billing exists. CraftMind does not store a payment method, does not create invoices, does not charge a
+          card, and does not integrate any payment provider in this phase.</p>
+          <h3>Upgrading and downgrading</h3>
+          <p>Upgrade and downgrade controls are part of the planned interface. They are rendered as unavailable, because
+          a control that appears to change a plan would be a lie about a service that does not exist.</p>
+          <h3>Cancellation</h3>
+          <p>There is nothing to cancel. When subscriptions exist, cancellation will be self-service and the page will
+          state the exact date access ends — CraftMind will not hide a cancellation path.</p>
+          <h3>What a plan will never change</h3>
+          <p>Membership will not change how builds are validated, whether a plan can be reviewed before it runs, or the
+          safety limits on Minecraft execution. Those are product guarantees, not paid features.</p>
+        </div>
+        <div class="faq-list" style="margin-top:0" aria-label="Membership questions">
+          <div class="faq-item">
+            <h3>Is CraftMind paid right now?</h3>
+            <p>No. The app is free to use with your own AI provider key, and no paid tier exists. Nothing on this page can charge you.</p>
+          </div>
+          <div class="faq-item">
+            <h3>Why show plans that cannot be bought?</h3>
+            <p>Because the product experience is designed before the billing system. Every plan is labelled with its real
+            status, including “planned — not purchasable”, and no price is invented to make the page look finished.</p>
+          </div>
+          <div class="faq-item">
+            <h3>What will a plan include?</h3>
+            <p>The capability lists above are the intended shape: higher generation limits and advanced AI building for
+            Pro, creator tools and marketplace selling for Creator, and server/team features for Server. Limits and
+            credits are not defined, so no number is promised here.</p>
+          </div>
+          <div class="faq-item">
+            <h3>Will prices change?</h3>
+            <p>Prices do not exist yet. When they do, they will be configurable service-side values rather than values
+            baked into this page.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="../index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creator/index.html">Creator studio</a>
+        <a href="../account/index.html">Account</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+        <a href="../download.html">Download</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

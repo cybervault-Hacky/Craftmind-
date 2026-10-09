@@ -47,7 +47,8 @@
       <nav class="tabs" aria-label="Developer control plane sections">
         <button type="button" data-panel="overview-panel">Overview</button>
         <button type="button" data-panel="users-panel">Users</button>
-        <button type="button" data-panel="security-panel">Security</button>
+        <button type="button" data-panel="security-center-panel">Security center</button>
+        <button type="button" data-panel="security-panel">Dev sessions</button>
         <button type="button" data-panel="audit-panel">Audit log</button>
         <button type="button" data-panel="ai-panel">Developer AI</button>
         <button type="button" data-panel="config-panel">Configuration</button>
@@ -78,6 +79,34 @@
           </form>
           <div id="grant-list"></div>
         </div>
+      </section>
+
+      <section id="security-center-panel" class="panel card" hidden>
+        <h2>Security center</h2>
+        <p class="muted">Deterministic detection, incident history, and the automated protections that were applied without waiting for developer approval. Only stored, already-sanitized fields are shown: no credentials, tokens, request bodies, or client addresses.</p>
+        <div class="button-row">
+          <button id="refresh-security" type="button" class="secondary">Refresh security center</button>
+        </div>
+        <h3>Current status</h3>
+        <div id="security-overview" class="metrics"></div>
+        <h3>Developer alerts</h3>
+        <div id="security-notifications"></div>
+        <h3>Automated protections and results</h3>
+        <div id="security-actions"></div>
+        <h3>Incidents</h3>
+        <div id="security-incidents"></div>
+        <h3>Recent security events</h3>
+        <div id="security-events"></div>
+        <h3>Incident analysis (Developer AI)</h3>
+        <p class="muted">The AI receives a bounded, sanitized security brief and can only return prose: summarize, explain, classify, or recommend one of the registered response tools by name. It cannot execute a security action, approve one, or invent a tool.</p>
+        <form id="security-ai-form" class="stack">
+          <label>Incident
+            <select id="security-ai-incident"><option value="">Whole security overview</option></select>
+          </label>
+          <label>Question <textarea id="security-ai-prompt" rows="3" maxlength="500" placeholder="Why is this incident high risk, and what should I review next?"></textarea></label>
+          <button id="security-ai-submit" type="submit">Analyze with Developer AI</button>
+        </form>
+        <pre id="security-ai-result" class="result" aria-live="polite"></pre>
       </section>
 
       <section id="security-panel" class="panel card" hidden>

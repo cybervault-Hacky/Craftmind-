@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="A single CraftMind OPEN job: the buyer's requirements, target version, scope, and proposal count from the hire service, with a proposal form for signed-in creators.">
+  <title>Job detail — read before you propose — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../assets/site.js"></script>
+</head>
+<body data-page="hire-job">
+
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="../index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="../index.html">Home</a>
+        <a href="../marketplace/index.html" aria-current="page">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creators/index.html">Creators</a>
+        <a href="../how-it-works.html">How it works</a>
+        <a href="../features.html">Features</a>
+        <a href="../download.html">Download</a>
+        <a href="../about.html">About</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <a href="index.html">Marketplace</a> <span aria-hidden="true">/</span> <a href="hire.html">Open jobs</a> <span aria-hidden="true">/</span> <span>Job</span></p>
+      <p class="eyebrow">JOB DETAIL</p>
+      <h1 id="page-title">Read the job.<br>Decide if it fits.</h1>
+      <p class="lead">Everything below is loaded from the hire service for this one OPEN job: the buyer's
+      requirements, the target version, and an honest proposal count. Nothing here is sample content.</p>
+      <p class="row" style="gap:12px;margin-top:18px"><a class="button button-secondary" href="hire.html">← Back to open jobs</a></p>
+    </section>
+
+    <section class="section container" aria-labelledby="detail-title">
+      <h2 id="detail-title" class="visually-hidden">Job detail</h2>
+      <div class="state-card" data-job-region role="region" aria-label="Job detail"></div>
+    </section>
+
+    <section class="section container section-tight" aria-labelledby="propose-title">
+      <div class="section-heading">
+        <p class="eyebrow">BUILDERS</p>
+        <h2 id="propose-title">Send your proposal.</h2>
+        <p>One live proposal per job, sent from your own session. The service checks your creator eligibility and
+        keeps your words between you and the buyer who posted the job.</p>
+      </div>
+      <div class="state-card state-card--unauthorized" data-proposal-signin>
+        <div class="state-head"><span class="badge badge--planned">Sign-in required</span><h3>Sign in to send a proposal</h3></div>
+        <p>A proposal belongs to your creator account, so this form appears once you sign in. Jobs and their details
+        stay readable without an account.</p>
+        <div class="state-actions"><a class="button button-secondary button-small" href="../signin.html">Sign in</a></div>
+      </div>
+      <form class="stack" data-proposal-form hidden novalidate>
+        <div class="field">
+          <label for="proposal-message">Message</label>
+          <textarea class="input" id="proposal-message" name="message" rows="4" required placeholder="Who you are for this job and why you will deliver it."></textarea>
+          <span class="field-hint">10–2000 characters. Visible to the job's buyer only.</span>
+        </div>
+        <div class="field">
+          <label for="proposal-scope">Scope of your proposal</label>
+          <textarea class="input" id="proposal-scope" name="scope" rows="3" required placeholder="Exactly what you will build and hand over."></textarea>
+          <span class="field-hint">5–2000 characters.</span>
+        </div>
+        <div class="row" style="gap:12px">
+          <div class="field">
+            <label for="proposal-budget-min">Budget minimum</label>
+            <input class="input" id="proposal-budget-min" name="budgetMin" type="number" min="0" step="1" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="proposal-budget-max">Budget maximum</label>
+            <input class="input" id="proposal-budget-max" name="budgetMax" type="number" min="0" step="1" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="proposal-currency">Currency</label>
+            <select class="select" id="proposal-currency" name="budgetCurrency">
+              <option value="INR">INR</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="proposal-delivery">Delivery estimate (days)</label>
+            <input class="input" id="proposal-delivery" name="deliveryEstimateDays" type="number" min="1" max="365" step="1" inputmode="numeric">
+          </div>
+        </div>
+        <div class="row" style="gap:12px">
+          <button type="submit" class="button">Send proposal</button>
+        </div>
+        <p class="field-hint" data-proposal-status role="status" aria-live="polite"></p>
+      </form>
+      <p class="small muted" style="margin-top:18px">Sending a proposal never moves money and never commits you to
+      work — it shares your interest and scope with the buyer. No payment, order, or milestone exists in this phase.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="../index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creator/index.html">Creator studio</a>
+        <a href="../account/index.html">Account</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+        <a href="../download.html">Download</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

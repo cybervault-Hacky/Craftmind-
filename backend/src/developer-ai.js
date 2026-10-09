@@ -4,7 +4,12 @@
  */
 
 import { AccountApiError, ErrorCode } from "./errors.js";
-import { developerAiToolCall, developerToolSpecifications, recordDeveloperAiAudit } from "./admin-tools.js";
+import {
+  developerAiToolCall,
+  developerToolSpecifications,
+  recordDeveloperAiAudit,
+  recordDeveloperAiSecurityAudit,
+} from "./admin-tools.js";
 
 function validatePrompt(prompt) {
   if (typeof prompt !== "string" || prompt.trim().length < 1 || prompt.length > 2000 ||
@@ -45,6 +50,32 @@ function validateProviderResponse(response) {
   }
   if (message.trim().length > 1000) throw new AccountApiError(ErrorCode.DEVELOPER_AI_RESPONSE_INVALID);
   return { message: message.trim(), toolCall: response.toolCall };
+}
+
+function validateSecurityPrompt(prompt) {
+  if (prompt === undefined || prompt === null || prompt === "") return "";
+  if (typeof prompt !== "string" || prompt.trim().length < 1 || prompt.length > 500 ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(prompt)) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+  }
+  return prompt.trim();
+}
+
+function validateSecurityAnalysisResponse(response) {
+  if (response === null || typeof response !== "object" || Array.isArray(response)) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_AI_RESPONSE_INVALID);
+  }
+  // The security contract is message-only: a tool proposal in this mode — including a production incident response
+  // tool — is refused outright, so the AI can never approve, request, or execute a security action.
+  if (Object.keys(response).some((key) => key !== "message") || !Object.hasOwn(response, "message")) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_AI_RESPONSE_INVALID);
+  }
+  const message = response.message;
+  if (typeof message !== "string" || message.trim().length < 1 || message.length > 4000 ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(message)) {
+    throw new AccountApiError(ErrorCode.DEVELOPER_AI_RESPONSE_INVALID);
+  }
+  return message.trim();
 }
 
 export class DeveloperAiCoordinator {
@@ -114,6 +145,80 @@ export class DeveloperAiCoordinator {
       message: validated.message,
       tool: toolName,
       result,
+    };
+  }
+
+  /**
+   * AI-assisted security investigation. The model receives a bounded, sanitized security brief (counts, categories,
+   * statuses, reasons, opaque references) and may only return prose: summarize, explain, classify against the
+   * registered categories, or recommend one of the registered response tools by name. It cannot propose a tool call
+   * here, cannot mint authorization, and cannot alter the autonomous policy path — detection and immediate protection
+   * already ran without it, and continue to run if this provider is missing or failing.
+   */
+  async runSecurityAnalysis({ database, actor, prompt = "", incidentId = null, context = {} }) {
+    const engine = context.securityEngine;
+    let safePrompt;
+    try {
+      safePrompt = validateSecurityPrompt(prompt);
+      if (!incidentId && !safePrompt) throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      if (incidentId !== null && (typeof incidentId !== "string" || !/^inc_[0-9a-f-]{36}$/.test(incidentId))) {
+        throw new AccountApiError(ErrorCode.DEVELOPER_TOOL_INPUT_INVALID);
+      }
+    } catch (error) {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_TOOL_INPUT_INVALID });
+      throw error;
+    }
+    if (!engine || typeof engine.buildSecurityBrief !== "function") {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.SECURITY_ENGINE_UNAVAILABLE });
+      throw new AccountApiError(ErrorCode.SECURITY_ENGINE_UNAVAILABLE);
+    }
+
+    let brief;
+    try {
+      brief = engine.buildSecurityBrief({ incidentId });
+    } catch (error) {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", {
+        resultCode: error instanceof AccountApiError ? error.code : ErrorCode.UNKNOWN_ERROR,
+      });
+      throw error;
+    }
+
+    if (!this.isAvailable) {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_AI_UNAVAILABLE });
+      throw new AccountApiError(ErrorCode.DEVELOPER_AI_UNAVAILABLE);
+    }
+
+    let proposal;
+    try {
+      proposal = await selectWithTimeout(this.provider, Object.freeze({
+        mode: "SECURITY_ANALYSIS",
+        responseContract: "MESSAGE_ONLY",
+        maximumToolCalls: 0,
+        prompt: safePrompt || "Summarize the supplied security context and explain the recommended next step.",
+        tools: [],
+        securityContext: brief,
+      }));
+    } catch {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_AI_UNAVAILABLE });
+      throw new AccountApiError(ErrorCode.DEVELOPER_AI_UNAVAILABLE);
+    }
+
+    let message;
+    try {
+      message = validateSecurityAnalysisResponse(proposal);
+    } catch (error) {
+      recordDeveloperAiSecurityAudit(database, actor, "FAILURE", { resultCode: ErrorCode.DEVELOPER_AI_RESPONSE_INVALID });
+      throw error;
+    }
+
+    recordDeveloperAiSecurityAudit(database, actor, "SUCCESS", {
+      resultType: "security_analysis",
+      incident: brief.incidents[0]?.reference ?? null,
+    });
+    return {
+      message,
+      incidentReference: brief.incidents[0]?.reference ?? null,
+      context: { counts: brief.counts, incidents: brief.incidents, recentActions: brief.recentActions },
     };
   }
 }

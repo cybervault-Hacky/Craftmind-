@@ -2,6 +2,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { AccountApiError, ErrorCode } from "./errors.js";
+import { AUDIT_ACTOR_KIND, appendAuditRecord } from "./audit.js";
 import {
   canonicalizeEmail,
   developerTokenDigest,
@@ -9,7 +10,6 @@ import {
   isWellFormedEmail,
   newDeveloperId,
   newDeveloperSessionId,
-  newAuditId,
   newToken,
 } from "./ids.js";
 import { hashPassword, performDummyVerification, validatePassword, verifyPassword } from "./passwords.js";
@@ -72,11 +72,14 @@ function runTransaction(database, operation) {
 }
 
 function appendSessionAudit(database, developerId, scope, sessionId) {
-  database.prepare(
-    `INSERT INTO admin_audit_log
-       (audit_id, actor_developer_id, action_type, target_user_id, occurred_at, outcome, metadata_json)
-     VALUES (?, ?, 'developer_session_revoke', NULL, ?, 'SUCCESS', ?)`,
-  ).run(newAuditId(), developerId, nowIso(), JSON.stringify({ scope, sessionId }));
+  appendAuditRecord(database, {
+    actorKind: AUDIT_ACTOR_KIND.DEVELOPER,
+    actorDeveloperId: developerId,
+    actionType: "developer_session_revoke",
+    outcome: "SUCCESS",
+    metadata: { scope, sessionId },
+    occurredAt: nowIso(),
+  });
 }
 
 function bootstrapSecretMatches(configuration, supplied) {
