@@ -1061,8 +1061,8 @@ describe("Phase 23 developer controls and abuse resistance", () => {
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 6);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
+    assert.equal(SCHEMA_VERSION, 7);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
     // Every Phase 22 row survives, with its values.
     const membership = database.prepare("SELECT * FROM membership_accounts WHERE user_id = 'usr_legacy'").get();
     assert.equal(membership.plan, "CREATOR");
@@ -1093,7 +1093,7 @@ describe("Phase 23 developer controls and abuse resistance", () => {
     assert.throws(() => database.prepare("DELETE FROM creator_status_history").run(), /append-only/);
     // Re-running the migration is a no-op: the version row is the guard.
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM creator_profiles").get().count, 1);
     database.close();
   });

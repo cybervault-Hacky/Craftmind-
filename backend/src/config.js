@@ -317,6 +317,11 @@ export function loadConfiguration(environment = process.env, options = {}) {
       creatorProfileRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_CREATOR_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_CREATOR_READ_WINDOW_MS", 900_000, 86_400_000) }),
       serverWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_SERVER_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_SERVER_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       serverRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_SERVER_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_SERVER_READ_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 24: saving onboarding answers is a bounded, credential-bearing state change; reading one's own onboarding
+      // state is an ordinary authenticated read. The buckets are separate so a form re-render can never spend the
+      // budget that protects the write.
+      onboardingWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_ONBOARDING_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_ONBOARDING_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      onboardingRead: Object.freeze({ maximum: positiveInteger(environment, "RATE_ONBOARDING_READ_MAX", 120, 10_000), windowMs: positiveInteger(environment, "RATE_ONBOARDING_READ_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

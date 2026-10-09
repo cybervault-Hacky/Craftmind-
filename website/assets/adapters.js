@@ -80,6 +80,7 @@ function unconfigured(adapterName, methods, { reason = REASON.NOT_IMPLEMENTED, m
  * drift from the implemented surface, and so this file documents exactly which calls the account pages may make.
  */
 export const ACCOUNT_ENDPOINTS = Object.freeze([
+  "POST /auth/register",
   "POST /auth/login",
   "POST /auth/logout",
   "GET /auth/me",
@@ -103,6 +104,13 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "GET /account/capabilities",
   "GET /creator/profile",
   "GET /creator/eligibility",
+  // Phase 24: buyer and seller onboarding. Two reads and two saves, all session-scoped; the server validates every
+  // field, so these methods send answers and never derived status of their own.
+  "GET /account/onboarding",
+  "GET /onboarding/buyer",
+  "POST /onboarding/buyer",
+  "GET /onboarding/seller",
+  "POST /onboarding/seller",
 ]);
 
 /** The one anonymous route the site may call. It returns the public projection of an ACTIVE creator profile. */
@@ -110,10 +118,12 @@ export const PUBLIC_CREATOR_ENDPOINT = "GET /creators/:handle";
 
 /** The method names the configured account adapter exposes; also the contract reported by describeIntegrationBoundary. */
 const ACCOUNT_METHODS = Object.freeze([
+  "register", "verifyEmail",
   "signIn", "signOut", "loadAccount", "loadSessions", "revokeSession", "revokeOtherSessions",
   "requestPasswordReset", "confirmPasswordReset", "changePassword", "resendVerification",
   "loadMembership", "loadEntitlements", "loadCredits",
   "loadAccountCapabilities", "loadCreatorProfile", "loadCreatorEligibility", "loadPublicCreatorProfile",
+  "loadOnboardingState", "loadBuyerOnboarding", "saveBuyerOnboarding", "loadSellerOnboarding", "saveSellerOnboarding",
 ]);
 
 /** The creator identity surface. Every method is a read: no method here creates, edits, publishes, or sells anything. */
@@ -191,6 +201,14 @@ export function createAccountAdapter({ origin = null } = {}) {
   }
   return Object.freeze({
     ...base,
+    // Account creation and email verification against the existing auth endpoints. Registration returns no session
+    // and no success claim about an email: the caller verifies with the token the service issues, then signs in.
+    async register({ email, password, displayName }) {
+      return requestJson(origin, "/auth/register", { method: "POST", body: { email, password, displayName } });
+    },
+    async verifyEmail({ token }) {
+      return requestJson(origin, "/auth/verify-email", { method: "POST", body: { token } });
+    },
     async signIn({ email, password }) {
       const result = await requestJson(origin, "/auth/login", { method: "POST", body: { email, password } });
       if (result.status === RESULT.OK) {
@@ -224,6 +242,18 @@ export function createAccountAdapter({ origin = null } = {}) {
     loadAccountCapabilities() { return requestJson(origin, "/account/capabilities", { token: session.accessToken }); },
     loadCreatorProfile() { return requestJson(origin, "/creator/profile", { token: session.accessToken }); },
     loadCreatorEligibility() { return requestJson(origin, "/creator/eligibility", { token: session.accessToken }); },
+    // Phase 24 onboarding. Every answer is the server's composed state for this session's account; the save methods
+    // post form answers only — ownership, completion, and verification are decided server-side and come back in the
+    // same shape as the read.
+    loadOnboardingState() { return requestJson(origin, "/account/onboarding", { token: session.accessToken }); },
+    loadBuyerOnboarding() { return requestJson(origin, "/onboarding/buyer", { token: session.accessToken }); },
+    saveBuyerOnboarding(answers) {
+      return requestJson(origin, "/onboarding/buyer", { method: "POST", body: answers, token: session.accessToken });
+    },
+    loadSellerOnboarding() { return requestJson(origin, "/onboarding/seller", { token: session.accessToken }); },
+    saveSellerOnboarding(answers) {
+      return requestJson(origin, "/onboarding/seller", { method: "POST", body: answers, token: session.accessToken });
+    },
     loadPublicCreatorProfile(handle) {
       // The handle is validated here as well as on the server, because a path segment is interpolated into a URL: an
       // unvalidated value could travel somewhere other than the creator route.

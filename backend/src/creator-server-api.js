@@ -36,7 +36,7 @@ import { runTransaction } from "./transactions.js";
  * `role`, `plan`, or `verification` is a request whose author misunderstands the boundary, and the honest answer is a
  * typed refusal — not a silent success that ignores the field and then reports a different resource than they expected.
  */
-function strictBody(body, { required = [], optional = [] } = {}) {
+export function strictBody(body, { required = [], optional = [] } = {}) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     throw new AccountApiError(ErrorCode.INVALID_REQUEST);
   }

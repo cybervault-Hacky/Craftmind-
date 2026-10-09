@@ -64,6 +64,12 @@ ROUTES = (
     ("faq.html", "faq", "faq.html", ()),
     ("privacy.html", "privacy", None, ()),
     ("terms.html", "terms", None, ()),
+    # Phase 24: the dedicated account experience — sign-in/registration, role choice, and the two onboarding forms.
+    # None: these pages sit outside the public navigation and the account section shell, and render no side navigation.
+    ("signin.html", "signin", None, ("data-signin-region", "data-register-region")),
+    ("onboarding/index.html", "onboarding", None, ("data-onboarding-state", "data-role-choice")),
+    ("onboarding/buyer.html", "onboarding-buyer", None, ("data-buyer-status", "data-buyer-form")),
+    ("onboarding/seller.html", "onboarding-seller", None, ("data-seller-status", "data-seller-form")),
     ("marketplace/index.html", "marketplace-home", "marketplace/index.html", ("data-catalog-region", "data-catalog-search", "data-catalog-status", "data-saved-region", "data-featured-region", "data-creators-region")),
     ("marketplace/build.html", "marketplace-build", "marketplace/index.html", ("data-build-region",)),
     ("membership/index.html", "membership", "membership/index.html", ("data-plan-grid", "data-membership-state", "data-plan-comparison", "data-period-toggle")),
@@ -129,6 +135,13 @@ HONESTY_REQUIREMENTS = (
     ("assets/account.js", "No account service is configured for this site"),
     ("assets/adapters.js", "unavailable"),
     ("assets/preview-catalog.js", "Sample build"),
+    # Phase 24: the onboarding controller keeps stating what does not exist, even in success paths.
+    ("assets/onboarding.js", "No account service is configured for this site"),
+    ("assets/onboarding.js", "Phone verification does not exist in CraftMind yet"),
+    ("assets/onboarding.js", "not identity verification"),
+    ("assets/onboarding.js", "does not publish anything"),
+    ("assets/onboarding.js", "No plan is purchasable in this phase"),
+    ("assets/onboarding.js", "No payout, price, or financial detail was collected"),
 )
 
 # Sample data must be reachable only through an explicit, labelled preview mode.

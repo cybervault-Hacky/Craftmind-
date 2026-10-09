@@ -97,6 +97,10 @@ export const ErrorCode = Object.freeze({
   FEATURE_NOT_IMPLEMENTED: "FEATURE_NOT_IMPLEMENTED",
   STORAGE_BUSY: "STORAGE_BUSY",
 
+  // Phase 24 buyer/seller onboarding
+  PHONE_VERIFICATION_UNAVAILABLE: "PHONE_VERIFICATION_UNAVAILABLE",
+  SELLER_AGREEMENT_REQUIRED: "SELLER_AGREEMENT_REQUIRED",
+
   // Phase 20 security event, incident, and automated response layer
   SECURITY_EVENT_INVALID: "SECURITY_EVENT_INVALID",
   SECURITY_ACTION_UNKNOWN: "SECURITY_ACTION_UNKNOWN",
@@ -198,6 +202,10 @@ const STATUS_BY_CODE = Object.freeze({
   // 501 is the accurate answer: the service does not implement this capability yet, and saying so is the point.
   [ErrorCode.FEATURE_NOT_IMPLEMENTED]: 501,
   [ErrorCode.STORAGE_BUSY]: 503,
+  // A phone field in an onboarding body is a request about a mechanism that does not exist: a validation refusal (400),
+  // not a 501 for the endpoint — the endpoint works, the field is not part of it.
+  [ErrorCode.PHONE_VERIFICATION_UNAVAILABLE]: 400,
+  [ErrorCode.SELLER_AGREEMENT_REQUIRED]: 400,
   [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
@@ -284,6 +292,8 @@ const SAFE_MESSAGES = Object.freeze({
   [ErrorCode.OWNERSHIP_REQUIRED]: "This account does not own the requested resource.",
   [ErrorCode.FEATURE_NOT_IMPLEMENTED]: "That capability is not implemented yet, so nothing was done.",
   [ErrorCode.STORAGE_BUSY]: "The service is busy with another write. Nothing was changed; retry shortly.",
+  [ErrorCode.PHONE_VERIFICATION_UNAVAILABLE]: "Phone verification does not exist in CraftMind yet, so no phone number is accepted or treated as verified.",
+  [ErrorCode.SELLER_AGREEMENT_REQUIRED]: "Accept the current creator agreement before completing seller onboarding.",
   [ErrorCode.NETWORK_ERROR]: "The account service could not complete the network request.",
   [ErrorCode.BACKEND_UNAVAILABLE]: "The account service cannot serve this request right now.",
   [ErrorCode.UNKNOWN_ERROR]: "The account service could not complete this request.",

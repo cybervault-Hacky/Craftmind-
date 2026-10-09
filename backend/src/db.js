@@ -647,6 +647,102 @@ const MIGRATIONS = [
       `CREATE INDEX developer_confirmations_by_expiry ON developer_action_confirmations(expires_at)`,
     ],
   },
+  {
+    // Phase 24: buyer and seller onboarding records.
+    //
+    // Nothing is dropped or rewritten. `buyer_onboarding` and `seller_onboarding` are new 1:1 records keyed by the
+    // account — deliberately NOT new identities: the creator handle, display name, bio, avatar, and category stay in
+    // `creator_profiles`, and email verification stays in `users.email_verified_at`, so onboarding cannot become a
+    // second source of truth for either. A seller row stores only what Phase 23 had no place for: the referral answer,
+    // the compatibility claims, and the creator-agreement receipt.
+    //
+    // The audit log is rebuilt to declare two new action types (`BUYER_ONBOARDING_SAVED`, `SELLER_ONBOARDING_SAVED`) in
+    // its CHECK constraint, following the exact pattern of v6: create the shadow table, copy every row, replace, then
+    // restore the indexes and append-only triggers. Every v6 action type stays listed, so history remains writable-then
+    // immutable and no existing record becomes invalid.
+    version: 7,
+    statements: [
+      `CREATE TABLE buyer_onboarding (
+         user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+         full_name TEXT NOT NULL CHECK (length(full_name) BETWEEN 2 AND 120),
+         referral_source TEXT NOT NULL CHECK (referral_source IN (
+           'YOUTUBE', 'INSTAGRAM', 'GOOGLE', 'REDDIT', 'DISCORD', 'FRIEND_REFERRAL', 'MINECRAFT_COMMUNITY', 'OTHER'
+         )),
+         referral_detail TEXT NOT NULL DEFAULT '' CHECK (length(referral_detail) <= 160),
+         completed_at TEXT NOT NULL,
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL
+       )`,
+      `CREATE TABLE seller_onboarding (
+         user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+         referral_source TEXT NOT NULL CHECK (referral_source IN (
+           'YOUTUBE', 'INSTAGRAM', 'GOOGLE', 'REDDIT', 'DISCORD', 'FRIEND_REFERRAL', 'MINECRAFT_COMMUNITY', 'OTHER'
+         )),
+         referral_detail TEXT NOT NULL DEFAULT '' CHECK (length(referral_detail) <= 160),
+         editions TEXT NOT NULL CHECK (length(editions) BETWEEN 2 AND 400),
+         minecraft_versions TEXT NOT NULL CHECK (length(minecraft_versions) BETWEEN 2 AND 400),
+         loaders TEXT NOT NULL CHECK (length(loaders) BETWEEN 2 AND 400),
+         agreement_version TEXT NOT NULL CHECK (length(agreement_version) BETWEEN 3 AND 64),
+         agreed_at TEXT NOT NULL,
+         completed_at TEXT NOT NULL,
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL
+       )`,
+      `CREATE TABLE admin_audit_log_v7 (
+         audit_id TEXT PRIMARY KEY,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke',
+           'security_overview', 'list_security_incidents', 'get_security_incident', 'list_security_events',
+           'list_security_actions', 'list_security_notifications', 'developer_ai_security_summary',
+           'SECURITY_INCIDENT_CREATED', 'SECURITY_RATE_LIMIT_APPLIED', 'SECURITY_REQUEST_REJECTED',
+           'SECURITY_SESSION_REVOKED', 'SECURITY_ACCOUNT_PROTECTED', 'SECURITY_ALERT_CREATED',
+           'SECURITY_PROTECTION_RELEASED', 'SECURITY_INCIDENT_RESOLVED',
+           'inspect_membership', 'grant_membership', 'grant_credits', 'reverse_credit_grant', 'list_credit_transactions',
+           'MEMBERSHIP_BASELINE_ASSIGNED', 'MEMBERSHIP_GRANTED', 'MEMBERSHIP_EXPIRED',
+           'CREDIT_GRANTED', 'CREDIT_CONSUMED', 'CREDIT_EXPIRED', 'CREDIT_REVERSED',
+           'CREDIT_OPERATION_REJECTED', 'ENTITLEMENT_DENIED',
+           'inspect_creator', 'list_creator_profiles', 'verify_creator', 'revoke_creator_verification',
+           'suspend_creator', 'restore_creator',
+           'inspect_server', 'list_server_workspaces', 'suspend_server', 'restore_server', 'archive_server',
+           'CREATOR_PROFILE_CREATED', 'CREATOR_PROFILE_UPDATED', 'CREATOR_STATUS_CHANGED',
+           'CREATOR_VERIFICATION_CHANGED', 'CREATOR_ACCESS_DENIED',
+           'SERVER_CREATED', 'SERVER_UPDATED', 'SERVER_STATUS_CHANGED', 'SERVER_ACCESS_DENIED',
+           'BUYER_ONBOARDING_SAVED', 'SELLER_ONBOARDING_SAVED'
+         )),
+         target_user_id TEXT,
+         incident_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `INSERT INTO admin_audit_log_v7
+         (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+       SELECT audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json
+         FROM admin_audit_log`,
+      `DROP TRIGGER admin_audit_log_no_update`,
+      `DROP TRIGGER admin_audit_log_no_delete`,
+      `DROP TRIGGER admin_audit_log_no_replacement`,
+      `DROP TABLE admin_audit_log`,
+      `ALTER TABLE admin_audit_log_v7 RENAME TO admin_audit_log`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC)`,
+      `CREATE INDEX admin_audit_by_incident ON admin_audit_log(incident_id, occurred_at DESC)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+    ],
+  },
 ];
 
 export const AUDIT_ACTION_TYPES = Object.freeze({
@@ -686,6 +782,7 @@ export const AUDIT_ACTION_TYPES = Object.freeze({
     "CREATOR_VERIFICATION_CHANGED", "CREATOR_ACCESS_DENIED",
     "SERVER_CREATED", "SERVER_UPDATED", "SERVER_STATUS_CHANGED", "SERVER_ACCESS_DENIED",
   ]),
+  ONBOARDING_EVENTS: Object.freeze(["BUYER_ONBOARDING_SAVED", "SELLER_ONBOARDING_SAVED"]),
   AUTOMATED_SECURITY_ACTIONS: Object.freeze([
     "SECURITY_INCIDENT_CREATED", "SECURITY_RATE_LIMIT_APPLIED", "SECURITY_REQUEST_REJECTED",
     "SECURITY_SESSION_REVOKED", "SECURITY_ACCOUNT_PROTECTED", "SECURITY_ALERT_CREATED",

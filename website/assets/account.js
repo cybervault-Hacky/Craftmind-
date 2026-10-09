@@ -55,7 +55,7 @@ function requireSession(region, adapter) {
       details: [
         "The Android app talks to a configured account service; this repository operates no production endpoint and no mail provider.",
         "A deployer can connect a service by defining CRAFTMIND_SITE_CONFIG.accountServiceOrigin before the site scripts load.",
-        `Supported calls are limited to the implemented surface: ${ACCOUNT_ENDPOINTS.length} endpoints (sign-in, sessions, verification, password recovery).`,
+        `Supported calls are limited to the implemented surface: ${ACCOUNT_ENDPOINTS.length} endpoints (sign-in, sessions, verification, password recovery, account state, creator reads, and buyer/seller onboarding).`,
       ],
     });
     return false;

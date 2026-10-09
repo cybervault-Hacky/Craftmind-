@@ -44,6 +44,13 @@ import {
   updateCreatorProfileForSession,
   updateServerForSession,
 } from "./creator-server-api.js";
+import {
+  buyerOnboardingForSession,
+  onboardingStateForSession,
+  saveBuyerOnboardingForSession,
+  saveSellerOnboardingForSession,
+  sellerOnboardingForSession,
+} from "./onboarding-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -244,7 +251,7 @@ function statusForEmailDelivery(result, emailDelivery) {
  * changes, so a source or session already under an active Phase 20 protection is throttled here too — the controls are
  * reused exactly as they are, not duplicated.
  */
-const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/", "/creator/", "/servers/"];
+const SECURITY_SENSITIVE_PREFIXES = ["/auth/", "/account/", "/developer/", "/creator/", "/servers/", "/onboarding/"];
 
 function isSecuritySensitiveRoute(pathKey) {
   return SECURITY_SENSITIVE_PREFIXES.some((prefix) => pathKey.startsWith(prefix));
@@ -266,6 +273,9 @@ function routeSecurityCategory(pathKey) {
   // category at all: an anonymous read is throttled by the request limit and by the autonomous source protections, and
   // applying an *account* protection to an anonymous request would protect nothing.
   if (pathKey === "/creator/profile" || pathKey.startsWith("/servers/")) return "SESSION";
+  // Phase 24 onboarding saves are credential-bearing state changes about the account itself; both verbs share the
+  // path, so the category covers the read and the write together, exactly as it does for /creator/profile.
+  if (pathKey === "/onboarding/buyer" || pathKey === "/onboarding/seller") return "SESSION";
   return "REQUEST";
 }
 
@@ -672,6 +682,41 @@ export function createAccountService({ database, configuration, logger = console
       const body = await readJsonBody(request, configuration.maxBodyBytes);
       consumeLimit(limits, "server-write", request, "", configuration.rateLimit.serverWrite);
       return { status: 201, payload: createServerForSession(database, configuration, token, body) };
+    }],
+    // Phase 24 onboarding surface. The account always comes from the bearer session; bodies carry content only.
+    // Reads are ordinary authenticated state; saves consume the write bucket and answer with the same composed shape
+    // as the read, so the website renders server truth after every write.
+    ["GET /account/onboarding", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "onboarding-read", request, "", configuration.rateLimit.onboardingRead);
+      return { status: 200, payload: onboardingStateForSession(database, configuration, token) };
+    }],
+    ["GET /onboarding/buyer", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "onboarding-read", request, "", configuration.rateLimit.onboardingRead);
+      return { status: 200, payload: buyerOnboardingForSession(database, configuration, token) };
+    }],
+    ["POST /onboarding/buyer", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "onboarding-write", request, "", configuration.rateLimit.onboardingWrite);
+      return { status: 200, payload: saveBuyerOnboardingForSession(database, configuration, token, body) };
+    }],
+    ["GET /onboarding/seller", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "onboarding-read", request, "", configuration.rateLimit.onboardingRead);
+      return { status: 200, payload: sellerOnboardingForSession(database, configuration, token) };
+    }],
+    ["POST /onboarding/seller", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "onboarding-write", request, "", configuration.rateLimit.onboardingWrite);
+      return { status: 200, payload: saveSellerOnboardingForSession(database, configuration, token, body) };
     }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],

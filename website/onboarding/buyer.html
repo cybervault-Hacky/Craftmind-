@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="Complete buyer onboarding on CraftMind: name, how you heard about us, and honest verification status. No address, no phone number, no identity document for digital purchases.">
+  <title>Buyer onboarding — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../assets/site.js"></script>
+</head>
+<body data-page="onboarding-buyer">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="../index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="../index.html">Home</a>
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creators/index.html">Creators</a>
+        <a href="../how-it-works.html">How it works</a>
+        <a href="../features.html">Features</a>
+        <a href="../download.html">Download</a>
+        <a href="../about.html">About</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+    <div class="container context-strip">
+      <p class="context-label"><span class="badge badge--muted">Buyer onboarding</span> <span class="context-current">Name + referral answers · email from the real mechanism · no sensitive data</span></p>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="index.html">Onboarding</a> <span aria-hidden="true">/</span> <span>Buyer</span></p>
+      <p class="eyebrow">BUYER SETUP</p>
+      <h1 id="page-title">Buyer onboarding,<br>kept minimal on purpose.</h1>
+      <p class="lead">Digital purchases need a name and honest verification status — not an address, a birth date, or a phone number. Email verification comes from the account service's real mechanism; phone verification does not exist in CraftMind yet, and this page says so instead of pretending otherwise.</p>
+    </section>
+
+    <section class="page-section container">
+      <div class="stack-lg">
+        <div class="stack" data-buyer-status>
+          <div class="panel"><p class="small muted">Loading your buyer answers from the account service…</p></div>
+        </div>
+
+        <div class="panel" data-buyer-form>
+          <div class="panel-head"><div><h3>Buyer answers</h3>
+          <p class="small muted">Saved by the account service for this account only. Nothing here is a payment detail,
+          and repeating the form updates the same record instead of creating a new one.</p></div></div>
+          <form class="stack" data-buyer-form-element novalidate>
+            <div class="field">
+              <label for="buyer-full-name">Full name</label>
+              <input class="input" id="buyer-full-name" name="fullName" type="text" autocomplete="name" minlength="2" maxlength="120" required aria-describedby="buyer-full-name-hint">
+              <span class="field-hint" id="buyer-full-name-hint">How your name should appear on records — 2 to 120 characters.</span>
+            </div>
+            <div class="field">
+              <label for="buyer-referral">How did you hear about CraftMind?</label>
+              <select class="input" id="buyer-referral" name="referralSource" required>
+              <option value="YOUTUBE">YouTube</option>
+              <option value="INSTAGRAM">Instagram</option>
+              <option value="GOOGLE">Google / Search</option>
+              <option value="REDDIT">Reddit</option>
+              <option value="DISCORD">Discord</option>
+              <option value="FRIEND_REFERRAL">Friend or referral</option>
+              <option value="MINECRAFT_COMMUNITY">Minecraft community</option>
+              <option value="OTHER">Other</option>
+              </select>
+            </div>
+            <div class="field" data-detail-row hidden>
+              <label for="buyer-referral-detail">A few words about “Other” <span class="optional">optional</span></label>
+              <input class="input" id="buyer-referral-detail" name="referralDetail" type="text" maxlength="160" aria-describedby="buyer-referral-detail-hint">
+              <span class="field-hint" id="buyer-referral-detail-hint">Up to 160 characters. Leave empty if it is not needed.</span>
+            </div>
+            <div class="state-actions">
+              <button type="submit" class="button button-primary">Save buyer answers</button>
+              <a class="button button-secondary" href="index.html">Back to roles</a>
+            </div>
+          </form>
+          <div data-buyer-feedback></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><h3>Collected — and not collected</h3>
+          <p class="small muted">Deliberate limits, enforced by the account service, not by this form.</p></div></div>
+          <ul>
+            <li>Collected: your name, how you heard about CraftMind, and email verification status from the real
+            mechanism.</li>
+            <li>Typed phone numbers are refused — phone verification does not exist in CraftMind yet, so a number
+            could never become a verified one.</li>
+            <li>Never collected for digital purchases: physical address, date of birth, government identifiers, or
+            precise location.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="../index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../membership/index.html">Membership</a>
+        <a href="../creator/index.html">Creator studio</a>
+        <a href="../account/index.html">Account</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+        <a href="../download.html">Download</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

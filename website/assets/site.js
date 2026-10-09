@@ -11,6 +11,7 @@ import { initAccount } from "./account.js";
 import { initCreatorAnalytics, initCreatorDashboard, initCreatorEarnings, initCreatorListings, initCreatorOrders, initCreatorReviews, initListingWizard } from "./creator-studio.js";
 import { initMarketplace, initMarketplaceDirectory } from "./marketplace.js";
 import { initMembership } from "./membership.js";
+import { initBuyerOnboarding, initOnboardingHub, initSellerOnboarding, initSignIn } from "./onboarding.js";
 import { ensureLiveRegion } from "./state.js";
 
 /** Progressive enhancement marker: CSS may style `[data-js="on"]` refinements without breaking the no-JS reading. */
@@ -61,6 +62,11 @@ function initCurrentPage() {
     initListingWizard(document.querySelector(`[data-page="${page}"]`));
   }
   if (page.startsWith("account")) initAccount();
+  // Phase 24: the dedicated account-experience pages — sign-in/registration, role choice, and the two forms.
+  if (page === "signin") initSignIn();
+  if (page === "onboarding") initOnboardingHub();
+  if (page === "onboarding-buyer") initBuyerOnboarding();
+  if (page === "onboarding-seller") initSellerOnboarding();
 }
 
 markScripted();

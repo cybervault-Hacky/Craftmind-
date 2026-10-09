@@ -179,6 +179,7 @@ describe("account service security", () => {
 
     assert.deepEqual(tables, [
       "admin_audit_log",
+      "buyer_onboarding",
       "creator_profiles",
       "creator_status_history",
       "credit_ledger",
@@ -199,6 +200,7 @@ describe("account service security", () => {
       "security_incidents",
       "security_notifications",
       "security_rate_limit_state",
+      "seller_onboarding",
       "server_members",
       "server_workspaces",
       "sessions",
