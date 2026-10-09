@@ -90,6 +90,25 @@ import {
   startMilestoneForSession,
   submitDeliveryForSession,
 } from "./order-api.js";
+import {
+  addBlockForSession,
+  createReportForSession,
+  myBlocksForSession,
+  myReportsForSession,
+  removeBlockForSession,
+  reportsAboutMeForSession,
+  trustSummaryForSession,
+  withdrawReportForSession,
+} from "./marketplace-trust-api.js";
+import {
+  addDisputeStatementForSession,
+  disputeDetailForSession,
+  listMyDisputesForSession,
+  listOrderDisputesForSession,
+  openDisputeForSession,
+  setDisputePositionForSession,
+  withdrawDisputeForSession,
+} from "./order-dispute-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -325,6 +344,12 @@ function routeSecurityCategory(pathKey) {
   // Phase 27 order routes: reads and mutations under /orders/… are session-scoped (ownership is derived from the
   // token, never the body); the static /buyer/orders and /creator/orders paths join their hire siblings.
   if (pathKey.startsWith("/orders/") || pathKey === "/buyer/orders" || pathKey.startsWith("/creator/orders")) return "SESSION";
+  // Phase 30 trust routes: reports, the block list, and the trust summary are session-scoped reads and writes over
+  // the caller's own relationships, so they join the SESSION category. The public /marketplace/listings and
+  // /marketplace/jobs reads are unaffected and stay ordinary request-category traffic. (Order disputes already live
+  // under /orders/, which the line above routes here.)
+  if (pathKey.startsWith("/marketplace/reports") || pathKey.startsWith("/marketplace/blocks")
+    || pathKey.startsWith("/marketplace/disputes") || pathKey === "/marketplace/trust") return "SESSION";
   return "REQUEST";
 }
 
@@ -845,6 +870,63 @@ export function createAccountService({ database, configuration, logger = console
       const searchParams = new URL(request.url ?? "/", "http://orders.local").searchParams;
       return { status: 200, payload: creatorOrdersForSession(database, configuration, token, searchParams) };
     }],
+    // Phase 30 marketplace trust: reports and the avoid/block list. Every route identifies the caller from the bearer
+    // session alone and derives every relationship server-side; none accepts a reporter, a target, a blocked account
+    // (on create), a subject status, or a money field. Writes spend the dedicated trust budget; reads the ordinary one.
+    ["POST /marketplace/reports", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 201, payload: createReportForSession(database, configuration, token, body) };
+    }],
+    ["GET /marketplace/reports", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: myReportsForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/reports/about-me", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: reportsAboutMeForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/trust", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: trustSummaryForSession(database, configuration, token) };
+    }],
+    ["POST /marketplace/blocks", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: addBlockForSession(database, configuration, token, body) };
+    }],
+    ["POST /marketplace/blocks/remove", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: removeBlockForSession(database, configuration, token, body) };
+    }],
+    ["GET /marketplace/blocks", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: myBlocksForSession(database, configuration, token) };
+    }],
+    ["GET /marketplace/disputes", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: listMyDisputesForSession(database, configuration, token, searchParams) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -1271,6 +1353,89 @@ export function createAccountService({ database, configuration, logger = console
         const body = await readJsonBody(request, configuration.maxBodyBytes);
         consumeLimit(limits, "milestone-write", request, "", configuration.rateLimit.orderWrite);
         return { status: 200, payload: approveMilestoneForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
+      },
+    },
+    // Phase 30 trust and dispute routes. Report and dispute ids are validated inside the handlers (shape + a
+    // relationship the caller actually holds); the router only ever sees the route pattern in the request log, never a
+    // probeable id, and every actor is the session account. No path here reads or writes money.
+    {
+      method: "POST",
+      name: "/marketplace/reports/:id/withdraw",
+      pattern: /^\/marketplace\/reports\/([^/]{1,64})\/withdraw$/,
+      handler: (request, _context, reportId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+        return { status: 200, payload: withdrawReportForSession(database, configuration, token, decodeURIComponent(reportId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes$/,
+      handler: async (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 201, payload: openDisputeForSession(database, configuration, token, decodeURIComponent(orderId), body) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/orders/:id/disputes",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes$/,
+      handler: (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: listOrderDisputesForSession(database, configuration, token, decodeURIComponent(orderId)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/orders/:id/disputes/:did",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})$/,
+      handler: (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: disputeDetailForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/statements",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/statements$/,
+      handler: async (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 201, payload: addDisputeStatementForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/position",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/position$/,
+      handler: async (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 200, payload: setDisputePositionForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/withdraw",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/withdraw$/,
+      handler: (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 200, payload: withdrawDisputeForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId)) };
       },
     },
   ];

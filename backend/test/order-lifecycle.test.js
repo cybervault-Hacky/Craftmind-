@@ -286,10 +286,10 @@ function milestoneRow(service, milestoneId) {
 describe("Phase 27 order schema", () => {
   it("1. initializes the fresh schema at v10 with the order tables, constraints, indexes, triggers, and audit types", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 10);
-    assert.equal(REGISTERED_AUDIT_ACTION_TYPES.size, 90);
+    assert.equal(SCHEMA_VERSION, 11);
+    assert.equal(REGISTERED_AUDIT_ACTION_TYPES.size, 102);
     const version = service.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version;
-    assert.equal(version, 10);
+    assert.equal(version, 11);
 
     const tables = service.database
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('orders', 'order_milestones', 'milestone_deliveries', 'milestone_revision_requests')")
@@ -377,7 +377,7 @@ describe("Phase 27 order schema", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 9").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 11);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 9").get().applied_at, appliedAt);
 
     // Prior rows survive with their values, and the append-only audit triggers were restored by the rebuild.
@@ -416,7 +416,7 @@ describe("Phase 27 order schema", () => {
     const orders = database.prepare("SELECT COUNT(*) AS count FROM orders").get().count;
     const indexes = database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND (name LIKE 'orders%' OR name LIKE 'milestone%')").get().count;
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 11);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, orders);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND (name LIKE 'orders%' OR name LIKE 'milestone%')").get().count, indexes);
     database.close();
@@ -1346,8 +1346,8 @@ describe("Phase 27 bounds, safety, and compatibility", () => {
     const flow = await awardedOrderFlow(service);
 
     // Error vocabulary and audit vocabulary grew; nothing was removed (100 codes, 90 audit types).
-    assert.equal(Object.keys(ErrorCode).length, 100);
-    assert.equal(REGISTERED_AUDIT_ACTION_TYPES.size, 90);
+    assert.equal(Object.keys(ErrorCode).length, 107);
+    assert.equal(REGISTERED_AUDIT_ACTION_TYPES.size, 102);
 
     // The P26 surfaces still answer exactly as before the phase.
     const ownProposals = await call(service.baseUrl, "GET", "/creator/proposal", { headers: bearer(flow.creator.accessToken) });
@@ -1396,7 +1396,7 @@ describe("Phase 27 bounds, safety, and compatibility", () => {
           500, 1000, 'INR', 5, 'SELECTED', '${timestamp}', '${timestamp}');
     `);
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 10);
+    assert.equal(database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 11);
     // The legacy proposal's selected state and budget are exactly what the new order logic derives from.
     const proposal = database.prepare("SELECT * FROM job_proposals WHERE proposal_id = 'prp_legacy'").get();
     assert.equal(proposal.status, "SELECTED");

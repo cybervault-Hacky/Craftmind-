@@ -332,6 +332,10 @@ export function loadConfiguration(environment = process.env, options = {}) {
       orderWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_ORDER_WRITE_MAX", 60, 10_000), windowMs: positiveInteger(environment, "RATE_ORDER_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       deliveryWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_DELIVERY_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DELIVERY_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       revisionWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_REVISION_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_REVISION_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 30: reports, blocks, and disputes are bounded state changes with their own budgets so a burst in one
+      // trust category can never spend another's. Reads reuse the ordinary authenticated-read budget.
+      trustWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_TRUST_WRITE_MAX", 20, 10_000), windowMs: positiveInteger(environment, "RATE_TRUST_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      disputeWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_DISPUTE_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DISPUTE_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

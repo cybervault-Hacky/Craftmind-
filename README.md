@@ -289,6 +289,48 @@ and Server are defined, granted internally, and deliberately not for sale. Full 
   → PASS (30 pages, 884 links); a jsdom check of the membership and credit states; `ANDROID_BUILD = NOT_RUN` (no Android
   toolchain here). No live deployment, external security review, payment provider call, or live AI call is claimed.
 
+## Marketplace roadmap (Phases 23–30): a note on numbering
+
+The chronological `## Phase NN` headings above track the app-facing story (compatibility, UI, accounts, membership).
+The **marketplace** is built on the roadmap whose phase numbers appear in the backend source and commit history:
+**Phase 23** creator & server capability foundation, **24** buyer/seller onboarding, **25** listings & discovery,
+**26** Hire a Builder, **27** order lifecycle, then **30** below. Phases 23–27 were implemented with full services and
+test suites (see `git log` and each module's file header) but were not given separate `## Phase` headings; their
+contracts live in `backend/src/*.js` and `backend/test/*.test.js`. `Phase 28` (payments, commissions, refunds,
+payouts) and `Phase 29` (purchasable memberships, credit purchases, and the Trusted Seller marker) are **deliberately
+deferred by the owner** and remain unimplemented; this repository does not treat a deferred monetization phase as
+done, and no phase here asserts that money moves.
+
+## Phase 30 — marketplace trust, disputes, and creator protection
+
+Phase 30 adds a **non-monetary** trust layer over the existing marketplace, extending the Phase 23–27 services and the
+Phase 19/20 audit/rate-limit/authorization machinery rather than standing up a parallel one. Full contract:
+[`docs/marketplace-trust-disputes.md`](docs/marketplace-trust-disputes.md).
+
+- **Reports, the block list, and disputes.** `backend/src/marketplace-trust.js` adds reports against a `LISTING`, a
+  `JOB`, or the counterparty of your own `ORDER`, plus a self-service avoid/block list derived only from a
+  one-to-one relationship you actually hold. `backend/src/order-disputes.js` adds an order-scoped, participants-only
+  dispute workflow. All endpoints are session-authoritative; no body ever names a reporter, a target, a blocked
+  account, a status, an outcome, or an amount.
+- **The gap Phase 27 left is now closed — without money.** A dispute freezes completion/cancellation while it is open
+  (an inert `hasOpenDisputeForOrder` read, so undisputed orders behave exactly as before) and, only when **both**
+  parties record the same position, either keeps the order `ACTIVE` (`CONTINUE`) or closes it as `CANCELLED` (`CLOSE`)
+  with every milestone, delivery, and revision preserved. There is no refund, payout, commission, or settlement
+  surface anywhere in the phase.
+- **Privacy is the point.** The party a report is about sees the category and subject only — never who filed it, never
+  the note — and the trust summary is a private self-visible count, not a fabricated public score. Statements are
+  append-only immutable evidence, database-trigger-enforced like deliveries.
+- **Additive and audited.** SQLite `v10 → v11` creates five tables and rebuilds `admin_audit_log` once more (the
+  v6–v10 shadow-table pattern) to accept twelve new action types (`REGISTERED_AUDIT_ACTION_TYPES` `90 → 102`); two
+  dedicated rate budgets protect writes. No existing table, route, guarantee, or test was weakened.
+- **Verification status:** `cd backend && npm test` → **306/306 passed across 53 suites** (up from 278/43), including
+  the new `marketplace-trust.test.js` (12) and `order-disputes.test.js` (16) and a migration-upgrade test that proves
+  a seeded v10 database upgrades to v11 with order rows and audit history preserved. `python3
+  scripts/check_website.py` → PASS (41 pages — no website change was required, and the site's existing "refunds,
+  payouts… not yet supported" copy stays true); `python3 scripts/check_release_config.py` → PASS; `node --check` on
+  every module → PASS. `ANDROID_BUILD = NOT_RUN` (no toolchain here). No live deployment, browser/device E2E, external
+  security review, or payment-provider call is performed or claimed.
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
@@ -361,7 +403,7 @@ The Android UI reports the authenticated session, bridge-reported edition/Minecr
 - Other provider adapters or user-configurable AI endpoints.
 - Manual build editing/design tools, block palettes, coordinate editors, templates, rollback, undo, or visual/screenshot verification of a constructed world.
 - Cloud sync, account-owned build history, cross-device settings, ads, premium tiers, or an AI gateway/provider-billing backend. The account service handles authentication only; local build history and BYOK provider credentials are not attached to accounts.
-- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard; Phase 21 adds only interface and state foundations for the marketplace, creator studio, membership, and account center, with no service behind them and no capability to purchase, sell, publish, or subscribe. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable.
+- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard; Phase 21 adds only interface and state foundations for the marketplace, creator studio, membership, and account center — at that point with no service behind them. **Correction for the current checkout:** Phases 23–30 have since put real, server-authoritative services behind those surfaces, so a signed-in user *can* hold a creator profile, complete onboarding, publish and archive listings, post a job, exchange proposals, run an order with milestones/deliveries/revisions, and file reports, hold a block, or open/resolve a dispute (Phases 22 and 30 in particular). What remains **NOT IMPLEMENTED** is exactly the deferred monetization and its neighbors: purchase, checkout, subscriptions, payment processing, marketplace/creator payouts, refunds, commission, escrow, credit *purchasing*, the Trusted Seller marker, gifts, full platform moderation beyond the existing developer tools, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable.
 - Bedrock execution: no Bedrock bridge implementation exists here, no Bedrock version is runtime-certified, and the Bedrock block/state catalog is empty, so the Bedrock bridge never receives a BuildPlan. Bedrock cannot load the Java Fabric mod. No unsafe client automation (screen scraping, input simulation, injection, patching, anti-cheat/DRM/license bypass) is implemented or planned as a substitute.
 - Manual Minecraft runtime selection or override: there is no edition/Minecraft-version/loader/adapter picker, no nearest-version fallback, no cross-edition matching, and no "execute anyway" control. The runtime comes only from the authenticated bridge; a runtime that cannot be detected stays unknown and construction stays disabled.
 - Legacy/beta/snapshot/experimental execution: no legacy bridge, Forge mod, or legacy runtime integration exists here; the two declared legacy contracts are `EXPERIMENTAL` with `NOT_PERFORMED` certification and an empty block/state catalog, so a recognized legacy runtime is refused with a typed `RUNTIME_NOT_CERTIFIED` failure before any bridge call. Support would require a real runtime test recorded in the registry first.

@@ -1130,6 +1130,160 @@ const MIGRATIONS = [
          BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
     ],
   },
+  {
+    // Phase 30 — marketplace trust, disputes, and creator protection. Everything here is state, ids, and audit
+    // vocabulary: no amount, balance, payment, refund, payout, or commission exists or is implied, and the deferred
+    // Phase 28/29 money surfaces are deliberately absent. Reports flag a listing/job/order; blocks are a directed
+    // avoid relationship between two accounts that prevents proposals; disputes are an order-scoped, participant-only
+    // workflow whose only effect on an order is to freeze closure while open and, when BOTH parties agree, close it
+    // (status CANCELLED) with history preserved — never a settlement. Tables are additive; no earlier row is touched.
+    // The audit log is rebuilt once more (the shadow-table pattern from v6–v10) so its CHECK accepts the twelve Phase
+    // 30 action types.
+    version: 11,
+    statements: [
+      `CREATE TABLE marketplace_reports (
+         report_id TEXT PRIMARY KEY,
+         reporter_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         target_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         subject_type TEXT NOT NULL CHECK (subject_type IN ('LISTING', 'JOB', 'ORDER')),
+         subject_id TEXT NOT NULL CHECK (length(subject_id) BETWEEN 6 AND 64),
+         category TEXT NOT NULL CHECK (category IN ('SPAM', 'INAPPROPRIATE', 'MISREPRESENTATION', 'SAFETY', 'CONDUCT', 'OTHER')),
+         note TEXT CHECK (note IS NULL OR (length(note) BETWEEN 1 AND 1000)),
+         status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'WITHDRAWN')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         withdrawn_at TEXT,
+         CHECK (status <> 'WITHDRAWN' OR withdrawn_at IS NOT NULL),
+         CHECK (status = 'WITHDRAWN' OR withdrawn_at IS NULL),
+         -- A report is never filed against yourself: the target is always a real counterparty.
+         CHECK (target_user_id <> reporter_user_id)
+       )`,
+      `CREATE TABLE marketplace_blocks (
+         blocker_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         blocked_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         reason TEXT CHECK (reason IS NULL OR (length(reason) BETWEEN 1 AND 240)),
+         created_at TEXT NOT NULL,
+         PRIMARY KEY (blocker_user_id, blocked_user_id),
+         CHECK (blocker_user_id <> blocked_user_id)
+       )`,
+      `CREATE TABLE order_disputes (
+         dispute_id TEXT PRIMARY KEY,
+         order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+         opened_by TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         other_participant TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         reason_category TEXT NOT NULL CHECK (reason_category IN ('DELIVERY', 'QUALITY', 'COMMUNICATION', 'TIMELINE', 'SCOPE', 'CONDUCT', 'OTHER')),
+         reason TEXT NOT NULL CHECK (length(reason) BETWEEN 5 AND 2000),
+         status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'RESOLVED')),
+         outcome TEXT CHECK (outcome IS NULL OR outcome IN ('WITHDRAWN', 'CONTINUED', 'CLOSED')),
+         statement_count INTEGER NOT NULL DEFAULT 0 CHECK (statement_count BETWEEN 0 AND 12),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         resolved_at TEXT,
+         CHECK (status = 'OPEN' OR (resolved_at IS NOT NULL AND outcome IS NOT NULL)),
+         CHECK (status = 'RESOLVED' OR (resolved_at IS NULL AND outcome IS NULL))
+       )`,
+      `CREATE TABLE order_dispute_statements (
+         statement_id TEXT PRIMARY KEY,
+         dispute_id TEXT NOT NULL REFERENCES order_disputes(dispute_id) ON DELETE CASCADE,
+         order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+         author_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 12),
+         body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 2000),
+         created_at TEXT NOT NULL
+       )`,
+      `CREATE TABLE order_dispute_positions (
+         dispute_id TEXT NOT NULL REFERENCES order_disputes(dispute_id) ON DELETE CASCADE,
+         participant_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         position TEXT NOT NULL CHECK (position IN ('CONTINUE', 'CLOSE')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         PRIMARY KEY (dispute_id, participant_user_id)
+       )`,
+      `CREATE INDEX reports_by_subject ON marketplace_reports(subject_type, subject_id, status, created_at, report_id)`,
+      `CREATE INDEX reports_by_reporter ON marketplace_reports(reporter_user_id, created_at DESC, report_id)`,
+      `CREATE INDEX reports_by_target ON marketplace_reports(target_user_id, status, created_at DESC, report_id)`,
+      `CREATE INDEX blocks_by_blocker ON marketplace_blocks(blocker_user_id, created_at, blocked_user_id)`,
+      `CREATE INDEX blocks_by_blocked ON marketplace_blocks(blocked_user_id)`,
+      `CREATE INDEX disputes_by_order ON order_disputes(order_id, created_at, dispute_id)`,
+      `CREATE INDEX disputes_by_opener ON order_disputes(opened_by, updated_at DESC, dispute_id)`,
+      `CREATE INDEX disputes_by_participant ON order_disputes(other_participant, updated_at DESC, dispute_id)`,
+      `CREATE INDEX dispute_statements_by_dispute ON order_dispute_statements(dispute_id, version)`,
+      `CREATE INDEX dispute_positions_by_dispute ON order_dispute_positions(dispute_id)`,
+      // One OPEN report per reporter+subject, and one OPEN dispute per order, are enforced in the database as well
+      // as in the application, so a concurrent retry converges on a typed conflict rather than a second row.
+      `CREATE UNIQUE INDEX reports_open_per_reporter_subject ON marketplace_reports(reporter_user_id, subject_type, subject_id) WHERE status = 'OPEN'`,
+      `CREATE UNIQUE INDEX disputes_one_open_per_order ON order_disputes(order_id) WHERE status = 'OPEN'`,
+      `CREATE UNIQUE INDEX dispute_statement_versions ON order_dispute_statements(dispute_id, version)`,
+      // Dispute statements are immutable evidence: append-only, exactly like deliveries and the credit ledger.
+      `CREATE TRIGGER dispute_statements_no_update BEFORE UPDATE ON order_dispute_statements
+         BEGIN SELECT RAISE(ABORT, 'dispute statements are immutable'); END`,
+      `CREATE TRIGGER dispute_statements_no_delete BEFORE DELETE ON order_dispute_statements
+         BEGIN SELECT RAISE(ABORT, 'dispute statements are immutable'); END`,
+      `CREATE TABLE admin_audit_log_v11 (
+         audit_id TEXT PRIMARY KEY,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke',
+           'security_overview', 'list_security_incidents', 'get_security_incident', 'list_security_events',
+           'list_security_actions', 'list_security_notifications', 'developer_ai_security_summary',
+           'SECURITY_INCIDENT_CREATED', 'SECURITY_RATE_LIMIT_APPLIED', 'SECURITY_REQUEST_REJECTED',
+           'SECURITY_SESSION_REVOKED', 'SECURITY_ACCOUNT_PROTECTED', 'SECURITY_ALERT_CREATED',
+           'SECURITY_PROTECTION_RELEASED', 'SECURITY_INCIDENT_RESOLVED',
+           'inspect_membership', 'grant_membership', 'grant_credits', 'reverse_credit_grant', 'list_credit_transactions',
+           'MEMBERSHIP_BASELINE_ASSIGNED', 'MEMBERSHIP_GRANTED', 'MEMBERSHIP_EXPIRED',
+           'CREDIT_GRANTED', 'CREDIT_CONSUMED', 'CREDIT_EXPIRED', 'CREDIT_REVERSED',
+           'CREDIT_OPERATION_REJECTED', 'ENTITLEMENT_DENIED',
+           'inspect_creator', 'list_creator_profiles', 'verify_creator', 'revoke_creator_verification',
+           'suspend_creator', 'restore_creator',
+           'inspect_server', 'list_server_workspaces', 'suspend_server', 'restore_server', 'archive_server',
+           'CREATOR_PROFILE_CREATED', 'CREATOR_PROFILE_UPDATED', 'CREATOR_STATUS_CHANGED',
+           'CREATOR_VERIFICATION_CHANGED', 'CREATOR_ACCESS_DENIED',
+           'SERVER_CREATED', 'SERVER_UPDATED', 'SERVER_STATUS_CHANGED', 'SERVER_ACCESS_DENIED',
+           'BUYER_ONBOARDING_SAVED', 'SELLER_ONBOARDING_SAVED',
+           'LISTING_CREATED', 'LISTING_UPDATED', 'LISTING_PUBLISHED', 'LISTING_ARCHIVED',
+           'JOB_CREATED', 'JOB_UPDATED', 'JOB_CANCELLED', 'JOB_AWARDED', 'JOB_ACCESS_DENIED',
+           'PROPOSAL_SUBMITTED', 'PROPOSAL_UPDATED', 'PROPOSAL_WITHDRAWN', 'PROPOSAL_SELECTED', 'PROPOSAL_ACCESS_DENIED',
+           'ORDER_CREATED', 'ORDER_COMPLETED', 'ORDER_CANCELLED', 'ORDER_ACCESS_DENIED',
+           'MILESTONE_STARTED', 'DELIVERY_SUBMITTED', 'DELIVERY_REVISED', 'REVISION_REQUESTED',
+           'SCOPE_CHANGE_REQUESTED', 'MILESTONE_APPROVED',
+           'REPORT_FILED', 'REPORT_WITHDRAWN', 'REPORT_ACCESS_DENIED',
+           'BLOCK_ADDED', 'BLOCK_REMOVED', 'BLOCK_ENFORCED',
+           'DISPUTE_OPENED', 'DISPUTE_STATEMENT_ADDED', 'DISPUTE_POSITION_SET',
+           'DISPUTE_WITHDRAWN', 'DISPUTE_RESOLVED', 'DISPUTE_ACCESS_DENIED'
+         )),
+         target_user_id TEXT,
+         incident_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `INSERT INTO admin_audit_log_v11
+         (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+       SELECT audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json
+         FROM admin_audit_log`,
+      `DROP TRIGGER admin_audit_log_no_update`,
+      `DROP TRIGGER admin_audit_log_no_delete`,
+      `DROP TRIGGER admin_audit_log_no_replacement`,
+      `DROP TABLE admin_audit_log`,
+      `ALTER TABLE admin_audit_log_v11 RENAME TO admin_audit_log`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_incident ON admin_audit_log(incident_id, occurred_at DESC, audit_id)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+    ],
+  },
 ];
 
 export const AUDIT_ACTION_TYPES = Object.freeze({
@@ -1185,6 +1339,19 @@ export const AUDIT_ACTION_TYPES = Object.freeze({
     "ORDER_CREATED", "ORDER_COMPLETED", "ORDER_CANCELLED", "ORDER_ACCESS_DENIED",
     "MILESTONE_STARTED", "DELIVERY_SUBMITTED", "DELIVERY_REVISED", "REVISION_REQUESTED",
     "SCOPE_CHANGE_REQUESTED", "MILESTONE_APPROVED",
+  ]),
+  // Phase 30 marketplace trust, disputes, and creator protection. Records name ids, categories, and state only —
+  // never a report note, a statement body, an order's delivery contents, or any personal detail — and the denials
+  // (report/dispute access, and a block preventing a connection) ride the same append-only path. No money surface.
+  TRUST_REPORT_EVENTS: Object.freeze([
+    "REPORT_FILED", "REPORT_WITHDRAWN", "REPORT_ACCESS_DENIED",
+  ]),
+  TRUST_BLOCK_EVENTS: Object.freeze([
+    "BLOCK_ADDED", "BLOCK_REMOVED", "BLOCK_ENFORCED",
+  ]),
+  ORDER_DISPUTE_EVENTS: Object.freeze([
+    "DISPUTE_OPENED", "DISPUTE_STATEMENT_ADDED", "DISPUTE_POSITION_SET",
+    "DISPUTE_WITHDRAWN", "DISPUTE_RESOLVED", "DISPUTE_ACCESS_DENIED",
   ]),
   AUTOMATED_SECURITY_ACTIONS: Object.freeze([
     "SECURITY_INCIDENT_CREATED", "SECURITY_RATE_LIMIT_APPLIED", "SECURITY_REQUEST_REJECTED",

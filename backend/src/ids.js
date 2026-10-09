@@ -116,6 +116,21 @@ export function newRevisionId() {
   return `rev_${randomUUID()}`;
 }
 
+// Phase 30 — marketplace trust, disputes, and creator protection. Opaque, random, and never derived from an
+// account, a resource, or an email, exactly like every earlier identifier: a report or a dispute reference must not
+// leak who filed it or what it concerns, and must not be enumerable.
+export function newReportId() {
+  return `rpt_${randomUUID()}`;
+}
+
+export function newDisputeId() {
+  return `dsp_${randomUUID()}`;
+}
+
+export function newDisputeStatementId() {
+  return `dst_${randomUUID()}`;
+}
+
 /**
  * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
  * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.

@@ -29,6 +29,9 @@ import { newJobId, newProposalId } from "./ids.js";
 import { publishPrerequisitesInTransaction } from "./capabilities.js";
 import { RESOURCE_KIND } from "./ownership.js";
 import { validateBoundedText, validateSafeReference } from "./text-fields.js";
+// Phase 30 creator protection: a block placed by either party stops a new proposal from connecting a creator and a
+// buyer. Read-only predicate, no cycle back into hire-jobs from the trust module; behavior is unchanged when absent.
+import { isBlockedBetween } from "./marketplace-trust.js";
 import {
   COMPATIBILITY_LIMITS,
   isKnownEdition,
@@ -521,6 +524,20 @@ export function submitProposalInTransaction(database, configuration, userId, bod
   }
   if (job.buyer_id === userId) {
     throw new AccountApiError(ErrorCode.INVALID_REQUEST, "You posted this job, so you cannot propose on it.");
+  }
+  // Phase 30: if either the buyer or this creator has blocked the other, no proposal may connect them. The denial is
+  // audited so the protection is observable, and a blocked pair simply cannot reach the proposal rows. When no block
+  // exists between the two, this predicate is false and the proposal proceeds exactly as it did before this phase.
+  if (isBlockedBetween(database, job.buyer_id, userId)) {
+    appendAuditRecord(database, {
+      actorKind: AUDIT_ACTOR_KIND.SYSTEM,
+      actionType: "BLOCK_ENFORCED",
+      targetUserId: userId,
+      outcome: "DENIED",
+      metadata: { resourceKind: RESOURCE_KIND.MARKETPLACE_BLOCK, jobId: job.job_id, reason: "blocked_between_accounts" },
+      occurredAt: nowIso(now),
+    });
+    throw new AccountApiError(ErrorCode.MARKETPLACE_BLOCKED);
   }
   const duplicate = database.prepare(
     "SELECT proposal_id FROM job_proposals WHERE user_id = ? AND job_id = ? AND status = 'SUBMITTED'",
