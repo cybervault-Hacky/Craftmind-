@@ -28,6 +28,9 @@ export const RESOURCE_KIND = Object.freeze({
   /** Phase 26: buyer job requests and the proposals on them. */
   BUYER_JOB: "BUYER_JOB",
   JOB_PROPOSAL: "JOB_PROPOSAL",
+  /** Phase 27: marketplace orders and their milestones. */
+  ORDER: "ORDER",
+  ORDER_MILESTONE: "ORDER_MILESTONE",
 });
 
 const RESOURCE_KINDS = new Set(Object.values(RESOURCE_KIND));

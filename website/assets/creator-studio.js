@@ -52,7 +52,7 @@ export function initCreatorDashboard(root = document.querySelector('[data-page="
     { value: 0, label: "Published", note: "Publishing is not implemented." },
     { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
     { value: null, label: "Earnings", note: "No payout or ledger service exists." },
-    { value: 0, label: "Orders", note: "No order service exists." },
+    { value: 0, label: "Sales orders", note: "No checkout exists, so no sales order can exist. Hired-builder work orders live on the orders page." },
     { value: 0, label: "Reviews", note: "No review service exists." },
     { value: null, label: "Analytics", note: "No analytics are collected." },
   ]);
@@ -67,6 +67,12 @@ export function initCreatorDashboard(root = document.querySelector('[data-page="
         ? "Open job requests from buyers: browse the directory, read a job, and send a proposal from its page."
         : "Job requests and proposals need a connected account service; the directory says so until one exists.",
         "Open the job directory", "../marketplace/hire.html", adapters.hire.configured],
+      // Phase 27: the real work-order list for hired-builder jobs (buyer and creator sides share this page; the
+      // page itself renders the role each session actually holds). Sales orders stay a checkout concept.
+      ["Marketplace orders", adapters.hire.configured
+        ? "Orders from awarded hire requests: milestone progress, deliveries, revisions, and approvals for work you build or bought."
+        : "Marketplace orders need a connected account service; the orders page says so until one exists.",
+        "Open your orders", "../marketplace/orders.html", adapters.hire.configured],
       ["Sales and orders", "Your sales data will appear here once marketplace selling is available.", "Open the orders layout", "orders/index.html", false],
       ["Earnings and payouts", "Earnings appear here only after a real payout service can settle real sales.", "Open the earnings layout", "earnings/index.html", false],
       ["Reviews", "Reviews from buyers appear here once the marketplace can serve them.", "Open the reviews layout", "reviews/index.html", false],
@@ -87,7 +93,7 @@ export function initCreatorDashboard(root = document.querySelector('[data-page="
       { value: null, label: "Published", note: "Loading published listings." },
       { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
       { value: null, label: "Earnings", note: "No payout or ledger service exists." },
-      { value: 0, label: "Orders", note: "No order service exists." },
+      { value: 0, label: "Sales orders", note: "No checkout exists, so no sales order can exist. Hired-builder work orders live on the orders page." },
       { value: 0, label: "Reviews", note: "No review service exists." },
       { value: null, label: "Analytics", note: "No analytics are collected." },
     ]);
@@ -104,7 +110,7 @@ export function initCreatorDashboard(root = document.querySelector('[data-page="
           { value: null, label: "Published", note: "Counts load with your session." },
           { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
           { value: null, label: "Earnings", note: "No payout or ledger service exists." },
-          { value: 0, label: "Orders", note: "No order service exists." },
+          { value: 0, label: "Sales orders", note: "No checkout exists, so no sales order can exist. Hired-builder work orders live on the orders page." },
           { value: 0, label: "Reviews", note: "No review service exists." },
           { value: null, label: "Analytics", note: "No analytics are collected." },
         ]);

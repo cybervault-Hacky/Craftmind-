@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101713">
-  <meta name="description" content="The CraftMind account profile interface: display name, email, verification state, and avatar limitations, without exposing internal identifiers or tokens.">
-  <title>Profile — CraftMind</title>
+  <meta name="description" content="Open one CraftMind marketplace order: frozen agreed terms, milestone progress with role-specific actions, and the full immutable delivery and revision history both parties read.">
+  <title>Order detail — milestones, deliveries, and approvals — CraftMind</title>
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <link rel="stylesheet" href="../styles.css">
   <script type="module" src="../assets/site.js"></script>
 </head>
-<body data-page="account-profile">
+<body data-page="hire-order">
+
   <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="site-header" id="top">
@@ -27,7 +28,7 @@
       <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
       <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
         <a href="../index.html">Home</a>
-        <a href="../marketplace/index.html">Marketplace</a>
+        <a href="../marketplace/index.html" aria-current="page">Marketplace</a>
         <a href="../membership/index.html">Membership</a>
         <a href="../creators/index.html">Creators</a>
         <a href="../how-it-works.html">How it works</a>
@@ -38,40 +39,36 @@
         <a href="../download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
-    <div class="container context-strip">
-      <p class="context-label"><span class="badge badge--muted">Account center</span> <span data-context-line="Sessions are listed from the account service only when one is configured."></span></p>
-      <p class="context-current"><span class="subtle">Section</span> <strong>Profile</strong></p>
-    </div>
   </header>
 
   <main id="main">
     <section class="page-hero container" aria-labelledby="page-title">
-      <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <a href="index.html">Account</a> <span aria-hidden="true">/</span> <span>Profile</span></p>
-      <p class="eyebrow">PROFILE</p>
-      <h1 id="page-title">Who you are<br>on CraftMind.</h1>
-      <p class="lead">Your display name, email address, and verification state come from the account service. Internal
-      account identifiers, session credentials, passwords, and tokens are never rendered on this page.</p>
+      <p class="crumbs"><a href="../index.html">Home</a> <span aria-hidden="true">/</span> <a href="index.html">Marketplace</a> <span aria-hidden="true">/</span> <a href="orders.html">Orders</a> <span aria-hidden="true">/</span> <span>Order detail</span></p>
+      <p class="eyebrow">ORDER DETAIL</p>
+      <h1 id="page-title">Terms frozen.<br>Progress visible.</h1>
+      <p class="lead">This page reads one order from the account service: the agreed scope and terms exactly as they
+      were when the order was created, every milestone with the actions your role allows, and the delivery and
+      revision history both parties share. The service decides every state — the page never does.</p>
     </section>
 
-    <section class="page-section container">
-      <div class="app-shell">
-        <nav class="side-nav" aria-label="Account navigation">
-          <h2 id="account-nav-title">Account</h2>
-          <ul>
-          <li><a href="index.html">Overview</a></li>
-          <li><a href="profile.html" aria-current="page">Profile</a></li>
-          <li><a href="security.html">Security</a></li>
-          <li><a href="sessions.html">Sessions</a></li>
-          <li><a href="purchases.html">Purchases</a></li>
-          <li><a href="saved.html">Saved</a></li>
-          <li><a href="../marketplace/orders.html">Orders</a></li>
-          <li><a href="membership.html">Membership</a></li>
-          </ul>
-        </nav>
-        <div class="state-card state-card--unavailable" data-account-region role="region" aria-label="Profile details"></div>
+    <section class="section container" aria-labelledby="detail-title">
+      <div class="section-heading">
+        <p class="eyebrow">AGREED WORK</p>
+        <h2 id="detail-title">One order, two roles, one history.</h2>
+        <p>Builders start milestones and submit delivery versions; buyers approve or request revisions; completion
+        needs every milestone approved. Approved milestones never reopen, and the revision limit is finite and
+        agreed at creation.</p>
       </div>
+      <div class="banner banner--section" role="note">
+        <span class="banner-mark">NOT YET SUPPORTED</span>
+        <p>Payment processing, escrow, refunds, and payouts are not yet supported: an order tracks agreed work between
+        two accounts, not money. Order records are workflow records only — they are not proof that any payment
+        happened.</p>
+      </div>
+      <p class="field-hint" data-order-status role="status" aria-live="polite" style="margin-bottom:12px"></p>
+      <div class="state-card" data-order-region role="region" aria-label="Order detail"></div>
+      <div class="state-card" data-order-history role="region" aria-label="Delivery and revision history" style="margin-top:24px"></div>
     </section>
-
   </main>
 
   <footer class="site-footer">

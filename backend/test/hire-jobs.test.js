@@ -243,11 +243,11 @@ function seededBuyer(service, handle) {
 // ------------------------------------------------------------------ A. schema and migration (categories 1–2)
 
 describe("Phase 26 hire schema", () => {
-  it("1. initializes the fresh schema at v9 with the job and proposal tables, constraints, indexes, and audit types", async () => {
+  it("1. initializes the fresh schema at v10 with the job, proposal, and order tables, constraints, indexes, and audit types", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 9);
+    assert.equal(SCHEMA_VERSION, 10);
     const version = service.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version;
-    assert.equal(version, 9);
+    assert.equal(version, 10);
 
     const jobColumns = service.database.prepare("PRAGMA table_info(buyer_jobs)").all().map((row) => row.name);
     for (const column of ["job_id", "buyer_id", "title", "description", "edition", "minecraft_version", "loaders",
@@ -301,7 +301,7 @@ describe("Phase 26 hire schema", () => {
     ).run(), /CHECK constraint failed/);
   });
 
-  it("2. migrates a version 8 database to v9 without losing data or audit history, and re-running is a no-op", () => {
+  it("2. migrates a version 8 database to v10 without losing data or audit history, and re-running is a no-op", () => {
     const database = new DatabaseSync(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("PRAGMA recursive_triggers = ON");
@@ -324,7 +324,7 @@ describe("Phase 26 hire schema", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 8").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 8").get().applied_at, appliedAt);
 
     // Prior rows survive with their values; the audit row is intact and append-only triggers were restored.
@@ -345,7 +345,7 @@ describe("Phase 26 hire schema", () => {
     // Re-running is a no-op: row counts and index counts are stable.
     const indexes = database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%' OR type = 'index' AND (name LIKE 'job%' OR name LIKE 'buyer%')").get().count;
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%' OR type = 'index' AND (name LIKE 'job%' OR name LIKE 'buyer%')").get().count, indexes);
     database.close();
   });

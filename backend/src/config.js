@@ -326,6 +326,12 @@ export function loadConfiguration(environment = process.env, options = {}) {
       // changes with dedicated budgets — a busy buyer cannot spend a creator's proposal budget and vice versa.
       jobWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_JOB_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_JOB_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       proposalWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_PROPOSAL_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_PROPOSAL_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 27: four dedicated budgets so order creation, milestone state changes, delivery submissions, and
+      // revision requests each throttle on their own — a burst in one category can never spend another's budget.
+      orderCreate: Object.freeze({ maximum: positiveInteger(environment, "RATE_ORDER_CREATE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_ORDER_CREATE_WINDOW_MS", 900_000, 86_400_000) }),
+      orderWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_ORDER_WRITE_MAX", 60, 10_000), windowMs: positiveInteger(environment, "RATE_ORDER_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      deliveryWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_DELIVERY_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DELIVERY_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      revisionWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_REVISION_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_REVISION_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

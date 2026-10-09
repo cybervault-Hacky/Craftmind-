@@ -100,6 +100,22 @@ export function newProposalId() {
   return `prp_${randomUUID()}`;
 }
 
+export function newOrderId() {
+  return `ord_${randomUUID()}`;
+}
+
+export function newMilestoneId() {
+  return `mil_${randomUUID()}`;
+}
+
+export function newDeliveryId() {
+  return `dlv_${randomUUID()}`;
+}
+
+export function newRevisionId() {
+  return `rev_${randomUUID()}`;
+}
+
 /**
  * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
  * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.

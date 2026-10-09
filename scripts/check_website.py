@@ -79,6 +79,9 @@ ROUTES = (
     ("marketplace/hire-post.html", "hire-post", "marketplace/index.html", ("data-job-form-region", "data-job-form-shell", "data-job-form", "data-job-form-status", "data-job-created-link")),
     ("marketplace/hire-manage.html", "hire-manage", "marketplace/index.html", ("data-manage-region", "data-manage-status")),
     ("marketplace/hire-proposals.html", "hire-proposals", "marketplace/index.html", ("data-proposals-region", "data-proposals-status")),
+    # Phase 27: marketplace order lifecycle — the shared buyer/creator order lists and the authorized order detail.
+    ("marketplace/orders.html", "hire-orders", "marketplace/index.html", ("data-orders-region", "data-orders-status")),
+    ("marketplace/order.html", "hire-order", "marketplace/index.html", ("data-order-region", "data-order-status", "data-order-history")),
     ("membership/index.html", "membership", "membership/index.html", ("data-plan-grid", "data-membership-state", "data-plan-comparison", "data-period-toggle")),
     ("creators/index.html", "creators", "creators/index.html", ("data-creators-directory",)),
     ("creators/profile.html", "creator-profile", "creators/index.html", ("data-creator-profile", "data-creator-listings", "data-creator-reviews")),
@@ -151,6 +154,13 @@ HONESTY_REQUIREMENTS = (
     ("assets/onboarding.js", "does not publish anything"),
     ("assets/onboarding.js", "No plan is purchasable in this phase"),
     ("assets/onboarding.js", "No payout, price, or financial detail was collected"),
+    # Phase 27: every order surface keeps saying what does not exist. The static pages state it up front, and the
+    # controller repeats it next to the actions so a session that skipped the hero still sees the truth.
+    ("marketplace/orders.html", "Payment processing, escrow, refunds, and payouts are not yet supported"),
+    ("marketplace/order.html", "Payment processing, escrow, refunds, and payouts are not yet supported"),
+    ("assets/hire.js", "Payment processing, escrow, refunds, and payouts are not yet supported"),
+    ("assets/hire.js", "not verified by CraftMind"),
+    ("assets/hire.js", "never reopened"),
 )
 
 # Sample data must be reachable only through an explicit, labelled preview mode.

@@ -76,6 +76,20 @@ import {
   updateProposalForSession,
   withdrawProposalForSession,
 } from "./hire-api.js";
+
+import {
+  approveMilestoneForSession,
+  buyerOrdersForSession,
+  cancelOrderForSession,
+  completeOrderForSession,
+  createOrderForSession,
+  creatorOrdersForSession,
+  orderDetailForSession,
+  orderHistoryForSession,
+  requestRevisionForSession,
+  startMilestoneForSession,
+  submitDeliveryForSession,
+} from "./order-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -308,6 +322,9 @@ function routeSecurityCategory(pathKey) {
   // session-scoped reads and writes — the same shape as /creator/listing. The public /marketplace/jobs reads stay
   // ordinary request-category traffic.
   if (pathKey.startsWith("/buyer/jobs") || pathKey.startsWith("/creator/proposal")) return "SESSION";
+  // Phase 27 order routes: reads and mutations under /orders/… are session-scoped (ownership is derived from the
+  // token, never the body); the static /buyer/orders and /creator/orders paths join their hire siblings.
+  if (pathKey.startsWith("/orders/") || pathKey === "/buyer/orders" || pathKey.startsWith("/creator/orders")) return "SESSION";
   return "REQUEST";
 }
 
@@ -804,6 +821,30 @@ export function createAccountService({ database, configuration, logger = console
       consumeLimit(limits, "proposal-submit", request, "", configuration.rateLimit.proposalWrite);
       return { status: 201, payload: submitProposalForSession(database, configuration, token, body) };
     }],
+    // Phase 27 order lifecycle. Creation and the buyer/creator views are static paths; every order action below is
+    // a parameterized route whose id is validated inside the handler. Order creation, milestone transitions,
+    // delivery submissions, and revision requests each spend a dedicated rate budget.
+    ["POST /buyer/orders", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "order-create", request, "", configuration.rateLimit.orderCreate);
+      return { status: 201, payload: createOrderForSession(database, configuration, token, body) };
+    }],
+    ["GET /buyer/orders", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "order-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://orders.local").searchParams;
+      return { status: 200, payload: buyerOrdersForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /creator/orders", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "order-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://orders.local").searchParams;
+      return { status: 200, payload: creatorOrdersForSession(database, configuration, token, searchParams) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -1133,6 +1174,103 @@ export function createAccountService({ database, configuration, logger = console
         if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
         consumeLimit(limits, "proposal-write", request, "", configuration.rateLimit.proposalWrite);
         return { status: 200, payload: withdrawProposalForSession(database, configuration, token, decodeURIComponent(proposalId)) };
+      },
+    },
+    // Phase 27 order routes. Order and milestone ids are validated inside the handlers (shape + participant
+    // ownership → uniform 404); the router only ever sees the route pattern in the request log.
+    {
+      method: "GET",
+      name: "/orders/:id",
+      pattern: /^\/orders\/([^/]{1,64})$/,
+      handler: (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "order-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: orderDetailForSession(database, configuration, token, decodeURIComponent(orderId)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/orders/:id/history",
+      pattern: /^\/orders\/([^/]{1,64})\/history$/,
+      handler: (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "order-read", request, "", configuration.rateLimit.creatorProfileRead);
+        const searchParams = new URL(request.url ?? "/", "http://orders.local").searchParams;
+        return { status: 200, payload: orderHistoryForSession(database, configuration, token, decodeURIComponent(orderId), searchParams) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/complete",
+      pattern: /^\/orders\/([^/]{1,64})\/complete$/,
+      handler: async (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "order-write", request, "", configuration.rateLimit.orderWrite);
+        return { status: 200, payload: completeOrderForSession(database, configuration, token, decodeURIComponent(orderId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/cancel",
+      pattern: /^\/orders\/([^/]{1,64})\/cancel$/,
+      handler: async (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "order-write", request, "", configuration.rateLimit.orderWrite);
+        return { status: 200, payload: cancelOrderForSession(database, configuration, token, decodeURIComponent(orderId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/milestones/:mid/start",
+      pattern: /^\/orders\/([^/]{1,64})\/milestones\/([^/]{1,64})\/start$/,
+      handler: async (request, _context, orderId, milestoneId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "milestone-write", request, "", configuration.rateLimit.orderWrite);
+        return { status: 200, payload: startMilestoneForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/milestones/:mid/deliver",
+      pattern: /^\/orders\/([^/]{1,64})\/milestones\/([^/]{1,64})\/deliver$/,
+      handler: async (request, _context, orderId, milestoneId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "delivery-write", request, "", configuration.rateLimit.deliveryWrite);
+        return { status: 201, payload: submitDeliveryForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/milestones/:mid/revision",
+      pattern: /^\/orders\/([^/]{1,64})\/milestones\/([^/]{1,64})\/revision$/,
+      handler: async (request, _context, orderId, milestoneId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "revision-write", request, "", configuration.rateLimit.revisionWrite);
+        return { status: 200, payload: requestRevisionForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/milestones/:mid/approve",
+      pattern: /^\/orders\/([^/]{1,64})\/milestones\/([^/]{1,64})\/approve$/,
+      handler: async (request, _context, orderId, milestoneId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "milestone-write", request, "", configuration.rateLimit.orderWrite);
+        return { status: 200, payload: approveMilestoneForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
       },
     },
   ];

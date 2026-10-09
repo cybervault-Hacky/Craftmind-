@@ -349,6 +349,9 @@ export function proposalOwnerView(database, row) {
     budget: budgetView(row),
     deliveryEstimateDays: row.delivery_estimate_days,
     status: row.status,
+    // Phase 27 additive link: when the buyer converted this proposal into an order, both parties can follow it
+    // straight to the order from the proposal surfaces they already visit. Null until an order exists.
+    orderId: database.prepare("SELECT order_id FROM orders WHERE proposal_id = ?").get(row.proposal_id)?.order_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -624,8 +627,11 @@ export function ownJobDetailInTransaction(database, configuration, userId, jobId
   requireBuyerAccount(database, userId);
   const row = ownedJobRow(database, jobId, userId);
   const proposals = proposalRowsForJob(database, jobId);
+  // Phase 27 additive link: an AWARDED job has at most one order (unique per selected proposal), so the buyer's
+  // job page can offer a direct path to it without inventing a new lookup endpoint.
+  const orderId = database.prepare("SELECT order_id FROM orders WHERE job_id = ? LIMIT 1").get(jobId)?.order_id ?? null;
   return Object.freeze({
-    job: ownerJobView(row, proposals.length),
+    job: Object.freeze({ ...ownerJobView(row, proposals.length), orderId }),
     proposals: Object.freeze(proposals.map((proposal) => proposalBuyerView(database, proposal))),
     counts: proposalCounts(proposals),
   });

@@ -9,7 +9,7 @@
 
 import { initAccount } from "./account.js";
 import { initCreatorAnalytics, initCreatorDashboard, initCreatorEarnings, initCreatorListings, initCreatorOrders, initCreatorReviews, initListingWizard } from "./creator-studio.js";
-import { initHireDirectory, initHireJob, initHireManage, initHirePost, initHireProposals } from "./hire.js";
+import { initHireDirectory, initHireJob, initHireManage, initHireOrders, initHireOrderDetail, initHirePost, initHireProposals } from "./hire.js";
 import { initMarketplace, initMarketplaceDirectory } from "./marketplace.js";
 import { initMembership } from "./membership.js";
 import { initBuyerOnboarding, initOnboardingHub, initSellerOnboarding, initSignIn } from "./onboarding.js";
@@ -74,6 +74,9 @@ function initCurrentPage() {
   if (page === "hire-post") initHirePost(document.querySelector('[data-page="hire-post"]'));
   if (page === "hire-manage") initHireManage(document.querySelector('[data-page="hire-manage"]'));
   if (page === "hire-proposals") initHireProposals(document.querySelector('[data-page="hire-proposals"]'));
+  // Phase 27: marketplace order lifecycle — the buyer/creator order lists and the authorized order detail.
+  if (page === "hire-orders") initHireOrders(document.querySelector('[data-page="hire-orders"]'));
+  if (page === "hire-order") initHireOrderDetail(document.querySelector('[data-page="hire-order"]'));
 }
 
 markScripted();

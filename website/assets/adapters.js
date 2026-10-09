@@ -139,6 +139,20 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "GET /creator/proposal/:id",
   "PATCH /creator/proposal/:id",
   "POST /creator/proposal/:id/withdraw",
+  // Phase 27: marketplace order lifecycle. Creation, both role lists, the authorized detail and history, and the
+  // six transitions — all session-scoped; the service derives every participant from the token and validates every
+  // state change, and no method here ever sends a buyer, a creator, a status, or an amount of its own.
+  "POST /buyer/orders",
+  "GET /buyer/orders",
+  "GET /creator/orders",
+  "GET /orders/:id",
+  "GET /orders/:id/history",
+  "POST /orders/:id/complete",
+  "POST /orders/:id/cancel",
+  "POST /orders/:id/milestones/:mid/start",
+  "POST /orders/:id/milestones/:mid/deliver",
+  "POST /orders/:id/milestones/:mid/revision",
+  "POST /orders/:id/milestones/:mid/approve",
 ]);
 
 /** The one anonymous route the site may call. It returns the public projection of an ACTIVE creator profile. */
@@ -180,18 +194,25 @@ const CREATOR_LISTING_METHODS = Object.freeze([
 ]);
 
 /**
- * The Hire a Builder surface (Phase 26). Two public reads over OPEN jobs; everything else is session-scoped and
- * owner-derived on the server. No method here ever sends an owner id, a status, a creator id, or an award choice
- * beyond the one proposal id the buyer selected — those are the server's to decide.
+ * The Hire a Builder surface (Phases 26–27). Two public reads over OPEN jobs; everything else is session-scoped and
+ * owner-derived on the server. No method here ever sends an owner id, a status, a creator id, a milestone state,
+ * an amount, or an award choice beyond the one proposal id the buyer selected — those are the server's to decide.
+ * Order transitions send nothing but the ids in the URL and the buyer's own revision reason or delivery note.
  */
 const HIRE_METHODS = Object.freeze([
   "searchJobs", "getJob",
   "listMyJobs", "createJob", "updateJob", "cancelJob", "awardProposal",
   "listMyProposals", "getOwnedJob", "submitProposal", "updateProposal", "withdrawProposal",
+  // Phase 27: the order lifecycle (see ACCOUNT_ENDPOINTS above).
+  "createOrder", "listMyBuyerOrders", "listMyCreatorOrders", "getOrderDetail", "getOrderHistory",
+  "startOrderMilestone", "submitOrderDelivery", "requestMilestoneRevision", "approveOrderMilestone",
+  "completeOrder", "cancelOrder",
 ]);
 
 const JOB_ID_PATTERN = /^job_[0-9a-fA-F-]{36}$/;
 const PROPOSAL_ID_PATTERN = /^prp_[0-9a-fA-F-]{36}$/;
+const ORDER_ID_PATTERN = /^ord_[0-9a-fA-F-]{36}$/;
+const MILESTONE_ID_PATTERN = /^mil_[0-9a-fA-F-]{36}$/;
 
 /** The same eight categories the service stores and validates; a fixed vocabulary, so no lookup is required. */
 const MARKETPLACE_CATEGORIES = Object.freeze([
@@ -623,6 +644,55 @@ function createHireAdapter(account) {
       if (typeof proposalId !== "string" || !PROPOSAL_ID_PATTERN.test(proposalId)) return rejected("That address is not a valid proposal identifier.");
       return requestJson(account.origin, `/creator/proposal/${proposalId}/withdraw`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
     }),
+    // Phase 27: the order lifecycle. Every method is session-scoped; parties, terms, statuses, versions, and the
+    // revision count are all decided by the service. Milestone and order ids are validated here as well as on the
+    // server because they are interpolated into a URL.
+    createOrder: signedInOnly((body) => requestJson(account.origin, "/buyer/orders", { method: "POST", body, token: token(), refusedNotUnauthenticated: true })),
+    listMyBuyerOrders: signedInOnly(() => requestJson(account.origin, "/buyer/orders", { token: token() })),
+    listMyCreatorOrders: signedInOnly(() => requestJson(account.origin, "/creator/orders", { token: token() })),
+    getOrderDetail: signedInOnly((orderId) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      return requestJson(account.origin, `/orders/${orderId}`, { token: token() });
+    }),
+    getOrderHistory: signedInOnly((orderId, params = {}) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null || value === "") continue;
+        if (typeof value !== "string" && typeof value !== "number") continue;
+        query.set(key, String(value));
+      }
+      const suffix = query.toString();
+      return requestJson(account.origin, `/orders/${orderId}/history${suffix ? `?${suffix}` : ""}`, { token: token() });
+    }),
+    startOrderMilestone: signedInOnly((orderId, milestoneId) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      if (typeof milestoneId !== "string" || !MILESTONE_ID_PATTERN.test(milestoneId)) return rejected("That address is not a valid milestone identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/milestones/${milestoneId}/start`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    submitOrderDelivery: signedInOnly((orderId, milestoneId, body) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      if (typeof milestoneId !== "string" || !MILESTONE_ID_PATTERN.test(milestoneId)) return rejected("That address is not a valid milestone identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/milestones/${milestoneId}/deliver`, { method: "POST", body, token: token(), refusedNotUnauthenticated: true });
+    }),
+    requestMilestoneRevision: signedInOnly((orderId, milestoneId, body) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      if (typeof milestoneId !== "string" || !MILESTONE_ID_PATTERN.test(milestoneId)) return rejected("That address is not a valid milestone identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/milestones/${milestoneId}/revision`, { method: "POST", body, token: token(), refusedNotUnauthenticated: true });
+    }),
+    approveOrderMilestone: signedInOnly((orderId, milestoneId) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      if (typeof milestoneId !== "string" || !MILESTONE_ID_PATTERN.test(milestoneId)) return rejected("That address is not a valid milestone identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/milestones/${milestoneId}/approve`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    completeOrder: signedInOnly((orderId) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/complete`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    cancelOrder: signedInOnly((orderId) => {
+      if (typeof orderId !== "string" || !ORDER_ID_PATTERN.test(orderId)) return rejected("That address is not a valid order identifier.");
+      return requestJson(account.origin, `/orders/${orderId}/cancel`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
   });
 }
 
@@ -643,10 +713,13 @@ export function createAdapters() {
     // analytics, and payments stay documented and inert — nothing in this phase sells anything.
     marketplace: createMarketplaceAdapter(account),
     creator: createListingCreatorAdapter(account),
-    // Phase 26: hire requests and proposals read and write the account service when one is configured, and answer
-    // with the same honest unavailable states as before when one is not. No payment, escrow, or milestone surface
-    // exists behind an award — it records which builder a buyer selected, nothing more.
+    // Phase 26+27: hire requests, proposals, and orders read and write the account service when one is configured,
+    // and answer with the same honest unavailable states as before when one is not. An award still only records
+    // which builder the buyer selected; the buyer then converts that proposal into an order with milestones — and
+    // no payment, escrow, refund, or payout surface exists anywhere behind either step.
     hire: createHireAdapter(account),
+    // Sales orders (a checkout's order history) stay inert: there is no checkout in any phase so far. The
+    // hired-builder work orders of Phase 27 live on the hire adapter above, not here.
     orders: unconfigured("orders", ["listSalesOrders", "listPurchases", "getOrder"]),
     reviews: unconfigured("reviews", ["listReviewsForListing", "listReviewsForCreator", "submitReview"]),
     analytics: unconfigured("analytics", ["listingViews", "listingSaves", "conversion", "revenue", "topListings", "trafficSources"]),

@@ -959,6 +959,177 @@ const MIGRATIONS = [
          BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
     ],
   },
+  {
+    // Phase 27 — marketplace order lifecycle. An order converts exactly one SELECTED proposal (on an AWARDED
+    // job) into a formal work agreement: the agreed terms are snapshotted at creation so later job/proposal
+    // edits can never rewrite them. Milestones carry the state machine, deliveries are immutable versions
+    // (a new submission never erases an earlier one), and revision requests are first-class rows so the
+    // finite revision policy is counted from trusted records rather than client claims. Amount totals are
+    // enforced by triggers, not only by application checks. The audit log is rebuilt once more (shadow-table
+    // pattern from v6–v9) so its CHECK constraint accepts the ten Phase 27 order action types.
+    version: 10,
+    statements: [
+      `CREATE TABLE orders (
+         order_id TEXT PRIMARY KEY,
+         job_id TEXT NOT NULL REFERENCES buyer_jobs(job_id) ON DELETE CASCADE,
+         proposal_id TEXT NOT NULL REFERENCES job_proposals(proposal_id) ON DELETE CASCADE,
+         buyer_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         creator_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         job_title TEXT NOT NULL CHECK (length(job_title) BETWEEN 3 AND 120),
+         scope TEXT NOT NULL CHECK (length(scope) BETWEEN 5 AND 2000),
+         edition TEXT NOT NULL CHECK (edition IN ('java', 'bedrock', 'legacy')),
+         minecraft_version TEXT NOT NULL CHECK (length(minecraft_version) BETWEEN 2 AND 32),
+         loaders TEXT NOT NULL CHECK (length(loaders) <= 400),
+         agreed_budget_min INTEGER CHECK (agreed_budget_min IS NULL OR agreed_budget_min >= 0),
+         agreed_budget_max INTEGER CHECK (agreed_budget_max IS NULL OR agreed_budget_max >= 0),
+         agreed_currency TEXT CHECK (agreed_currency IS NULL OR agreed_currency IN ('INR', 'USD', 'EUR', 'GBP')),
+         agreed_deadline TEXT,
+         agreed_delivery_estimate_days INTEGER CHECK (agreed_delivery_estimate_days IS NULL OR agreed_delivery_estimate_days BETWEEN 1 AND 365),
+         revision_limit INTEGER NOT NULL CHECK (revision_limit BETWEEN 0 AND 10),
+         status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         completed_at TEXT,
+         cancelled_at TEXT,
+         -- The agreed budget is a triple or absent entirely, exactly like the proposal it was snapshotted from.
+         CHECK (
+           (agreed_budget_min IS NULL AND agreed_budget_max IS NULL AND agreed_currency IS NULL)
+           OR (agreed_budget_min IS NOT NULL AND agreed_budget_max IS NOT NULL AND agreed_currency IS NOT NULL)
+         ),
+         CHECK (status <> 'COMPLETED' OR completed_at IS NOT NULL),
+         CHECK (status <> 'CANCELLED' OR cancelled_at IS NOT NULL)
+       )`,
+      `CREATE TABLE order_milestones (
+         milestone_id TEXT PRIMARY KEY,
+         order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+         position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 50),
+         title TEXT NOT NULL CHECK (length(title) BETWEEN 3 AND 120),
+         description TEXT NOT NULL CHECK (length(description) BETWEEN 5 AND 2000),
+         acceptance_criteria TEXT NOT NULL CHECK (length(acceptance_criteria) BETWEEN 3 AND 1000),
+         amount INTEGER CHECK (amount IS NULL OR amount >= 0),
+         status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'IN_PROGRESS', 'SUBMITTED', 'REVISION_REQUESTED', 'APPROVED')),
+         created_at TEXT NOT NULL,
+         updated_at TEXT NOT NULL,
+         started_at TEXT,
+         submitted_at TEXT,
+         approved_at TEXT,
+         CHECK (status <> 'IN_PROGRESS' OR started_at IS NOT NULL),
+         CHECK (status <> 'REVISION_REQUESTED' OR submitted_at IS NOT NULL),
+         CHECK (status <> 'SUBMITTED' OR submitted_at IS NOT NULL),
+         CHECK (status <> 'APPROVED' OR approved_at IS NOT NULL)
+       )`,
+      `CREATE TABLE milestone_deliveries (
+         delivery_id TEXT PRIMARY KEY,
+         milestone_id TEXT NOT NULL REFERENCES order_milestones(milestone_id) ON DELETE CASCADE,
+         order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+         version INTEGER NOT NULL CHECK (version >= 1),
+         note TEXT NOT NULL CHECK (length(note) BETWEEN 1 AND 2000),
+         evidence_references TEXT NOT NULL CHECK (length(evidence_references) <= 1400),
+         compatibility_note TEXT NOT NULL DEFAULT '' CHECK (length(compatibility_note) <= 500),
+         submitted_by TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         submitted_at TEXT NOT NULL
+       )`,
+      `CREATE TABLE milestone_revision_requests (
+         revision_id TEXT PRIMARY KEY,
+         milestone_id TEXT NOT NULL REFERENCES order_milestones(milestone_id) ON DELETE CASCADE,
+         order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+         kind TEXT NOT NULL CHECK (kind IN ('REVISION', 'SCOPE_CHANGE')),
+         reason TEXT NOT NULL CHECK (length(reason) BETWEEN 5 AND 1000),
+         requested_by TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+         created_at TEXT NOT NULL
+       )`,
+      `CREATE INDEX orders_by_buyer ON orders(buyer_id, updated_at DESC, order_id)`,
+      `CREATE INDEX orders_by_creator ON orders(creator_user_id, updated_at DESC, order_id)`,
+      `CREATE INDEX orders_by_job ON orders(job_id)`,
+      // The database itself refuses a second order from the same awarded proposal, even under a race.
+      `CREATE UNIQUE INDEX orders_by_proposal ON orders(proposal_id)`,
+      `CREATE UNIQUE INDEX milestone_position_per_order ON order_milestones(order_id, position)`,
+      `CREATE UNIQUE INDEX milestone_delivery_versions ON milestone_deliveries(milestone_id, version)`,
+      `CREATE INDEX milestone_deliveries_by_order ON milestone_deliveries(order_id, submitted_at DESC, delivery_id)`,
+      `CREATE INDEX revision_requests_by_milestone ON milestone_revision_requests(milestone_id, created_at, revision_id)`,
+      // Amount totals are guarded in the database as well as in the application: milestone amounts exist only
+      // against a snapshotted agreed budget, and their sum can never exceed it.
+      `CREATE TRIGGER milestone_amount_requires_budget BEFORE INSERT ON order_milestones
+         WHEN NEW.amount IS NOT NULL
+           AND (SELECT agreed_budget_max FROM orders WHERE order_id = NEW.order_id) IS NULL
+         BEGIN SELECT RAISE(ABORT, 'milestone amounts require an agreed budget on the order'); END`,
+      `CREATE TRIGGER milestone_amount_within_budget BEFORE INSERT ON order_milestones
+         WHEN NEW.amount IS NOT NULL
+           AND (SELECT COALESCE(SUM(amount), 0) FROM order_milestones WHERE order_id = NEW.order_id) + NEW.amount
+             > (SELECT agreed_budget_max FROM orders WHERE order_id = NEW.order_id)
+         BEGIN SELECT RAISE(ABORT, 'milestone amounts exceed the agreed order budget'); END`,
+      // The same guards cover direct edits: a row can never gain an amount the application would have refused.
+      `CREATE TRIGGER milestone_amount_requires_budget_update BEFORE UPDATE ON order_milestones
+         WHEN NEW.amount IS NOT NULL
+           AND (SELECT agreed_budget_max FROM orders WHERE order_id = NEW.order_id) IS NULL
+         BEGIN SELECT RAISE(ABORT, 'milestone amounts require an agreed budget on the order'); END`,
+      `CREATE TRIGGER milestone_amount_within_budget_update BEFORE UPDATE ON order_milestones
+         WHEN NEW.amount IS NOT NULL
+           AND (SELECT COALESCE(SUM(amount), 0) FROM order_milestones WHERE order_id = NEW.order_id)
+               - COALESCE((SELECT amount FROM order_milestones WHERE milestone_id = OLD.milestone_id), 0) + NEW.amount
+             > (SELECT agreed_budget_max FROM orders WHERE order_id = NEW.order_id)
+         BEGIN SELECT RAISE(ABORT, 'milestone amounts exceed the agreed order budget'); END`,
+      `CREATE TABLE admin_audit_log_v10 (
+         audit_id TEXT PRIMARY KEY,
+         actor_kind TEXT NOT NULL CHECK (actor_kind IN ('DEVELOPER', 'SYSTEM_SECURITY', 'AI', 'SYSTEM')),
+         actor_developer_id TEXT REFERENCES developer_accounts(developer_id) ON DELETE RESTRICT,
+         action_type TEXT NOT NULL CHECK (action_type IN (
+           'overview', 'inspect_user', 'list_user_sessions', 'revoke_user_sessions', 'suspend_user', 'restore_user',
+           'list_entitlements', 'grant_entitlement', 'revoke_entitlement', 'list_audit_log',
+           'configuration_status', 'unknown_tool', 'action_confirmation', 'developer_ai_turn', 'developer_session_revoke',
+           'security_overview', 'list_security_incidents', 'get_security_incident', 'list_security_events',
+           'list_security_actions', 'list_security_notifications', 'developer_ai_security_summary',
+           'SECURITY_INCIDENT_CREATED', 'SECURITY_RATE_LIMIT_APPLIED', 'SECURITY_REQUEST_REJECTED',
+           'SECURITY_SESSION_REVOKED', 'SECURITY_ACCOUNT_PROTECTED', 'SECURITY_ALERT_CREATED',
+           'SECURITY_PROTECTION_RELEASED', 'SECURITY_INCIDENT_RESOLVED',
+           'inspect_membership', 'grant_membership', 'grant_credits', 'reverse_credit_grant', 'list_credit_transactions',
+           'MEMBERSHIP_BASELINE_ASSIGNED', 'MEMBERSHIP_GRANTED', 'MEMBERSHIP_EXPIRED',
+           'CREDIT_GRANTED', 'CREDIT_CONSUMED', 'CREDIT_EXPIRED', 'CREDIT_REVERSED',
+           'CREDIT_OPERATION_REJECTED', 'ENTITLEMENT_DENIED',
+           'inspect_creator', 'list_creator_profiles', 'verify_creator', 'revoke_creator_verification',
+           'suspend_creator', 'restore_creator',
+           'inspect_server', 'list_server_workspaces', 'suspend_server', 'restore_server', 'archive_server',
+           'CREATOR_PROFILE_CREATED', 'CREATOR_PROFILE_UPDATED', 'CREATOR_STATUS_CHANGED',
+           'CREATOR_VERIFICATION_CHANGED', 'CREATOR_ACCESS_DENIED',
+           'SERVER_CREATED', 'SERVER_UPDATED', 'SERVER_STATUS_CHANGED', 'SERVER_ACCESS_DENIED',
+           'BUYER_ONBOARDING_SAVED', 'SELLER_ONBOARDING_SAVED',
+           'LISTING_CREATED', 'LISTING_UPDATED', 'LISTING_PUBLISHED', 'LISTING_ARCHIVED',
+           'JOB_CREATED', 'JOB_UPDATED', 'JOB_CANCELLED', 'JOB_AWARDED', 'JOB_ACCESS_DENIED',
+           'PROPOSAL_SUBMITTED', 'PROPOSAL_UPDATED', 'PROPOSAL_WITHDRAWN', 'PROPOSAL_SELECTED', 'PROPOSAL_ACCESS_DENIED',
+           'ORDER_CREATED', 'ORDER_COMPLETED', 'ORDER_CANCELLED', 'ORDER_ACCESS_DENIED',
+           'MILESTONE_STARTED', 'DELIVERY_SUBMITTED', 'DELIVERY_REVISED', 'REVISION_REQUESTED',
+           'SCOPE_CHANGE_REQUESTED', 'MILESTONE_APPROVED'
+         )),
+         target_user_id TEXT,
+         incident_id TEXT,
+         occurred_at TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILURE', 'DENIED', 'PREPARED', 'CANCELLED')),
+         metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+         CHECK (actor_kind <> 'SYSTEM_SECURITY' OR actor_developer_id IS NULL),
+         CHECK (actor_kind <> 'SYSTEM' OR actor_developer_id IS NULL)
+       )`,
+      `INSERT INTO admin_audit_log_v10
+         (audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json)
+       SELECT audit_id, actor_kind, actor_developer_id, action_type, target_user_id, incident_id, occurred_at, outcome, metadata_json
+         FROM admin_audit_log`,
+      `DROP TRIGGER admin_audit_log_no_update`,
+      `DROP TRIGGER admin_audit_log_no_delete`,
+      `DROP TRIGGER admin_audit_log_no_replacement`,
+      `DROP TABLE admin_audit_log`,
+      `ALTER TABLE admin_audit_log_v10 RENAME TO admin_audit_log`,
+      `CREATE INDEX admin_audit_by_time ON admin_audit_log(occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_actor ON admin_audit_log(actor_developer_id, occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_target ON admin_audit_log(target_user_id, occurred_at DESC, audit_id)`,
+      `CREATE INDEX admin_audit_by_incident ON admin_audit_log(incident_id, occurred_at DESC, audit_id)`,
+      `CREATE TRIGGER admin_audit_log_no_update BEFORE UPDATE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_delete BEFORE DELETE ON admin_audit_log
+         BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END`,
+      `CREATE TRIGGER admin_audit_log_no_replacement BEFORE INSERT ON admin_audit_log
+         WHEN EXISTS (SELECT 1 FROM admin_audit_log WHERE audit_id = NEW.audit_id)
+         BEGIN SELECT RAISE(ABORT, 'audit records cannot be replaced'); END`,
+    ],
+  },
 ];
 
 export const AUDIT_ACTION_TYPES = Object.freeze({
@@ -1007,6 +1178,13 @@ export const AUDIT_ACTION_TYPES = Object.freeze({
   HIRE_EVENTS: Object.freeze([
     "JOB_CREATED", "JOB_UPDATED", "JOB_CANCELLED", "JOB_AWARDED", "JOB_ACCESS_DENIED",
     "PROPOSAL_SUBMITTED", "PROPOSAL_UPDATED", "PROPOSAL_WITHDRAWN", "PROPOSAL_SELECTED", "PROPOSAL_ACCESS_DENIED",
+  ]),
+  // Phase 27 marketplace orders. Same discipline as every earlier group: ids, transition vocabulary, counts, and
+  // reason categories only — never delivery contents, external URLs, proposal text, or personal details.
+  ORDER_EVENTS: Object.freeze([
+    "ORDER_CREATED", "ORDER_COMPLETED", "ORDER_CANCELLED", "ORDER_ACCESS_DENIED",
+    "MILESTONE_STARTED", "DELIVERY_SUBMITTED", "DELIVERY_REVISED", "REVISION_REQUESTED",
+    "SCOPE_CHANGE_REQUESTED", "MILESTONE_APPROVED",
   ]),
   AUTOMATED_SECURITY_ACTIONS: Object.freeze([
     "SECURITY_INCIDENT_CREATED", "SECURITY_RATE_LIMIT_APPLIED", "SECURITY_REQUEST_REJECTED",
