@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101713">
-  <meta name="description" content="The CraftMind marketplace interface: search, categories, filters, sorting, featured and saved builds, with honest states because no marketplace backend exists yet.">
+  <meta name="description" content="The CraftMind marketplace interface: search, categories, compatibility and creator filters, pagination over real published listings when an account service is connected, with honest states when one is not.">
   <title>Marketplace — CraftMind</title>
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <link rel="stylesheet" href="../styles.css">
@@ -55,8 +55,8 @@
       <div class="section-heading">
         <p class="eyebrow">BROWSE</p>
         <h2 id="browse-title">Search, filter, sort.</h2>
-        <p>The controls below work. They query CraftMind's catalog service — which is not implemented — so with no
-        catalog connected they return nothing and say so.</p>
+        <p>The controls below work. They query CraftMind's catalog service for published listings when an account
+        service is connected; with none connected they return nothing and say so.</p>
       </div>
 
       <form class="toolbar" role="search" aria-labelledby="browse-title" data-catalog-form>
@@ -99,6 +99,27 @@
           </select>
         </div>
         <div class="field">
+          <label for="catalog-version">Minecraft version</label>
+          <input class="input" id="catalog-version" type="text" name="version" placeholder="1.20.1" data-catalog-version>
+          <span class="field-hint">Exact version, for example 1.20.1.</span>
+        </div>
+        <div class="field">
+          <label for="catalog-loader">Loader</label>
+          <select class="select" id="catalog-loader" data-catalog-loader>
+            <option value="">Any loader</option>
+            <option value="Vanilla">Vanilla</option>
+            <option value="Fabric">Fabric</option>
+            <option value="Forge">Forge</option>
+            <option value="NeoForge">NeoForge</option>
+            <option value="Bedrock Native">Bedrock Native</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="catalog-creator">Creator</label>
+          <input class="input" id="catalog-creator" type="text" name="creator" placeholder="creator-handle" data-catalog-creator>
+          <span class="field-hint">Exact creator handle, for example a studio name.</span>
+        </div>
+        <div class="field">
           <label class="choice" for="catalog-free">
             <input type="checkbox" id="catalog-free" data-catalog-free>
             <span>Free builds only<small>No price is defined anywhere yet.</small></span>
@@ -115,6 +136,11 @@
 
       <h3 class="small" style="margin-top:42px">All builds</h3>
       <div class="state-card state-card--unavailable" data-catalog-region role="region" aria-label="Marketplace results"></div>
+      <div class="row" style="margin-top:18px;gap:12px;justify-content:center" data-catalog-pagination>
+        <button type="button" class="button button-secondary button-small" data-catalog-prev disabled>Previous page</button>
+        <span class="small muted" data-catalog-page role="status">No pages</span>
+        <button type="button" class="button button-secondary button-small" data-catalog-next disabled>Next page</button>
+      </div>
 
       <h3 class="small" style="margin-top:42px">Saved builds</h3>
       <div class="state-card state-card--empty" data-saved-region role="region" aria-label="Saved builds"></div>
@@ -136,10 +162,11 @@
           nothing is uploaded, and nothing is written to browser storage.</p>
         </article>
         <article class="card">
-          <span class="card-meta">NOT IMPLEMENTED</span>
-          <h3>Listings, purchases, and downloads</h3>
-          <p>No marketplace service stores listings, no checkout exists, and no build can be purchased or downloaded.
-          Purchase controls are shown as unavailable rather than faked.</p>
+          <span class="card-meta">CHECKOUT NOT IMPLEMENTED</span>
+          <h3>Purchases and downloads</h3>
+          <p>Listings are stored, searched, and served when an account service is connected — drafts and archived rows
+          stay private. No checkout exists, and no build can be purchased or downloaded. Purchase controls are shown
+          as unavailable rather than faked.</p>
         </article>
         <article class="card">
           <span class="card-meta">REVIEW THE LAYOUT</span>

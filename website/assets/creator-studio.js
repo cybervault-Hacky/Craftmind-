@@ -1,17 +1,26 @@
 /**
- * Creator studio controllers (Phase 21).
+ * Creator studio controllers (Phase 21; listing storage and lifecycle since Phase 25).
  *
- * Everything a creator sees here is a real piece of interface over an *absent* backend: the dashboard metrics are
- * dashes, the listing tabs render empty states, orders/earnings/reviews/analytics state plainly that no service exists,
- * and the create-listing wizard is a fully working local form whose publish step is honest about there being nowhere to
- * publish to. Draft text lives in memory for the current page only — nothing is uploaded and nothing is stored.
+ * Two modes, never mixed:
+ *
+ *   * **Live** — an account service is configured: the dashboard counts your real listings, the listings table shows
+ *     your persisted rows with their true lifecycle status, the create/edit wizard saves drafts through the service
+ *     and publishes only after the server's own prerequisite check, and archive is a confirmed one-way transition.
+ *     The server decides every state: the browser never claims ownership, never marks anything published, and shows
+ *     the service's refusal message verbatim when publishing is blocked.
+ *   * **Unconfigured / preview** — the Phase 21 foundation: dashes, honest empty states, sample rows behind
+ *     `?preview=1`, and a fully working local form whose publish step says there is nowhere to publish to. Draft text
+ *     lives in memory for the current page only — nothing is uploaded and nothing is stored.
+ *
+ * Orders, earnings, reviews, and analytics stay honest in both modes: none of those services exists, and no number
+ * here is invented, estimated, or carried over from sample data.
  */
 
-import { createAdapters } from "./adapters.js";
+import { RESULT, createAdapters } from "./adapters.js";
 import { BUILD_PLAN_LIMITS, RELEASE_CHANNELS, describeCompatibility, compatibilityOptions, loaderBelongsToEdition } from "./compatibility.js";
 import { dataTableMarkup, listingCardMarkup, metricsMarkup } from "./components.js";
 import { BUILD_TYPES, DEMO_LISTINGS, DEMO_ORDERS, DEMO_REVIEWS, DEMO_ANALYTICS, DEMO_MEDIA, DIFFICULTIES, CATEGORIES, previewRequested } from "./preview-catalog.js";
-import { STATE, announce, ensureLiveRegion, escapeAttribute, escapeText, orDash, renderState } from "./state.js";
+import { STATE, announce, ensureLiveRegion, escapeAttribute, escapeText, orDash, renderLoading, renderState } from "./state.js";
 
 const PLACEHOLDER_FEE_PERCENT = 10;
 const PLACEHOLDER_FEE_DISCLOSURE =
@@ -32,49 +41,247 @@ function previewNote() {
 export function initCreatorDashboard(root = document.querySelector('[data-page="creator-dashboard"]')) {
   ensureLiveRegion();
   if (!root) return;
+  const adapters = createAdapters();
   const preview = previewRequested();
   const banner = root.querySelector("[data-preview-banner]");
   if (banner) banner.innerHTML = preview ? previewNote() : "";
   const metrics = root.querySelector("[data-creator-metrics]");
-  if (metrics) {
-    metrics.innerHTML = metricsMarkup([
-      { value: 0, label: "Listings", note: "No listing storage exists, so no listing can be counted." },
-      { value: 0, label: "Drafts", note: "Drafts live in this page only while you type." },
-      { value: 0, label: "Published", note: "Publishing is not implemented." },
+  const dashMetrics = () => metricsMarkup([
+    { value: 0, label: "Listings", note: "No listing storage exists, so no listing can be counted." },
+    { value: 0, label: "Drafts", note: "Drafts live in this page only while you type." },
+    { value: 0, label: "Published", note: "Publishing is not implemented." },
+    { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
+    { value: null, label: "Earnings", note: "No payout or ledger service exists." },
+    { value: 0, label: "Orders", note: "No order service exists." },
+    { value: 0, label: "Reviews", note: "No review service exists." },
+    { value: null, label: "Analytics", note: "No analytics are collected." },
+  ]);
+  const renderPanels = (listingsMessage, listingsAvailable) => {
+    const panels = root.querySelector("[data-creator-panels]");
+    if (!panels) return;
+    panels.innerHTML = [
+      ["Listings and drafts", listingsMessage, "Open the listings layout", "listings/index.html", listingsAvailable],
+      ["Sales and orders", "Your sales data will appear here once marketplace selling is available.", "Open the orders layout", "orders/index.html", false],
+      ["Earnings and payouts", "Earnings appear here only after a real payout service can settle real sales.", "Open the earnings layout", "earnings/index.html", false],
+      ["Reviews", "Reviews from buyers appear here once the marketplace can serve them.", "Open the reviews layout", "reviews/index.html", false],
+      ["Analytics", "Views, saves, conversion, and traffic are not measured. Nothing here is estimated.", "Open the analytics layout", "analytics/index.html", false],
+    ].map(([title, message, actionLabel, href, available]) => `
+      <article class="panel">
+        <div class="panel-head"><div><h3>${escapeText(title)}</h3><p class="small muted">${escapeText(message)}</p></div>
+        ${available ? '<span class="badge badge--current">Available</span>' : '<span class="badge badge--planned">Not available yet</span>'}</div>
+        <a class="text-link" href="${escapeAttribute(href)}">${escapeText(actionLabel)} <span aria-hidden="true">→</span></a>
+      </article>`).join("");
+  };
+
+  if (!preview && adapters.creator.configured) {
+    // Live: listing counts come from the service; everything the marketplace cannot do stays a zero or a dash with a reason.
+    if (metrics) metrics.innerHTML = metricsMarkup([
+      { value: null, label: "Listings", note: "Loading your listing count from the account service." },
+      { value: null, label: "Drafts", note: "Loading drafts." },
+      { value: null, label: "Published", note: "Loading published listings." },
       { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
       { value: null, label: "Earnings", note: "No payout or ledger service exists." },
       { value: 0, label: "Orders", note: "No order service exists." },
       { value: 0, label: "Reviews", note: "No review service exists." },
       { value: null, label: "Analytics", note: "No analytics are collected." },
     ]);
+    renderPanels("Stored, edited, published, and archived through the account service — open the listings view to manage them.", true);
+    adapters.creator.listMyListings().then((result) => {
+      if (!metrics) return;
+      const failureNote = result.status === RESULT.UNAUTHORIZED
+        ? "Sign in to read your listing counts."
+        : "The account service could not be reached.";
+      if (result.status !== RESULT.OK) {
+        metrics.innerHTML = metricsMarkup([
+          { value: null, label: "Listings", note: failureNote },
+          { value: null, label: "Drafts", note: "Counts load with your session." },
+          { value: null, label: "Published", note: "Counts load with your session." },
+          { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
+          { value: null, label: "Earnings", note: "No payout or ledger service exists." },
+          { value: 0, label: "Orders", note: "No order service exists." },
+          { value: 0, label: "Reviews", note: "No review service exists." },
+          { value: null, label: "Analytics", note: "No analytics are collected." },
+        ]);
+        if (result.status === RESULT.UNAUTHORIZED) renderPanels("Sign in to load your stored listings from the account service.", false);
+        return;
+      }
+      const counts = result.payload?.counts ?? {};
+      metrics.innerHTML = metricsMarkup([
+        { value: Number(counts.total ?? 0), label: "Listings", note: "Stored on the account service." },
+        { value: Number(counts.draft ?? 0), label: "Drafts", note: "Private until you publish them." },
+        { value: Number(counts.published ?? 0), label: "Published", note: "Live in marketplace search." },
+        { value: Number(counts.archived ?? 0), label: "Archived", note: "Removed from public discovery." },
+        { value: 0, label: "Sales", note: "The marketplace cannot sell anything yet." },
+        { value: null, label: "Earnings", note: "No payout or ledger service exists." },
+        { value: 0, label: "Reviews", note: "No review service exists." },
+        { value: null, label: "Analytics", note: "No analytics are collected." },
+      ]);
+    });
+    return;
   }
-  const panels = root.querySelector("[data-creator-panels]");
-  if (panels) {
-    panels.innerHTML = [
-      ["Listings and drafts", "Your listings will appear here once creator listings can be stored and published.", "Open the listings layout", "listings/index.html"],
-      ["Sales and orders", "Your sales data will appear here once marketplace selling is available.", "Open the orders layout", "orders/index.html"],
-      ["Earnings and payouts", "Earnings appear here only after a real payout service can settle real sales.", "Open the earnings layout", "earnings/index.html"],
-      ["Reviews", "Reviews from buyers appear here once the marketplace can serve them.", "Open the reviews layout", "reviews/index.html"],
-      ["Analytics", "Views, saves, conversion, and traffic are not measured. Nothing here is estimated.", "Open the analytics layout", "analytics/index.html"],
-    ].map(([title, message, actionLabel, href]) => `
-      <article class="panel">
-        <div class="panel-head"><div><h3>${escapeText(title)}</h3><p class="small muted">${escapeText(message)}</p></div>
-        <span class="badge badge--planned">Not available yet</span></div>
-        <a class="text-link" href="${escapeAttribute(href)}">${escapeText(actionLabel)} <span aria-hidden="true">→</span></a>
-      </article>`).join("");
-  }
+  if (metrics) metrics.innerHTML = dashMetrics();
+  renderPanels("Your listings will appear here once creator listings can be stored and published.", false);
 }
 
 /* ------------------------------------------------------------------ listings */
 
+/**
+ * Live listings: the session's own rows from `GET /creator/listing`, with real lifecycle states and the two
+ * transitions the service implements — publish (validated against the server's prerequisites) and archive
+ * (confirmed, one-way). Every refusal is shown with the service's own message; nothing is optimistically mutated.
+ */
+async function renderOwnListingsLive(adapters, { region, tabs }) {
+  let rows = [];
+  let notice = null;
+
+  const badgeFor = (status) => {
+    if (status === "PUBLISHED") return '<span class="badge badge--current">Published</span>';
+    if (status === "ARCHIVED") return '<span class="badge badge--muted">Archived</span>';
+    return '<span class="badge badge--muted">Draft</span>';
+  };
+  const activeTab = () => tabs.find((tab) => tab.getAttribute("aria-selected") === "true")?.dataset.tab ?? "all";
+
+  const renderTab = (tabName) => {
+    for (const tab of tabs) tab.setAttribute("aria-selected", String(tab.dataset.tab === tabName));
+    // The page's "Unpublished" tab is the Phase 25 ARCHIVED state — archive is the only way out of public view.
+    const key = tabName === "unpublished" ? "archived" : tabName;
+    const filtered = key === "all" ? rows : rows.filter((row) => row.status.toLowerCase() === key);
+    const noticeHtml = notice
+      ? `<div class="state-card state-card--error" role="alert" style="margin-bottom:16px"><div class="state-head"><span class="badge">Refused</span><h3>The service refused the operation</h3></div><p>${escapeText(notice)}</p></div>`
+      : "";
+    if (filtered.length === 0) {
+      region.dataset.state = STATE.EMPTY;
+      region.innerHTML = noticeHtml + `
+        <div class="state-card state-card--empty">
+          <div class="state-head"><span class="badge badge--muted">Nothing yet</span><h3>${tabName === "all" ? "No listings yet" : `No ${escapeText(tabName)} listings`}</h3></div>
+          <p>Your listings are stored on the account service, and this filter has none. Create a draft, then publish it when it is ready — drafts stay private until you do.</p>
+          <div class="state-actions"><a class="button button-primary" href="new.html">Open the create-listing flow</a></div>
+        </div>`;
+      return;
+    }
+    region.dataset.state = STATE.POPULATED;
+    region.innerHTML = noticeHtml + dataTableMarkup({
+      caption: "Your listings from the account service. Published rows are public; drafts and archived rows are private to you.",
+      columns: [
+        { label: "Listing", rowHeader: true }, { label: "Status" }, { label: "Compatibility" }, { label: "Published" }, { label: "Actions" },
+      ],
+      rows: filtered.map((row) => [
+        escapeText(row.title),
+        badgeFor(row.status),
+        escapeText(row.compatibility),
+        escapeText(row.publishedLabel),
+        `<span class="table-actions">
+           ${row.status === "DRAFT"
+          ? `<a class="button button-secondary button-small" href="edit.html?id=${escapeAttribute(row.id)}">Edit</a>`
+          : '<button type="button" class="button button-secondary button-small" disabled title="Only draft listings are editable">Edit</button>'}
+           ${row.status === "DRAFT"
+          ? `<button type="button" class="button button-primary button-small" data-publish-listing="${escapeAttribute(row.id)}">Publish</button>`
+          : '<button type="button" class="button button-primary button-small" disabled>Published</button>'}
+           ${row.status === "ARCHIVED"
+          ? '<button type="button" class="button button-secondary button-small" disabled>Archived</button>'
+          : `<button type="button" class="button button-secondary button-small" data-archive-listing="${escapeAttribute(row.id)}">Archive</button>`}
+         </span>`,
+      ]),
+      htmlColumns: [1, 4],
+    });
+  };
+
+  const load = async () => {
+    renderLoading(region, { rows: 4, title: "Loading your listings" });
+    const result = await adapters.creator.listMyListings();
+    if (result.status === RESULT.UNAUTHORIZED) {
+      renderState(region, {
+        kind: STATE.UNAUTHORIZED,
+        title: "Sign in to see your listings",
+        message: result.message ?? "Your listings are stored on the account service and need an active session.",
+        action: { label: "Sign in", href: "../signin.html" },
+      });
+      return;
+    }
+    if (result.status !== RESULT.OK) {
+      renderState(region, {
+        kind: STATE.ERROR,
+        title: "Your listings could not be loaded",
+        message: result.message ?? "The account service did not answer.",
+        details: ["Nothing was changed. Try again."],
+      });
+      return;
+    }
+    rows = (result.payload?.listings ?? []).map((item) => ({
+      id: item.id,
+      title: item.title,
+      status: item.status,
+      compatibility: `${item.edition} · ${(item.minecraftVersions ?? []).join(", ")}`,
+      publishedLabel: item.publishedAt ? item.publishedAt.slice(0, 10) : null,
+    }));
+    renderTab(activeTab());
+  };
+
+  for (const tab of tabs) tab.addEventListener("click", () => renderTab(tab.dataset.tab));
+
+  region.addEventListener("click", async (event) => {
+    const publishButton = event.target.closest("[data-publish-listing]");
+    const archiveButton = event.target.closest("[data-archive-listing]");
+    if (publishButton) {
+      const listingId = publishButton.dataset.publishListing;
+      publishButton.disabled = true;
+      publishButton.textContent = "Publishing…";
+      const result = await adapters.creator.publishListing(listingId);
+      if (result.status === RESULT.OK) {
+        notice = null;
+        announce("Listing published. It is now visible in marketplace search.");
+        await load();
+        return;
+      }
+      publishButton.disabled = false;
+      publishButton.textContent = "Publish";
+      notice = result.message ?? "The service refused the publish.";
+      if (result.status === RESULT.UNAUTHORIZED) notice = "Sign in to publish your listings.";
+      renderTab(activeTab());
+      announce(notice);
+      return;
+    }
+    if (archiveButton) {
+      const listingId = archiveButton.dataset.archiveListing;
+      const confirmed = globalThis.confirm(
+        "Archive this listing? It will be removed from public search. Archiving is permanent — there is no unpublish-back-to-draft in this phase.",
+      );
+      if (!confirmed) return;
+      archiveButton.disabled = true;
+      archiveButton.textContent = "Archiving…";
+      const result = await adapters.creator.unpublishListing(listingId);
+      if (result.status === RESULT.OK) {
+        notice = null;
+        announce("Listing archived. It is no longer publicly visible.");
+        await load();
+        return;
+      }
+      archiveButton.disabled = false;
+      archiveButton.textContent = "Archive";
+      notice = result.message ?? "The service refused the archive.";
+      if (result.status === RESULT.UNAUTHORIZED) notice = "Sign in to archive your listings.";
+      renderTab(activeTab());
+      announce(notice);
+    }
+  });
+
+  await load();
+}
+
 export function initCreatorListings(root = document.querySelector('[data-page="creator-listings"]')) {
   ensureLiveRegion();
   if (!root) return;
+  const adapters = createAdapters();
   const preview = previewRequested();
   const banner = root.querySelector("[data-preview-banner]");
-  if (banner) banner.innerHTML = preview ? previewNote() : "";
   const region = root.querySelector("[data-listings-region]");
   const tabs = [...root.querySelectorAll('[role="tab"]')];
+  if (!preview && adapters.creator.configured) {
+    if (banner) banner.innerHTML = "";
+    renderOwnListingsLive(adapters, { region, tabs });
+    return;
+  }
+  if (banner) banner.innerHTML = preview ? previewNote() : "";
   const rows = preview
     ? DEMO_LISTINGS.map((listing) => ({
       id: listing.id, title: listing.title, priceLabel: listing.priceLabel,
@@ -276,8 +483,12 @@ const LIMITS = Object.freeze({
   creatorNotes: { maximum: 1200 },
 });
 
-/** Bounded, auditable validation. Every message names the field and the rule; nothing is invented. */
-export function validateStep(step, draft) {
+/** Bounded, auditable validation. Every message names the field and the rule; nothing is invented.
+ *
+ * In `live` mode the rules match what Phase 25 listings actually store: fields the service does not carry (short
+ * description, build type, difficulty, release channel, pricing, instructions) are neither required nor shown as
+ * stored, and preview-image references must be bounded https URLs. */
+export function validateStep(step, draft, { live = false } = {}) {
   const errors = [];
   const text = (value) => (typeof value === "string" ? value.trim() : "");
   if (step === "details") {
@@ -286,7 +497,7 @@ export function validateStep(step, draft) {
       errors.push({ field: "title", message: `Use between ${LIMITS.title.minimum} and ${LIMITS.title.maximum} characters for the title.` });
     }
     const short = text(draft.shortDescription);
-    if (short.length < LIMITS.shortDescription.minimum || short.length > LIMITS.shortDescription.maximum) {
+    if (!live && (short.length < LIMITS.shortDescription.minimum || short.length > LIMITS.shortDescription.maximum)) {
       errors.push({ field: "shortDescription", message: `Summarize the build in ${LIMITS.shortDescription.minimum}–${LIMITS.shortDescription.maximum} characters.` });
     }
     const full = text(draft.fullDescription);
@@ -295,8 +506,8 @@ export function validateStep(step, draft) {
     }
     if (!CATEGORIES.includes(draft.category)) errors.push({ field: "category", message: "Choose a category." });
     if (!text(draft.subcategory)) errors.push({ field: "subcategory", message: "Name the subcategory, for example Housing or Gardens." });
-    if (!BUILD_TYPES.includes(draft.buildType)) errors.push({ field: "buildType", message: "Choose the build type." });
-    if (!DIFFICULTIES.includes(draft.difficulty)) errors.push({ field: "difficulty", message: "Choose the difficulty." });
+    if (!live && !BUILD_TYPES.includes(draft.buildType)) errors.push({ field: "buildType", message: "Choose the build type." });
+    if (!live && !DIFFICULTIES.includes(draft.difficulty)) errors.push({ field: "difficulty", message: "Choose the difficulty." });
     const tags = (draft.tags ?? []).filter(Boolean);
     if (tags.length > LIMITS.tags.maximum) errors.push({ field: "tags", message: `Use at most ${LIMITS.tags.maximum} tags.` });
     for (const tag of tags) {
@@ -308,6 +519,15 @@ export function validateStep(step, draft) {
     if (draft.acknowledgedMediaLimits !== true) {
       errors.push({ field: "mediaAcknowledgement", message: "Confirm that you understand uploads are not available and that nothing will be stored." });
     }
+    if (live) {
+      for (const slot of ["image0", "image1", "image2", "image3"]) {
+        const reference = text(draft[slot]);
+        if (!reference) continue;
+        if (!/^https:\/\/\S+$/.test(reference) || reference.length > 300) {
+          errors.push({ field: slot, message: "Each preview image reference must be an https URL of 300 characters or fewer." });
+        }
+      }
+    }
   }
   if (step === "compatibility") {
     if (!draft.edition) errors.push({ field: "edition", message: "Choose the Minecraft edition." });
@@ -316,7 +536,11 @@ export function validateStep(step, draft) {
       if (!draft.loader) errors.push({ field: "loader", message: "Choose the loader for a Java build." });
       else if (!loaderBelongsToEdition(draft.loader, draft.edition)) errors.push({ field: "loader", message: "That loader does not belong to this edition." });
     }
-    if (!RELEASE_CHANNELS.includes(draft.releaseChannel)) errors.push({ field: "releaseChannel", message: "Choose the release channel." });
+    if (!live && !RELEASE_CHANNELS.includes(draft.releaseChannel)) errors.push({ field: "releaseChannel", message: "Choose the release channel." });
+  }
+  if (step === "pricing" && live) {
+    // Phase 25 listings store no price: nothing here is sent to the service, so nothing here is validated as one.
+    return errors;
   }
   if (step === "pricing") {
     if (!["FREE", "PAID"].includes(draft.pricingModel)) errors.push({ field: "pricingModel", message: "Choose free or paid." });
@@ -330,6 +554,7 @@ export function validateStep(step, draft) {
       }
     }
   }
+  if (step === "instructions" && live) return errors;
   if (step === "instructions") {
     if (text(draft.usageInstructions).length === 0) errors.push({ field: "usageInstructions", message: "Describe how the build is meant to be used." });
     if (text(draft.usageInstructions).length > LIMITS.instructions.maximum) errors.push({ field: "usageInstructions", message: `Keep usage instructions within ${LIMITS.instructions.maximum} characters.` });
@@ -343,11 +568,19 @@ export function validateStep(step, draft) {
 export function initListingWizard(root = document.querySelector('[data-page="creator-listing-new"]')) {
   ensureLiveRegion();
   if (!root) return;
+  const adapters = createAdapters();
+  // Preview mode keeps the local-only flow even when a service is configured; live mode is configured + not preview.
+  const live = adapters.creator.configured && !previewRequested();
+  const editId = root.dataset.page === "creator-listing-edit"
+    ? new URLSearchParams(globalThis.location.search).get("id")
+    : null;
+  let editContext = editId ? "loading" : null; // "loading" | "ready" | "missing" | "unauthorized" | "error"
   const draft = {
     title: "", shortDescription: "", fullDescription: "", category: "", subcategory: "", tags: [], buildType: "", difficulty: "",
     acknowledgedMediaLimits: false, edition: "", minecraftVersion: "", loader: "", loaderVersion: "", releaseChannel: "",
     compatibilityNotes: "", pricingModel: "FREE", price: "", salePrice: "",
     usageInstructions: "", minecraftRequirements: "", knownLimitations: "", creatorNotes: "",
+    image0: "", image1: "", image2: "", image3: "",
   };
   let currentStep = 0;
 
@@ -446,9 +679,21 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
           <div class="field" style="margin-top:18px">
             <label class="choice" for="mediaAcknowledgement">
               <input type="checkbox" id="mediaAcknowledgement" data-draft-field="acknowledgedMediaLimits" ${draft.acknowledgedMediaLimits ? "checked" : ""}>
-              <span>I understand that no media can be uploaded yet, and that this listing cannot be published with images.<small>Required to continue.</small></span>
+              <span>${live
+                ? "I understand that no media can be uploaded yet — preview images can only be referenced by URL.<small>Required to continue.</small>"
+                : "I understand that no media can be uploaded yet, and that this listing cannot be published with images.<small>Required to continue.</small>"}</span>
             </label>
-          </div>`;
+          </div>
+          ${live ? `
+          <div class="stack-lg" style="margin-top:18px">
+            <div>
+              <h3 class="small">Preview image references</h3>
+              <p class="field-hint">Optional · up to 4 https URLs, 300 characters each. Phase 25 stores references, not files: the URLs are shown on your listing page, and CraftMind does not host, scan, or review them.</p>
+            </div>
+            ${["image0", "image1", "image2", "image3"].map((slot, index) => `
+              ${field(slot, { label: `Preview image URL ${index + 1}`, hint: "https:// URL · 300 characters maximum", value: draft[slot], required: false, maximum: 300 })}
+            `).join("")}
+          </div>` : ""}`;
       case "compatibility":
         return `
           <h2 id="wizard-title">Minecraft compatibility</h2>
@@ -513,7 +758,9 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
       case "instructions":
         return `
           <h2 id="wizard-title">Instructions</h2>
-          <p class="muted">Tell a buyer exactly how to use the build. These fields are stored with the listing and shown on its page.</p>
+          <p class="muted">${live
+            ? "Phase 25 listings do not carry these fields yet. Keep them in this draft for a later phase — they are not sent to the service and are not shown on any listing page."
+            : "Tell a buyer exactly how to use the build. These fields are stored with the listing and shown on its page."}</p>
           <div class="stack-lg">
             ${textareaField("usageInstructions", { label: "Installation and use instructions", hint: `Required · up to ${LIMITS.instructions.maximum} characters`, value: draft.usageInstructions, maximum: LIMITS.instructions.maximum, required: true })}
             ${textareaField("minecraftRequirements", { label: "Minecraft requirements", hint: "Optional · version, loader, and server requirements", value: draft.minecraftRequirements, maximum: LIMITS.requirements.maximum })}
@@ -540,9 +787,33 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
           <h3 class="small">Instructions a buyer would see</h3>
           <p class="small muted">${escapeText(draft.usageInstructions || "No instructions yet.")}</p>
           <h3 class="small">Description</h3>
-          <p class="small muted">${escapeText(draft.fullDescription || "No description yet.")}</p>`;
+          <p class="small muted">${escapeText(draft.fullDescription || "No description yet.")}</p>
+          ${live ? `
+          <div class="banner banner--planned" style="margin-top:18px" role="note">
+            <span class="banner-mark">NOT STORED</span>
+            <p>Phase 25 listings store title, description, category, subcategory, edition, Minecraft version, loaders, tags, and preview image references. Short description, build type, difficulty, release channel, pricing, and instructions stay in this draft only.</p>
+          </div>` : ""}`;
       }
       default:
+        if (live) {
+          return `
+          <h2 id="wizard-title">Publish</h2>
+          <p class="muted">Save this listing to your account, then publish it into marketplace search. Drafts stay private to you; only published listings appear in public search, and every check below runs on the service.</p>
+          <div class="state-card" role="note" data-publish-panel>
+            <div class="state-head"><span class="badge badge--current">Listing service</span><h3>${editId ? "Save changes to your draft" : "Save and publish"}</h3></div>
+            <p>The service verifies an active account, the Creator entitlement, an active creator profile, and an accepted creator agreement before publishing — and answers with its own actionable message when something is missing. The browser never claims a listing is published.</p>
+            <ul class="state-list">
+              <li>Saving writes a draft only. Nothing is written to your browser storage.</li>
+              <li>Publishing is refused, honestly, until every prerequisite is met.</li>
+              <li>Listings carry no price in this phase: there is no checkout, and no control here can start one.</li>
+            </ul>
+            <div class="state-actions">
+              <button type="button" class="button button-primary" data-wizard-save>${editId ? "Save changes" : "Save draft"}</button>
+              <button type="button" class="button button-secondary" data-wizard-publish>Publish now</button>
+            </div>
+            <p class="field-hint" data-publish-status role="status" aria-live="polite" style="margin-top:12px"></p>
+          </div>`;
+        }
         return `
           <h2 id="wizard-title">Publish</h2>
           <p class="muted">Publishing writes a real listing into a marketplace that does not exist yet. CraftMind will not create a listing it cannot store, sell, or serve.</p>
@@ -570,6 +841,125 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
       else if (name === "tags") draft.tags = element.value.split(",").map((tag) => tag.trim()).filter(Boolean);
       else draft[name] = element.value;
     }
+  }
+
+  /** The exact body `POST/PATCH /creator/listing` accepts. No owner, status, id, price, or verification travels. */
+  function serviceBody() {
+    return {
+      title: (draft.title ?? "").trim(),
+      description: (draft.fullDescription ?? "").trim(),
+      category: draft.category,
+      subcategory: (draft.subcategory ?? "").trim(),
+      edition: draft.edition,
+      minecraftVersions: [(draft.minecraftVersion ?? "").trim()].filter(Boolean),
+      loaders: draft.loader ? [draft.loader] : [],
+      tags: (draft.tags ?? []).map((tag) => String(tag).trim()).filter(Boolean),
+      imageReferences: [draft.image0, draft.image1, draft.image2, draft.image3]
+        .map((reference) => (reference ?? "").trim()).filter(Boolean),
+    };
+  }
+
+  function publishStatus(html) {
+    const status = panel.querySelector("[data-publish-status]");
+    if (status) status.innerHTML = html;
+  }
+
+  /** Validates every step; on failure, jumps to the first failing step and shows its errors. Returns true when clean. */
+  function validateAllSteps() {
+    collectDraft();
+    const failing = STEPS.findIndex((step) => validateStep(step.id, draft, { live }).length > 0);
+    if (failing === -1) return true;
+    currentStep = failing;
+    render();
+    renderErrors(validateStep(STEPS[failing].id, draft, { live }));
+    announce(`Step ${failing + 1} needs attention before saving.`);
+    return false;
+  }
+
+  async function runSave({ publish }) {
+    if (!validateAllSteps()) return;
+    if (editContext === "loading") { publishStatus("Your listing is still loading — try again in a moment."); return; }
+    if (editContext === "missing") { publishStatus("This address is not one of your listings, or it does not exist."); return; }
+    if (editContext === "unauthorized") { publishStatus('Sign in to save listings. <a href="../signin.html">Sign in</a>'); return; }
+    if (editContext === "error") { publishStatus("Your listing could not be loaded, so saving is blocked. Reload the page to try again."); return; }
+    const saveButton = panel.querySelector("[data-wizard-save]");
+    const publishButton = panel.querySelector("[data-wizard-publish]");
+    if (saveButton) saveButton.disabled = true;
+    if (publishButton) publishButton.disabled = true;
+    publishStatus("Saving to the account service…");
+    const body = serviceBody();
+    const saved = editId
+      ? await adapters.creator.updateDraft(editId, body)
+      : await adapters.creator.createDraft(body);
+    if (saved.status !== RESULT.OK) {
+      const signIn = saved.status === RESULT.UNAUTHORIZED ? ' <a href="../signin.html">Sign in</a>' : "";
+      publishStatus(`${escapeText(saved.message ?? "The service refused the save.")}${signIn}`);
+      if (saveButton) saveButton.disabled = false;
+      if (publishButton) publishButton.disabled = false;
+      announce("The service refused the save.");
+      return;
+    }
+    const listingId = saved.payload?.id ?? editId;
+    if (!publish) {
+      publishStatus(`Draft saved — ${escapeText(listingId)}. It is private until you publish. <a href="index.html">Open your listings</a>`);
+      announce("Draft saved on the account service.");
+      if (saveButton) saveButton.disabled = false;
+      if (publishButton) publishButton.disabled = false;
+      return;
+    }
+    publishStatus("Publishing…");
+    const published = await adapters.creator.publishListing(listingId);
+    if (published.status === RESULT.OK) {
+      publishStatus(`Published. <a href="../marketplace/build.html?build=${encodeURIComponent(listingId)}">View it on the marketplace</a> · <a href="index.html">Your listings</a>`);
+      announce("Listing published. It is now visible in marketplace search.");
+      return;
+    }
+    const needsOnboarding = /agreement|onboarding/i.test(published.message ?? "");
+    publishStatus(`${escapeText(published.message ?? "The service refused the publish.")}${needsOnboarding ? ' <a href="../onboarding/index.html">Open onboarding</a>' : ""}`);
+    announce(published.message ?? "The service refused the publish.");
+    if (saveButton) saveButton.disabled = false;
+    if (publishButton) publishButton.disabled = false;
+  }
+
+  /** Live edit mode: load the owned listing once and prefill the draft from the service's own row. */
+  function loadEditListing() {
+    if (!live || !editId) return;
+    adapters.creator.listMyListings().then((result) => {
+      const summaryElement = root.querySelector("[data-draft-summary]");
+      const finish = (context, message) => {
+        editContext = context;
+        if (summaryElement) summaryElement.textContent = message;
+      };
+      if (result.status === RESULT.UNAUTHORIZED) {
+        finish("unauthorized", "Sign in to edit this listing. Your listings are stored on the account service.");
+        return;
+      }
+      if (result.status !== RESULT.OK) {
+        finish("error", "This listing could not be loaded from the account service, so saving is blocked.");
+        return;
+      }
+      const row = (result.payload?.listings ?? []).find((item) => item.id === editId);
+      if (!row) {
+        finish("missing", "That listing does not exist, or it is not one of your listings.");
+        return;
+      }
+      draft.title = row.title ?? "";
+      draft.fullDescription = row.description ?? "";
+      draft.shortDescription = (row.description ?? "").slice(0, LIMITS.shortDescription.maximum);
+      draft.category = row.category ?? "";
+      draft.subcategory = row.subcategory ?? "";
+      draft.edition = row.edition ?? "";
+      draft.minecraftVersion = row.minecraftVersions?.[0] ?? "";
+      draft.loader = row.loaders?.[0] ?? "";
+      draft.tags = Array.isArray(row.tags) ? [...row.tags] : [];
+      const references = Array.isArray(row.imageReferences) ? row.imageReferences : [];
+      draft.image0 = references[0] ?? "";
+      draft.image1 = references[1] ?? "";
+      draft.image2 = references[2] ?? "";
+      draft.image3 = references[3] ?? "";
+      finish("ready", `Editing ${row.title} (${editId}). Saving writes your changes to the service; publishing happens from this step.`);
+      render();
+    });
   }
 
   function renderErrors(errors) {
@@ -662,8 +1052,18 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
     const next = root.querySelector("[data-wizard-next]");
     back.disabled = currentStep === 0;
     back.setAttribute("aria-disabled", String(currentStep === 0));
-    next.textContent = currentStep === STEPS.length - 1 ? "Publishing not available" : "Continue";
+    next.textContent = currentStep === STEPS.length - 1
+      ? (live ? "Use the save and publish controls below" : "Publishing not available")
+      : "Continue";
     next.disabled = currentStep === STEPS.length - 1;
+    if (live && STEPS[currentStep].id === "publish") {
+      panel.querySelector("[data-wizard-save]")?.addEventListener("click", () => runSave({ publish: false }));
+      panel.querySelector("[data-wizard-publish]")?.addEventListener("click", () => runSave({ publish: true }));
+      if (editContext === "loading") publishStatus("Loading your listing from the account service…");
+      if (editContext === "unauthorized") publishStatus('Sign in to save listings. <a href="../signin.html">Sign in</a>');
+      if (editContext === "missing") publishStatus("This address is not one of your listings, or it does not exist.");
+      if (editContext === "error") publishStatus("Your listing could not be loaded, so saving is blocked. Reload the page to try again.");
+    }
     document.getElementById("wizard-title")?.focus?.();
   }
 
@@ -672,7 +1072,7 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
   });
   root.querySelector("[data-wizard-next]").addEventListener("click", () => {
     collectDraft();
-    const errors = validateStep(STEPS[currentStep].id, draft);
+    const errors = validateStep(STEPS[currentStep].id, draft, { live });
     renderErrors(errors);
     if (errors.length > 0) return;
     if (currentStep < STEPS.length - 1) {
@@ -683,8 +1083,12 @@ export function initListingWizard(root = document.querySelector('[data-page="cre
   });
   const summary = root.querySelector("[data-draft-summary]");
   if (summary) {
-    summary.textContent = `Draft lives in this page only. Nothing is uploaded, and nothing is written to your browser storage. BuildPlan limits for reference: ${BUILD_PLAN_LIMITS.maximumOperations} operations, ${BUILD_PLAN_LIMITS.maximumWidth}×${BUILD_PLAN_LIMITS.maximumHeight}×${BUILD_PLAN_LIMITS.maximumDepth} blocks.`;
+    summary.textContent = live
+      ? "Fields are saved only when you press a save control on the final step. Nothing is written to your browser storage. Phase 25 listings carry no price."
+      : `Draft lives in this page only. Nothing is uploaded, and nothing is written to your browser storage. BuildPlan limits for reference: ${BUILD_PLAN_LIMITS.maximumOperations} operations, ${BUILD_PLAN_LIMITS.maximumWidth}×${BUILD_PLAN_LIMITS.maximumHeight}×${BUILD_PLAN_LIMITS.maximumDepth} blocks.`;
+    if (live && editId) summary.textContent = "Loading your listing from the account service…";
   }
+  loadEditListing();
   render();
 }
 

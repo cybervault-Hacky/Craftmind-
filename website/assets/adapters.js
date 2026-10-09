@@ -8,10 +8,12 @@
  * `configure()`, and the pages that consume these adapters switch from honest unavailable states to real data without
  * any markup change.
  *
- * The two adapters that are fully specified are the account adapter, because the account service already exists in
- * `backend/`, and — since Phase 22 — a read-only membership/entitlement view over it, because that service now owns
- * membership state, plan entitlements, and build credits. Both stay inactive until a deployer deliberately configures
- * an origin, and both only ever call the endpoints that exist (see ACCOUNT_ENDPOINTS).
+ * The adapters that are fully specified are the account adapter, because the account service already exists in
+ * `backend/`; — since Phase 22 — a read-only membership/entitlement view over it, because that service now owns
+ * membership state, plan entitlements, and build credits; and — since Phase 25 — the marketplace catalog and the
+ * creator listing surface, because the service now stores listings, evaluates publishing prerequisites, and answers
+ * public search over PUBLISHED rows only. All stay inactive until a deployer deliberately configures an origin, and
+ * all only ever call the endpoints that exist (see ACCOUNT_ENDPOINTS).
  *
  * Two rules that Phase 22 makes explicit:
  *
@@ -43,7 +45,7 @@ export const REASON = Object.freeze({
 });
 
 const UNAVAILABLE_MESSAGES = Object.freeze({
-  [REASON.NOT_IMPLEMENTED]: "The marketplace backend is not implemented yet. This interface is the Phase 21 foundation, and it will read real data once that service exists.",
+  [REASON.NOT_IMPLEMENTED]: "This capability has no implementation in this phase, so the interface answers honestly instead of inventing data.",
   [REASON.NOT_CONFIGURED]: "This site has no account service configured, so no account data can be requested here.",
 });
 
@@ -111,6 +113,16 @@ export const ACCOUNT_ENDPOINTS = Object.freeze([
   "POST /onboarding/buyer",
   "GET /onboarding/seller",
   "POST /onboarding/seller",
+  // Phase 25: public listing discovery (published rows only) and the session-scoped listing lifecycle. The service
+  // derives ownership from the session; the browser never names an owner and never sends one.
+  "GET /marketplace/listings",
+  "GET /marketplace/listings/:id",
+  "GET /creator/listing",
+  "POST /creator/listing",
+  "GET /creator/listing/:id",
+  "PATCH /creator/listing/:id",
+  "POST /creator/listing/:id/publish",
+  "POST /creator/listing/:id/archive",
 ]);
 
 /** The one anonymous route the site may call. It returns the public projection of an ACTIVE creator profile. */
@@ -137,7 +149,36 @@ const MEMBERSHIP_METHODS = Object.freeze(["loadMembership", "loadEntitlements", 
 /** The entitlement surface. `checkAccess` is deliberately absent: access is decided by the server, never in a browser. */
 const ENTITLEMENT_METHODS = Object.freeze(["listEntitlements", "loadCredits"]);
 
-async function requestJson(baseUrl, path, { method = "GET", body, token } = {}) {
+/**
+ * The marketplace catalog surface (Phase 25). `searchListings` and `getListing` read PUBLISHED rows from the
+ * service; `listCategories` answers from the fixed vocabulary the service validates (it is a constant, not a
+ * server claim). The remaining methods stay in the documented contract as honest not-implemented stubs: there is
+ * no featured ranking, no server-side saved-items store, and no rating or popularity signal anywhere.
+ */
+const MARKETPLACE_METHODS = Object.freeze(["searchListings", "getListing", "listCategories", "listFeatured", "listSaved", "setSaved"]);
+
+/** The creator listing surface (Phase 25): drafts and the one-way lifecycle publish/archive, all session-scoped. */
+const CREATOR_LISTING_METHODS = Object.freeze([
+  "listMyListings", "createDraft", "updateDraft", "publishListing", "unpublishListing",
+  "duplicateListing", "deleteDraft", "listMedia", "uploadMedia",
+]);
+
+/** The same eight categories the service stores and validates; a fixed vocabulary, so no lookup is required. */
+const MARKETPLACE_CATEGORIES = Object.freeze([
+  "Structures", "Landscaping", "Interiors", "Redstone", "Farms", "Decorations", "Mini-games", "Whole worlds",
+]);
+
+const LISTING_ID_PATTERN = /^lst_[0-9a-fA-F-]{36}$/;
+
+function rejected(message) {
+  return Promise.resolve(Object.freeze({ status: RESULT.ERROR, reason: REASON.REJECTED, message }));
+}
+
+function notImplemented(message) {
+  return Promise.resolve(unavailable(REASON.NOT_IMPLEMENTED, { message }));
+}
+
+async function requestJson(baseUrl, path, { method = "GET", body, token, refusedNotUnauthenticated = false } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -158,6 +199,12 @@ async function requestJson(baseUrl, path, { method = "GET", body, token } = {}) 
     payload = null;
   }
   if (response.status === 401 || response.status === 403) {
+    // A 403 on the listing routes means the session is valid and the *request* was refused (missing entitlement,
+    // missing agreement, wrong owner). Reporting that as "sign in again" would lie to the user, so those calls opt
+    // into the typed rejection with the server's own actionable message.
+    if (refusedNotUnauthenticated && response.status === 403 && payload?.error) {
+      return { status: RESULT.ERROR, reason: REASON.REJECTED, message: payload.error.message ?? "The account service refused the request.", payload };
+    }
     return { status: RESULT.UNAUTHORIZED, reason: REASON.NOT_SIGNED_IN, message: "This action needs an active account session.", payload };
   }
   if (!response.ok) {
@@ -376,6 +423,100 @@ function siteConfiguration() {
   return { accountServiceOrigin: /^https:\/\/[^\s]+$/.test(origin) ? origin : "" };
 }
 
+/**
+ * The public marketplace catalog over the account service (Phase 25).
+ *
+ * Reads only: search and detail hit the anonymous `/marketplace/listings` routes, which serve PUBLISHED rows and a
+ * fixed public projection. No adapter here computes relevance, trending, or popularity — ordering is whatever the
+ * service declares (newest published first), and an empty result is a success. When no origin is configured, every
+ * method returns the same honest unavailable result as before.
+ */
+function createMarketplaceAdapter(account) {
+  const contract = [...MARKETPLACE_METHODS];
+  if (!account.configured) {
+    return unconfigured("marketplace", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  return Object.freeze({
+    configured: true,
+    name: "marketplace",
+    contract,
+    async searchListings(params = {}) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null || value === "") continue;
+        if (typeof value !== "string" && typeof value !== "number") continue;
+        query.set(key, String(value));
+      }
+      const suffix = query.toString();
+      return requestJson(account.origin, `/marketplace/listings${suffix ? `?${suffix}` : ""}`);
+    },
+    async getListing(listingId) {
+      // The identifier is validated here as well as on the server because it is interpolated into a URL.
+      if (typeof listingId !== "string" || !LISTING_ID_PATTERN.test(listingId)) {
+        return rejected("That address is not a valid listing identifier.");
+      }
+      return requestJson(account.origin, `/marketplace/listings/${listingId}`);
+    },
+    async listCategories() {
+      return Object.freeze({ status: RESULT.OK, payload: { categories: [...MARKETPLACE_CATEGORIES] } });
+    },
+    listFeatured: () => notImplemented("There is no featured ranking in this phase: discovery is search and filters over every published listing."),
+    listSaved: () => notImplemented("Saved items are kept in the current page only; no saved-items store exists on the service."),
+    setSaved: () => notImplemented("Saved items are kept in the current page only; nothing can be stored against an account."),
+  });
+}
+
+/**
+ * The creator listing surface over the account service (Phase 25).
+ *
+ * Every method is session-scoped: the service derives the owner from the bearer token, so no method here ever sends
+ * an owner, creator id, or verification claim. `unpublishListing` maps to the service's one-way **archive** transition
+ * (`POST /creator/listing/:id/archive`): there is no unpublish-back-to-draft, and the studio labels the control
+ * accordingly. Duplicate, delete, and media stay honest not-implemented stubs because the service has no such routes.
+ */
+function createListingCreatorAdapter(account) {
+  const contract = [...CREATOR_LISTING_METHODS];
+  if (!account.configured) {
+    return unconfigured("creator", contract, { reason: REASON.NOT_CONFIGURED, message: UNAVAILABLE_MESSAGES[REASON.NOT_CONFIGURED] });
+  }
+  const signedInOnly = (implementation) => async (...args) => {
+    if (!account.signedIn) {
+      return Object.freeze({
+        status: RESULT.UNAUTHORIZED,
+        reason: REASON.NOT_SIGNED_IN,
+        message: "Sign in to create, edit, publish, and archive your listings from the account service.",
+      });
+    }
+    return implementation(...args);
+  };
+  const token = () => account.session.accessToken;
+  return Object.freeze({
+    configured: true,
+    name: "creator",
+    contract,
+    get signedIn() { return account.signedIn; },
+    listMyListings: signedInOnly(() => requestJson(account.origin, "/creator/listing", { token: token() })),
+    createDraft: signedInOnly((body) => requestJson(account.origin, "/creator/listing", { method: "POST", body, token: token(), refusedNotUnauthenticated: true })),
+    updateDraft: signedInOnly((listingId, body) => {
+      if (typeof listingId !== "string" || !LISTING_ID_PATTERN.test(listingId)) return rejected("That address is not a valid listing identifier.");
+      return requestJson(account.origin, `/creator/listing/${listingId}`, { method: "PATCH", body, token: token(), refusedNotUnauthenticated: true });
+    }),
+    publishListing: signedInOnly((listingId) => {
+      if (typeof listingId !== "string" || !LISTING_ID_PATTERN.test(listingId)) return rejected("That address is not a valid listing identifier.");
+      return requestJson(account.origin, `/creator/listing/${listingId}/publish`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    // One-way archive: the only transition that removes a listing from public discovery in Phase 25.
+    unpublishListing: signedInOnly((listingId) => {
+      if (typeof listingId !== "string" || !LISTING_ID_PATTERN.test(listingId)) return rejected("That address is not a valid listing identifier.");
+      return requestJson(account.origin, `/creator/listing/${listingId}/archive`, { method: "POST", body: {}, token: token(), refusedNotUnauthenticated: true });
+    }),
+    duplicateListing: () => notImplemented("Listing duplication has no service route in this phase."),
+    deleteDraft: () => notImplemented("Listing deletion has no service route in this phase; archive removes a listing from public discovery."),
+    listMedia: () => notImplemented("Listing media references are stored with a listing; there is no separate media service yet."),
+    uploadMedia: () => notImplemented("Uploads need storage, scanning, and moderation, none of which exists in this phase."),
+  });
+}
+
 /** The integration boundary consumed by the page controllers. */
 export function createAdapters() {
   const config = siteConfiguration();
@@ -388,9 +529,11 @@ export function createAdapters() {
     entitlements: createEntitlementsAdapter(account),
     // Phase 23: creator identity reads (profile, status, verification, capabilities) from the same account service.
     creatorProfile: createCreatorProfileAdapter(account),
-    // Documented, unimplemented, and intentionally inert. Each list is the exact method set a later phase must provide.
-    marketplace: unconfigured("marketplace", ["searchListings", "getListing", "listCategories", "listFeatured", "listSaved", "setSaved"]),
-    creator: unconfigured("creator", ["listMyListings", "createDraft", "updateDraft", "publishListing", "unpublishListing", "duplicateListing", "deleteDraft", "listMedia", "uploadMedia"]),
+    // Phase 25: the marketplace catalog and the creator listing surface read and write the account service when one
+    // is configured, and answer with the same honest unavailable states as before when one is not. Orders, reviews,
+    // analytics, and payments stay documented and inert — nothing in this phase sells anything.
+    marketplace: createMarketplaceAdapter(account),
+    creator: createListingCreatorAdapter(account),
     orders: unconfigured("orders", ["listSalesOrders", "listPurchases", "getOrder"]),
     reviews: unconfigured("reviews", ["listReviewsForListing", "listReviewsForCreator", "submitReview"]),
     analytics: unconfigured("analytics", ["listingViews", "listingSaves", "conversion", "revenue", "topListings", "trafficSources"]),

@@ -633,7 +633,7 @@ describe("Phase 24 verification and entitlements", () => {
     assert.equal(row.verification_status, "UNVERIFIED");
   });
 
-  it("19. profile completion does not grant creator publishing capability", async () => {
+  it("19. complete prerequisites report publishing available without granting verification", async () => {
     const service = await newService();
     const owner = await ownerSession(service);
     const account = await creatorAccount(service, owner, "publish@example.test");
@@ -644,19 +644,25 @@ describe("Phase 24 verification and entitlements", () => {
     assert.equal(saved.body.seller.completed, true);
 
     const userId = accountIdFor(service, "publish@example.test");
+    // Phase 25: this account now holds every real prerequisite — entitlement, active profile, accepted seller
+    // agreement — so publishing is honestly AVAILABLE. The capability is a genuine evaluation, not a placeholder.
     const publish = canPublishCreatorContent(service.database, service.configuration, userId);
-    assert.equal(publish.allowed, false);
-    assert.equal(publish.state, CAPABILITY_STATE.NOT_IMPLEMENTED);
-    assert.equal(publish.code, "FEATURE_NOT_IMPLEMENTED");
-    // Even the "would be eligible" answer is separate from the capability itself.
+    assert.equal(publish.allowed, true);
+    assert.equal(publish.state, CAPABILITY_STATE.ALLOWED);
+    assert.equal(publish.code, null);
     assert.equal(publish.wouldBeEligible, true);
+    assert.equal(publish.agreementRecorded, true);
 
     // The same truth is what the account's own creator read reports: the capability exists, and it is not available.
     const profile = await call(service.baseUrl, "GET", "/creator/profile", { headers: bearer(account.accessToken) });
     assert.equal(profile.status, 200);
     const entry = profile.body.eligibility.capabilities.find((capability) => capability.key === "CREATOR_PUBLISH");
     assert.ok(entry, "the creator capability list must state where publishing stands");
-    assert.equal(entry.available, false);
+    assert.equal(entry.available, true);
+    assert.equal(entry.state, "AVAILABLE");
+    // Publishing availability is not a verification side effect: the profile row is still UNVERIFIED.
+    const row = service.database.prepare("SELECT verification_status FROM creator_profiles WHERE user_id = ?").get(userId);
+    assert.equal(row.verification_status, "UNVERIFIED");
   });
 
   it("20. membership status and credits remain unchanged by onboarding", async () => {
@@ -806,7 +812,7 @@ describe("Phase 24 audit and resilience", () => {
     assert.equal(service.database.prepare("SELECT full_name FROM buyer_onboarding").get().full_name, "Throttle 2");
   });
 
-  it("25. the version 7 migration preserves a Phase 23 database and stays additive", () => {
+  it("25. the version 8 migration preserves a Phase 23 database and stays additive", () => {
     // A Phase 23 database is built the way it really comes into being: migrations through 6, Phase 23 rows, then 7.
     const database = new DatabaseSync(temporaryDatabasePath());
     database.exec("PRAGMA foreign_keys = ON");
@@ -832,8 +838,8 @@ describe("Phase 24 audit and resilience", () => {
     ).run(), /CHECK constraint failed/);
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 7);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+    assert.equal(SCHEMA_VERSION, 8);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
     // Existing data preserved, with values.
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_p23'").get().display_name, "Phase23");
     const membership = database.prepare("SELECT * FROM membership_accounts WHERE user_id = 'usr_p23'").get();
@@ -861,7 +867,7 @@ describe("Phase 24 audit and resilience", () => {
     assert.throws(() => database.prepare("DELETE FROM admin_audit_log WHERE audit_id = 'aud_p23'").run(), /append-only/);
     // No destructive path: re-running is a no-op.
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM admin_audit_log").get().count, 2);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM creator_profiles").get().count, 1);
     database.close();

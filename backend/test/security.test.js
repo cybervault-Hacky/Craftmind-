@@ -191,6 +191,7 @@ describe("account service security", () => {
       "developer_sessions",
       "email_verification_tokens",
       "guest_identities",
+      "marketplace_listings",
       "membership_accounts",
       "membership_transitions",
       "password_recovery_tokens",
@@ -206,11 +207,12 @@ describe("account service security", () => {
       "sessions",
       "users",
     ]);
-    // Phase 23 added creator identity and server workspaces: ownership records, not a marketplace or a payment system.
     // Phase 22 added an internal membership and build-credit ledger, so `credit` is no longer a forbidden substring —
-    // the ban exists to stop a *payment or marketplace* system appearing without its phase. Those remain forbidden, and
-    // the credit tables are internal allocations with no purchase, price, or settlement behind them.
-    for (const forbidden of ["subscription", "payment", "gift", "ban", "marketplace", "invoice", "price", "payout"]) {
+    // the ban exists to stop a *payment* system appearing without its phase. Phase 25 added `marketplace_listings`
+    // by name (listings and discovery only: no checkout, no price, no settlement), so `marketplace` is no longer a
+    // forbidden substring either. Those payment words remain forbidden, and the credit tables are internal
+    // allocations with no purchase, price, or settlement behind them.
+    for (const forbidden of ["subscription", "payment", "gift", "ban", "invoice", "price", "payout"]) {
       assert.equal(
         tables.some((name) => name.includes(forbidden)),
         false,

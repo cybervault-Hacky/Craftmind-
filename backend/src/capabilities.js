@@ -1,14 +1,15 @@
 /**
- * The reusable capability boundary the marketplace phase will consume (Phase 23).
+ * The reusable capability boundary the marketplace consumes (Phase 23, completed in Phase 25).
  *
- * Phase 24 builds listings, a catalog, and a purchase-flow foundation. When it does, it must not re-derive who may
- * create content, who may touch an existing resource, or what "publish" means. These four checks are that boundary, and
- * they are deliberately the *only* place the next phase needs to look:
+ * The listing services must not re-derive who may create content, who may touch an existing resource, or what
+ * "publish" means. These checks are that boundary, and they are deliberately the *only* place a caller needs to look:
  *
  *   * `canCreateCreatorContent` — may this account create creator-owned content at all? (membership → entitlement)
  *   * `canManageOwnedContent`   — may this account touch that specific owned resource? (ownership, server-side only)
- *   * `canPublishCreatorContent`— may this account publish? Currently a typed "not implemented" state, because
- *                                 marketplace publishing does not exist. It never returns a fake success.
+ *   * `canPublishCreatorContent`— may this account publish a listing? Since Phase 25 this is the *real* gate: the
+ *                                 Creator entitlement, an active creator profile, and the accepted creator agreement
+ *                                 from seller onboarding. It reports DENIED with honest reasons — never a fake
+ *                                 success, and no longer a typed placeholder, because the pipeline now exists.
  *   * `canManageServer`         — may this account manage that specific workspace? (workspace role + entitlement)
  *
  * Each check returns a decision object rather than a bare boolean, so a caller can tell *why* something is refused and
@@ -24,6 +25,7 @@ import {
   serverWorkspaceRowById,
 } from "./server-workspaces.js";
 import { creatorCapabilitiesFor, creatorProfileRowForUser } from "./creator-profiles.js";
+import { CREATOR_STATUS } from "./creator-catalog.js";
 import { SERVER_ROLE, isOperationalServerStatus } from "./server-catalog.js";
 import { runTransaction } from "./transactions.js";
 
@@ -91,20 +93,67 @@ export function canManageOwnedContent(database, configuration, { actorAccountId,
 }
 
 /**
+ * The publish prerequisites as structured facts — the single source behind both `canPublishCreatorContent` and the
+ * listing publish endpoint, so the capability read and the write can never disagree.
+ *
+ * Four independent conditions, each reported separately because they are NOT interchangeable: an active account, the
+ * Creator entitlement, an operational creator profile, and the creator agreement recorded by seller onboarding.
+ * Verification markers (email, creator verification, Trusted Seller) are deliberately absent: none of them is a
+ * publishing requirement, and none is granted as a side effect of publishing.
+ */
+export function publishPrerequisitesInTransaction(database, configuration, accountId, { now = Date.now() } = {}) {
+  const user = database.prepare("SELECT status FROM users WHERE user_id = ?").get(accountId);
+  if (!user) {
+    return Object.freeze({
+      accountActive: false, entitled: false, profileExists: false, profile: null, operational: false,
+      agreementRecorded: false, wouldBeEligible: false, publishEligible: false,
+      reasons: Object.freeze(["No such account."]), plan: null,
+    });
+  }
+  const view = getAccountEntitlementsInTransaction(database, configuration, accountId, { now, includeCredits: false });
+  const profile = creatorProfileRowForUser(database, accountId);
+  const entitled = hasEntitlement(view, ENTITLEMENT.CREATOR_TOOLS);
+  const agreement = database.prepare("SELECT user_id FROM seller_onboarding WHERE user_id = ?").get(accountId);
+  const accountActive = user.status === "ACTIVE";
+  const operational = profile?.status === CREATOR_STATUS.ACTIVE;
+  const reasons = [];
+  if (!accountActive) reasons.push("The account is not active.");
+  if (!entitled) reasons.push("The Creator entitlement is required. No plan is purchasable in this phase.");
+  if (!profile) reasons.push("No creator profile exists for this account yet.");
+  else if (!operational) reasons.push("The creator profile is not active, so protected creator operations are refused.");
+  if (!agreement) reasons.push("The creator agreement from seller onboarding must be accepted before publishing.");
+  return Object.freeze({
+    accountActive,
+    entitled,
+    profileExists: Boolean(profile),
+    profile: profile ? Object.freeze({ creatorId: profile.creator_id, status: profile.status }) : null,
+    operational,
+    agreementRecorded: Boolean(agreement),
+    wouldBeEligible: entitled && operational,
+    publishEligible: reasons.length === 0,
+    reasons: Object.freeze(reasons),
+    plan: view.membership.plan,
+  });
+}
+
+/**
  * "May this account publish creator content?"
  *
- * Publishing belongs to the marketplace phase. There is no publish endpoint, no listing table, and no catalog, so this
- * returns a typed not-implemented state. It never reports success, and it never silently performs a partial publish.
+ * Since Phase 25 this is the real gate, evaluated over the same four prerequisites the publish endpoint enforces.
+ * A refusal is a DENIED decision with actionable reasons — never a fabricated success and never a blanket
+ * "not implemented", because the listing pipeline now exists.
  */
 export function canPublishCreatorContent(database, configuration, accountId) {
   return runTransaction(database, () => {
-    const view = getAccountEntitlementsInTransaction(database, configuration, accountId, { includeCredits: false });
-    const profile = creatorProfileRowForUser(database, accountId);
-    const entitled = hasEntitlement(view, ENTITLEMENT.CREATOR_TOOLS);
-    const capable = entitled && profile?.status === "ACTIVE";
-    return decision(CAPABILITY_STATE.NOT_IMPLEMENTED, {
-      reasons: ["Marketplace publishing is not implemented: there is no listing, catalog, or publish pipeline yet."],
-      metadata: { wouldBeEligible: capable, entitlementGranted: entitled, plan: view.membership.plan },
+    const prerequisites = publishPrerequisitesInTransaction(database, configuration, accountId);
+    return decision(prerequisites.publishEligible ? CAPABILITY_STATE.ALLOWED : CAPABILITY_STATE.DENIED, {
+      reasons: prerequisites.reasons,
+      metadata: {
+        wouldBeEligible: prerequisites.wouldBeEligible,
+        entitlementGranted: prerequisites.entitled,
+        agreementRecorded: prerequisites.agreementRecorded,
+        plan: prerequisites.plan,
+      },
     });
   });
 }

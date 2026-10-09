@@ -88,6 +88,10 @@ export function newServerMemberId() {
   return `svm_${randomUUID()}`;
 }
 
+export function newListingId() {
+  return `lst_${randomUUID()}`;
+}
+
 /**
  * Opaque, non-reversible correlation handle for a client source. The security system must correlate and throttle an
  * abusive origin without persisting IP addresses or device identifiers, so only this HMAC digest is ever stored.

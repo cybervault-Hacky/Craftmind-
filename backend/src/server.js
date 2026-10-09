@@ -51,6 +51,16 @@ import {
   saveSellerOnboardingForSession,
   sellerOnboardingForSession,
 } from "./onboarding-api.js";
+import {
+  archiveListingForSession,
+  createListingForSession,
+  listingForSession,
+  ownListingsForSession,
+  publicListing,
+  publishListingForSession,
+  searchPublishedListings,
+  updateListingForSession,
+} from "./listing-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -273,6 +283,9 @@ function routeSecurityCategory(pathKey) {
   // category at all: an anonymous read is throttled by the request limit and by the autonomous source protections, and
   // applying an *account* protection to an anonymous request would protect nothing.
   if (pathKey === "/creator/profile" || pathKey.startsWith("/servers/")) return "SESSION";
+  // Phase 25 listing routes: reads and writes share each path, so the whole family gets session protection —
+  // the same shape as /creator/profile. The public /marketplace/* reads stay ordinary request-category traffic.
+  if (pathKey.startsWith("/creator/listing")) return "SESSION";
   // Phase 24 onboarding saves are credential-bearing state changes about the account itself; both verbs share the
   // path, so the category covers the read and the write together, exactly as it does for /creator/profile.
   if (pathKey === "/onboarding/buyer" || pathKey === "/onboarding/seller") return "SESSION";
@@ -718,6 +731,26 @@ export function createAccountService({ database, configuration, logger = console
       consumeLimit(limits, "onboarding-write", request, "", configuration.rateLimit.onboardingWrite);
       return { status: 200, payload: saveSellerOnboardingForSession(database, configuration, token, body) };
     }],
+    // Phase 25 marketplace listings. Creators manage their own rows under /creator/listing (session-derived
+    // ownership only); the public discovers PUBLISHED rows under /marketplace/listings.
+    ["POST /creator/listing", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "listing-write", request, "", configuration.rateLimit.creatorProfileWrite);
+      return { status: 201, payload: createListingForSession(database, configuration, token, body) };
+    }],
+    ["GET /creator/listing", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "listing-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: ownListingsForSession(database, configuration, token) };
+    }],
+    ["GET /marketplace/listings", async (request) => {
+      consumeLimit(limits, "listing-search", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://listing.local").searchParams;
+      return { status: 200, payload: searchPublishedListings(database, searchParams) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -888,6 +921,65 @@ export function createAccountService({ database, configuration, logger = console
           status: 200,
           payload: updateServerForSession(database, configuration, token, decodeURIComponent(slug), body),
         };
+      },
+    },
+    // Phase 25 listing routes. The listing id is validated inside the handlers (shape + ownership); the router only
+    // ever sees the route pattern in the request log, never a probeable id list.
+    {
+      method: "GET",
+      name: "/creator/listing/:id",
+      pattern: /^\/creator\/listing\/([^/]{1,64})$/,
+      handler: (request, _context, listingId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "listing-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: listingForSession(database, configuration, token, decodeURIComponent(listingId)) };
+      },
+    },
+    {
+      method: "PATCH",
+      name: "/creator/listing/:id",
+      pattern: /^\/creator\/listing\/([^/]{1,64})$/,
+      handler: async (request, _context, listingId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "listing-write", request, "", configuration.rateLimit.creatorProfileWrite);
+        return {
+          status: 200,
+          payload: updateListingForSession(database, configuration, token, decodeURIComponent(listingId), body),
+        };
+      },
+    },
+    {
+      method: "POST",
+      name: "/creator/listing/:id/publish",
+      pattern: /^\/creator\/listing\/([^/]{1,64})\/publish$/,
+      handler: (request, _context, listingId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "listing-write", request, "", configuration.rateLimit.creatorProfileWrite);
+        return { status: 200, payload: publishListingForSession(database, configuration, token, decodeURIComponent(listingId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/creator/listing/:id/archive",
+      pattern: /^\/creator\/listing\/([^/]{1,64})\/archive$/,
+      handler: (request, _context, listingId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "listing-write", request, "", configuration.rateLimit.creatorProfileWrite);
+        return { status: 200, payload: archiveListingForSession(database, configuration, token, decodeURIComponent(listingId)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/marketplace/listings/:id",
+      pattern: /^\/marketplace\/listings\/([^/]{1,64})$/,
+      handler: (request, _context, listingId) => {
+        consumeLimit(limits, "listing-search", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: publicListing(database, decodeURIComponent(listingId)) };
       },
     },
   ];

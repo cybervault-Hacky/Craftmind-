@@ -101,6 +101,11 @@ export const ErrorCode = Object.freeze({
   PHONE_VERIFICATION_UNAVAILABLE: "PHONE_VERIFICATION_UNAVAILABLE",
   SELLER_AGREEMENT_REQUIRED: "SELLER_AGREEMENT_REQUIRED",
 
+  // Phase 25 marketplace listings
+  LISTING_NOT_FOUND: "LISTING_NOT_FOUND",
+  LISTING_STATE_CONFLICT: "LISTING_STATE_CONFLICT",
+  LISTING_PUBLISH_BLOCKED: "LISTING_PUBLISH_BLOCKED",
+
   // Phase 20 security event, incident, and automated response layer
   SECURITY_EVENT_INVALID: "SECURITY_EVENT_INVALID",
   SECURITY_ACTION_UNKNOWN: "SECURITY_ACTION_UNKNOWN",
@@ -206,6 +211,9 @@ const STATUS_BY_CODE = Object.freeze({
   // not a 501 for the endpoint — the endpoint works, the field is not part of it.
   [ErrorCode.PHONE_VERIFICATION_UNAVAILABLE]: 400,
   [ErrorCode.SELLER_AGREEMENT_REQUIRED]: 400,
+  [ErrorCode.LISTING_NOT_FOUND]: 404,
+  [ErrorCode.LISTING_STATE_CONFLICT]: 409,
+  [ErrorCode.LISTING_PUBLISH_BLOCKED]: 403,
   [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
@@ -294,6 +302,9 @@ const SAFE_MESSAGES = Object.freeze({
   [ErrorCode.STORAGE_BUSY]: "The service is busy with another write. Nothing was changed; retry shortly.",
   [ErrorCode.PHONE_VERIFICATION_UNAVAILABLE]: "Phone verification does not exist in CraftMind yet, so no phone number is accepted or treated as verified.",
   [ErrorCode.SELLER_AGREEMENT_REQUIRED]: "Accept the current creator agreement before completing seller onboarding.",
+  [ErrorCode.LISTING_NOT_FOUND]: "That listing does not exist, or it is not available.",
+  [ErrorCode.LISTING_STATE_CONFLICT]: "The listing is already in that state, so nothing was changed.",
+  [ErrorCode.LISTING_PUBLISH_BLOCKED]: "Publishing needs an active creator profile, the Creator entitlement, and an accepted creator agreement. Complete seller onboarding first.",
   [ErrorCode.NETWORK_ERROR]: "The account service could not complete the network request.",
   [ErrorCode.BACKEND_UNAVAILABLE]: "The account service cannot serve this request right now.",
   [ErrorCode.UNKNOWN_ERROR]: "The account service could not complete this request.",

@@ -845,12 +845,17 @@ describe("Phase 23 ownership and marketplace authorization boundary", () => {
       actorAccountId: freeId, contentOwnerAccountId: creatorId,
     }).allowed, false);
 
+    // Phase 25 replaced the placeholder with a real prerequisite evaluation: this account holds the entitlement and
+    // a profile but never accepted the creator agreement, so publishing is honestly DENIED with that reason — not a
+    // fabricated FEATURE_NOT_IMPLEMENTED and not a bypass.
     const publish = canPublishCreatorContent(service.database, service.configuration, creatorId);
     assert.equal(publish.allowed, false);
-    assert.equal(publish.state, CAPABILITY_STATE.NOT_IMPLEMENTED);
-    assert.equal(publish.code, "FEATURE_NOT_IMPLEMENTED");
+    assert.equal(publish.state, CAPABILITY_STATE.DENIED);
+    assert.equal(publish.code, null);
     assert.equal(publish.wouldBeEligible, true);
+    assert.equal(publish.agreementRecorded, false);
     assert.equal(publish.reasons.length > 0, true);
+    assert.equal(publish.reasons.some((reason) => reason.toLowerCase().includes("agreement")), true);
 
     await grantPlan(service, owner, "cap-creator@example.test", "SERVER");
     await call(service.baseUrl, "POST", "/servers", {
@@ -880,7 +885,7 @@ describe("Phase 23 ownership and marketplace authorization boundary", () => {
     assert.equal(eligibility.body.eligibility.eligible, false);
     assert.equal(eligibility.body.eligibility.entitlement.granted, false);
     const publishing = eligibility.body.eligibility.capabilities.find((entry) => entry.key === "CREATOR_PUBLISH");
-    assert.equal(publishing.state, "FUTURE");
+    assert.equal(publishing.state, "AVAILABLE");
     assert.equal(publishing.available, false);
     assert.equal(publishing.reason.length > 0, true);
   });
@@ -1061,8 +1066,8 @@ describe("Phase 23 developer controls and abuse resistance", () => {
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 7);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+    assert.equal(SCHEMA_VERSION, 8);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
     // Every Phase 22 row survives, with its values.
     const membership = database.prepare("SELECT * FROM membership_accounts WHERE user_id = 'usr_legacy'").get();
     assert.equal(membership.plan, "CREATOR");
@@ -1080,7 +1085,7 @@ describe("Phase 23 developer controls and abuse resistance", () => {
     assert.throws(() => database.prepare("UPDATE admin_audit_log SET outcome = 'DENIED' WHERE audit_id = 'aud_legacy'").run(), /append-only/);
     assert.throws(() => database.prepare("DELETE FROM admin_audit_log WHERE audit_id = 'aud_legacy'").run(), /append-only/);
     // The Phase 23 tables exist, and the append-only guarantees are enforced by the database, not by convention.
-    for (const table of ["creator_profiles", "creator_status_history", "server_workspaces", "server_members"]) {
+    for (const table of ["creator_profiles", "creator_status_history", "server_workspaces", "server_members", "marketplace_listings"]) {
       assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.name, table);
     }
     database.exec(`
@@ -1093,7 +1098,7 @@ describe("Phase 23 developer controls and abuse resistance", () => {
     assert.throws(() => database.prepare("DELETE FROM creator_status_history").run(), /append-only/);
     // Re-running the migration is a no-op: the version row is the guard.
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM creator_profiles").get().count, 1);
     database.close();
   });

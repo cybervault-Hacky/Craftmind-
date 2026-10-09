@@ -119,7 +119,9 @@ FORBIDDEN_FABRICATED_LINK = re.compile(
 # Honesty is a code property: the interface must keep saying what is not implemented.
 HONESTY_REQUIREMENTS = (
     ("assets/marketplace.js", "Purchases are coming soon"),
-    ("assets/marketplace.js", "The marketplace backend is not implemented yet."),
+    # Phase 25 replaced the "backend is not implemented" claim (the service exists now) with the honest
+    # connect-state claim the unconfigured branch actually renders.
+    ("assets/marketplace.js", "No account service is connected to this site, so there is no marketplace inventory to read."),
     ("assets/marketplace.js", "not implemented"),
     ("assets/creator-studio.js", "Marketplace publishing will be available soon"),
     ("assets/creator-studio.js", "Your sales data will appear here once marketplace selling is available."),

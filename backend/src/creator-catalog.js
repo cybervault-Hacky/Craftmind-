@@ -172,9 +172,11 @@ export const CREATOR_CAPABILITY_REGISTRY = Object.freeze([
   Object.freeze({
     key: CREATOR_CAPABILITY.CREATOR_PUBLISH,
     label: "Publish content",
-    state: "FUTURE",
+    // Phase 25: the listing pipeline exists, so publishing is an ordinary available capability gated by the real
+    // prerequisites (entitlement, active profile, accepted creator agreement) instead of a typed placeholder.
+    state: "AVAILABLE",
     description: "Publish a listing to the marketplace.",
-    unavailableReason: "Marketplace publishing is not implemented. Nothing can be published, and no request pretends otherwise.",
+    unavailableReason: "Publishing requires the Creator entitlement, an active creator profile, and an accepted creator agreement.",
   }),
 ]);
 
