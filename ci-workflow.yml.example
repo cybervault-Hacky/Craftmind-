@@ -6,8 +6,13 @@
 # deploys, provisions, or contacts a hosted service.
 #
 # The checks are deliberately the repository's own: the test suite (which is where migrations, HTTP behaviour and
-# privacy contracts are proven), a syntax sweep, and the three static checkers. Zero dependencies are installed,
+# privacy contracts are proven), a syntax sweep, and the four static checkers. Zero dependencies are installed,
 # because the backend declares none — so there is nothing to cache and nothing for a supply chain to slip into.
+#
+# There is no browser E2E job and there are no `secrets.*` references here, on purpose: the project has no browser
+# test dependency to install (blocker B3) and this repository operates no deployment target, so a step that claimed
+# either would be theatre. Android compile/lint/APK/signing steps are absent for the same reason (B1, B2): they would
+# need an SDK and a keystore this repository must not hold.
 
 name: Verify CraftMind backend and website
 
@@ -70,6 +75,12 @@ jobs:
 
       - name: Verify website structure and links
         run: python3 scripts/check_website.py
+
+      # Added in the same pending set as the checker itself: Phase 34 introduced the cross-component contract gate
+      # (website adapter calls + Android calls + strict backend bodies against the real router) and the example
+      # workflow had not caught up, so an installed CI would have shipped exactly the drift that gate exists to stop.
+      - name: Verify website and Android API contracts against the service router
+        run: python3 scripts/check_api_contracts.py
 
       - name: Verify Android release configuration and tracked-file secrets
         run: python3 scripts/check_release_config.py
