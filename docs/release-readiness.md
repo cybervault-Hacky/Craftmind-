@@ -55,7 +55,7 @@ declared either way from here.
 | --- | --- | --- |
 | Landing, features, pricing, download | VERIFIED | 41 pages, 1179 links resolve (`check_website.py` PASS); download page states Gradle-matching facts and a **disabled** APK button because no artifact exists in this repository |
 | Auth / session (register, verify, sign in, sessions, sign out, password change) | VERIFIED **over HTTP** | driven through the shipped `adapters.js` against a live service in `backend/test/website-api-contract.test.js` |
-| Password recovery | FIXED + VERIFIED over HTTP | see defect A1 below; request half is wired in the UI, **no confirm panel exists on the site** (gap G1) |
+| Password recovery | FIXED + VERIFIED over HTTP, **DOM-level in a browser harness not available here** | see defect A1 below. Phase 38 added the missing screen: `website/recovery.html` + `website/assets/recovery.js` render the request panel and the code-entry panel, and `confirmPasswordReset` now has a caller. Covered by `backend/test/website-recovery.test.js` (real service, real tokens, 9/9). A **browser** run is still open — `website/e2e/` is prepared, not executed (B3) |
 | Creator onboarding (buyer + seller), profile, eligibility | VERIFIED over HTTP | buyer save succeeds and reflects in `loadOnboardingState`; seller step is entitlement-gated and now reports that refusal correctly (defect A2) |
 | Marketplace browse/search, listing detail | VERIFIED over HTTP | `{items,total,limit,offset,hasMore,searchedAt}` matches `marketplace.js`; 8 categories equal the server's `MARKETPLACE_CATEGORIES` |
 | Creator studio (draft/save own listings) | VERIFIED (read) | `serviceBody()` key set ⊆ server `CONTENT_KEYS`; `?listing=` id matches `ownerListingView`'s `id`; entitlement refusal reaches the page as `CREATOR_ENTITLEMENT_REQUIRED` |
@@ -123,8 +123,10 @@ Only verified release blockers were touched, each with the smallest change that 
 `requireString(body,"token")` and `requireString(body,"newPassword")`. Every browser submission of that form was
 guaranteed a 400. The server, `docs/account-authentication.md:60` (`{token,newPassword}` → `200 {reset,revokedSessions}`),
 and the Android builder all agreed; the website was the sole deviant. Fixed by sending the fields the server names.
-*Reach caveat:* no website page currently calls this method, so this was a contract defect in a shipped module rather
-than a live user outage; the recovery *request* panel is wired and its copy stays honest.
+*Reach caveat (written before Phase 38):* no website page called this method, so it was a contract defect in a shipped
+module rather than a live user outage; the recovery *request* panel was wired and its copy stayed honest. Phase 38 added
+the confirmation screen, which is the first caller of `confirmPasswordReset` — so the A1 fix is now load-bearing for real
+users, and `backend/test/website-recovery.test.js` asserts the wire shape from the page that sends it.
 
 **A2 — a signed-in account without the Creator entitlement was told to sign in again.** `saveSellerOnboarding` mapped
 the server's `403 CREATOR_ENTITLEMENT_REQUIRED` to `RESULT.UNAUTHORIZED`, so `onboarding.js`'s own
@@ -220,8 +222,8 @@ python3 scripts/check_api_contracts.py      # three-way contract consistency
 | --- | --- | --- | --- |
 | B1 | No signed APK/AAB exists, so the download experience can only stay disabled | P0 for a public release | Run the Gradle release tasks on a machine with the SDK and keystore, verify with `verify-release-apk.sh`, publish the artifact, then update `download.html` to link the real URL (and keep the facts pinned) |
 | B2 | The Android module has never been compiled in this environment | P0 | `./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease` on a machine with JDK 17+/SDK 35; fix whatever it reports |
-| B3 | No browser E2E of any website journey | P1 | add a Playwright project (owner's decision: new dev dependency) or a manual test script run against a hosted backend |
-| B4 | Website password recovery cannot be *completed* in a browser (no confirm panel; A1 removed the contract error, it did not add the page) | P1 | small follow-up: a confirm panel posting `{token,newPassword}`, or a copy change that says recovery is completed in the app |
+| B3 | No browser E2E has ever run for any website journey. Phase 38 wrote the recovery spec (`website/e2e/password-recovery.spec.mjs`) and it is **PREPARED, NOT RUN**: no browser binary, no `playwright` module, and its download host is unreachable here, so the framework decision is still the owner's | P1 | owner decides on the dev dependency (the project has none), then `npm i -D @playwright/test && npx playwright install chromium && npx playwright test website/e2e/password-recovery.spec.mjs`; expect first-run selector fixes |
+| B4 | ~~Website password recovery cannot be completed in a browser~~ **CLOSED IN REPO by Phase 38**: `recovery.html` accepts the one-time code and new password, posts exactly `{token,newPassword}`, and handles expired/used/unknown/unreachable states. Not closed: a browser-verified run (B3) and the hosted mail path (B7) — the code still has to reach the user somehow | P1 | none left in the website; verify visually once B3's harness runs against a deployment |
 | B5 | No CI installed (only `ci-workflow.yml.example`) — deliberate, not an oversight | P1 for team work | owner enables the example workflow or an equivalent; it was not installed here because that changes deployment behaviour without being asked |
 | B6 | Mod + server runtime behaviour (pairing, preflight, cancellation, reconnect, Bedrock refusal) unproven against a real Minecraft instance | P1 | run `minecraft-bridge` on Fabric `1.20.1` with loader `0.16.10`/API `0.92.2+1.20.1` and pair the app; follow `RELEASE_CHECKLIST.md` |
 | B7 | No hosted backend/SMTP/backup target configured; `backend/.env.example` values are placeholders | P1 | operator configuration per `docs/production-operations.md`; nothing in the repo claims this is done |

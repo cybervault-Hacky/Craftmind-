@@ -103,7 +103,9 @@ export function initSignIn(root = document.querySelector('[data-page="signin"]')
   }
 
   // Two panels, both live: sign in with an existing account, or create one. Registration returns no session until
-  // the issued verification token is used, which is exactly what the panel below then asks for.
+  // the issued verification token is used, which is exactly what the panel below then asks for. The recovery link
+  // used to read `security.html`, which from website/signin.html resolved to a page that does not exist — a
+  // signed-out visitor tapping "Forgot your password?" got a 404. Phase 38 added the real destination.
   region.innerHTML = `
     <div class="panel">
       <div class="panel-head"><div><h3>Sign in</h3><p class="small muted">Credentials go only to the configured account service on this page's server connection.</p></div></div>
@@ -120,7 +122,7 @@ export function initSignIn(root = document.querySelector('[data-page="signin"]')
         </div>
         <div class="state-actions">
           <button type="submit" class="button button-primary">Sign in</button>
-          <a class="button button-secondary" href="security.html">Forgot your password?</a>
+        <a class="button button-secondary" href="recovery.html">Forgot your password?</a>
         </div>
       </form>
       <div data-signin-feedback></div>

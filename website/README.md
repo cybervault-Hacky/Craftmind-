@@ -13,9 +13,12 @@ listing, subscription, billing, checkout, or payout service behind any of these 
 | Membership | `membership/index.html` (FREE / PRO / CREATOR / SERVER, monthly–yearly toggle, comparison table, FAQ, billing explanation) |
 | Creators | `creators/index.html` (directory), `creators/profile.html` (public creator profile) |
 | Account | `account/index.html`, `account/profile.html`, `account/security.html`, `account/sessions.html`, `account/purchases.html`, `account/saved.html`, `account/membership.html` |
+| Account access (Phase 24/38) | `signin.html` (sign in, create account), `onboarding/index.html`, `onboarding/buyer.html`, `onboarding/seller.html`, `recovery.html` (enter the one-time recovery code and a new password, or request a fresh code) |
 | Creator studio | `creator/index.html` (dashboard), `creator/listings/index.html`, `creator/listings/new.html`, `creator/listings/edit.html`, `creator/orders/index.html`, `creator/earnings/index.html`, `creator/reviews/index.html`, `creator/analytics/index.html`, `creator/profile/index.html`, `creator/settings/index.html` |
 
-Thirty pages in total. The developer control plane is **not** part of this site: it lives at `backend/public/developer.html`,
+Forty-two pages in total, and `python3 scripts/check_website.py` is the authority on that number — it fails if a page exists that the
+information architecture does not declare, or the reverse. The table above names the Phase 15/21 foundation; later phases added the
+hire, order, onboarding, sign-in, and recovery screens listed in its rows. The developer control plane is **not** part of this site: it lives at `backend/public/developer.html`,
 is authorised and rate-limited by the backend, and is never linked from a public page.
 
 ## Shared contract
@@ -37,6 +40,7 @@ components" block. The modules under `assets/` are:
 | `preview-catalog.js` | Clearly named sample records used **only** when `?preview=1` is requested. Nothing else renders them. |
 | `components.js` | Shared markup builders: listing cards, placeholder covers, creator chips, metrics, data tables, price rows, media tiles, ratings. |
 | `marketplace.js`, `membership.js`, `creator-studio.js`, `account.js` | The page controllers for their sections. |
+| `recovery.js` | Phase 38: the password-recovery screen — request a one-time code and consume it, signed out. Reads the code only from the form, never from the URL, and never from or into browser storage. |
 
 Reviewing the interface with sample data: add `?preview=1` to a marketplace, creators, or creator-studio address. Preview
 mode is labelled in the interface, purchase and publish controls stay disabled, and sample records are never presented as

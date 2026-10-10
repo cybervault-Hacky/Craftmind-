@@ -187,7 +187,7 @@ export function initAccountSecurity(root = document.querySelector('[data-page="a
         <p class="price-note">Multi-factor authentication is not implemented, so it is listed as unavailable rather than planned-in-UI.</p>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><h3>Password reset</h3><p class="small muted">Available without a session. The request endpoint always answers the same way, so it cannot reveal whether an address exists.</p></div></div>
+        <div class="panel-head"><div><h3>Password reset</h3><p class="small muted">Available without a session. The request endpoint always answers the same way, so it cannot reveal whether an address exists. Already holding a code? <a href="../recovery.html">Enter it on the recovery page</a>.</p></div></div>
         <form class="stack" data-reset-request novalidate>
           <div class="field">
             <label for="reset-email">Account email</label>
@@ -227,7 +227,9 @@ function wireResetRequest(container, adapter) {
     }
     const result = await adapter.requestPasswordReset({ email });
     feedback.innerHTML = result.status === RESULT.OK
-      ? '<p class="field-hint" role="status">If that address matches an account, a reset message is on its way.</p>'
+      // The receipt is the service's own neutral 202 wording, and Phase 38 adds the one thing that was missing: the
+      // destination where the code is entered. `../recovery.html` is relative from `account/`, where this panel renders.
+      ? '<p class="field-hint" role="status">If that address matches an account, a recovery code is on its way. <a href="../recovery.html">Enter the code to finish recovery</a>.</p>'
       : `<p class="field-error" role="alert">${escapeText(result.message)}</p>`;
   });
 }
