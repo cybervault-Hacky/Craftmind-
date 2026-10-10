@@ -131,7 +131,7 @@ same implementations as Phases 1–14. Full detail:
 - **Settings and About.** Settings is Appearance / AI providers / Minecraft / Data / About, with keys always masked and the Keystore-backed credential handling untouched. About states the developer (Sarthak Bharambe), the application ID, version and versionCode from the installed build, the certified target, acknowledgements, licences, and the Privacy/Terms/website entries — and claims no company, team, office, history, customers, investors, partnerships, awards, funding, or certification; Terms is marked as a draft requiring final legal review.
 - **Accessibility and motion are requirements.** AA contrast in both palettes, ≥48dp touch targets everywhere, labels and content descriptions, keyboard/focus behaviour, honest error wording, and a real reduced-motion observer that collapses every duration to zero while state changes still render. No looping, glowing, particle, or decorative animation exists anywhere.
 - **Website: eight pages, not one.** `index`, `how-it-works`, `features`, `download`, `about`, `faq`, `privacy`, and `terms` share one navigation (`Home / How it works / Features / Download / About / FAQ`) and one footer, in a dependency-free static site with no remote fonts, no analytics, and no CDN requests. `scripts/check_website.py` enforced the architecture, honest copy, and the download policy. (Phase 15 shipped these pages with no JavaScript at all; Phase 21 later added progressive-enhancement modules and the new sections — see the Phase 21 section below.)
-- **Download stays unavailable.** No signed APK exists, so `download.html` owns the site's single disabled `DOWNLOAD APK` control and the copy says the release has not yet been built, installed, or published. No APK, AAB, keystore, or key material is committed, and GitHub is not the primary download path.
+- **Download stays unavailable.** No APK of any kind exists, so `download.html` owns the site's single `DOWNLOAD APK` control and ships it disabled, with the copy saying the release has not yet been built, installed, or published. The control resolves itself at page load: `assets/download.js` asks the repository named in the page for its newest *published* release and turns the control into a link only when that release really carries an `.apk` asset whose URL belongs to the same repository — every other answer re-disables it and states the reason. No APK, AAB, keystore, or key material is committed, and the binary is never served from the website's own files: it is a release asset, and the site only ever links what the release service confirms.
 - **Status in this build:** `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution in this environment), `REAL_RUNTIME_TESTS = NOT_PERFORMED`. Verification in this phase: design-system tests 15/15 PASS, the JVM suite at 358 run / 5 known-pre-existing failures before the sandbox was reset, the website and release-configuration checks PASS, and whole-tree Kotlin syntax plus raw-colour scans clean. Compose rendering and the instrumented tests were not executed here.
 
 ## Phase 18 — Account Experience & Production Authentication Hardening
@@ -689,6 +689,40 @@ cd minecraft-bridge
 ```
 
 `test` from the root includes Android unit tests and `bridge-protocol` tests; it does **not** build the separate Fabric project. `connectedDebugAndroidTest` requires a configured Android SDK and attached emulator/device. `build` in `minecraft-bridge/` produces the remapped mod jar when successful.
+
+Everything the repository can verify without an Android SDK, a browser, or a hosted service runs with these six
+commands:
+
+```bash
+cd backend && npm test                                   # backend suites, including the website contract suites
+python3 scripts/check_website.py                         # page set, links, navigation, honesty and privacy invariants
+python3 scripts/check_api_contracts.py                   # website + Android calls resolved against the real router
+python3 scripts/check_release_config.py                  # release config, signing guards, tracked-artifact/credential sweep
+python3 scripts/check_deployment_readiness.py            # runtime floor, config documentation, backup/restore tooling
+(cd backend && node --no-warnings=ExperimentalWarning scripts/security-guardian.mjs --fail-on HIGH)
+```
+
+Two install-ready pipelines are committed as examples and are **not installed**:
+
+| File | What it would run |
+| --- | --- |
+| `ci-workflow.yml.example` | exactly the six commands above, on every push to `main` and every pull request |
+| `android-apk-workflow.yml.example` | `:app:testDebugUnitTest` and `:bridge-protocol:test`, then `:app:assembleDebug`, then an APK existence/size/checksum check and a 30-day artifact upload |
+
+No CI run has ever executed in this repository (`GET /repos/…/actions/workflows` reports `total_count: 0`), and this
+phase could not change that: the workspace's GitHub App token is refused by both routes able to create a workflow
+file — `git push` → `refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without
+workflows permission`, and `PUT /repos/…/contents/.github/workflows/…` → `403 Resource not accessible by
+integration`. Installing either is therefore an owner action, and a small one: copy the example verbatim to
+`.github/workflows/<name>.yml` in the web editor and commit. Neither file references a secret, installs a project
+dependency, or publishes anything; the Android file needs no credential because a debug APK is signed with the
+runner's throwaway debug key, and `:app:packageRelease` refuses to run without the four `CRAFTMIND_RELEASE_*`
+variables by design.
+
+A browser E2E job is **not** part of that pipeline: the project has no browser test dependency, and
+`website/e2e/password-recovery.spec.mjs` has never been executed (blocker B3). Likewise no `:app` Gradle job — the
+Android module has never been compiled in any environment (B1, B2), so promoting it into a required gate would
+produce a badge rather than evidence. Those are owner-environment steps in `RELEASE_CHECKLIST.md`, not passes.
 
 **Checkout verification status (Phase 14):** the Gradle build still cannot run in this sandbox — there is no Android SDK/AGP, no Gradle distribution, and no egress to Maven Central/Google, so `./gradlew test`, `lint`, `assembleDebug`, `connectedDebugAndroidTest`, and the Fabric mod build were **not** executed. Verification was performed outside Gradle with locally reconstructed tooling (a JDK 17 runtime, JDK 8 `javac` from a packaged `tools.jar` plus a synthetic Java-8 platform jar derived from the JDK 17 runtime image, Kotlin `2.1.10` with the matching serialization compiler plugin, kotlinx-serialization `1.8.0` compiled from source, and gson/junit/hamcrest compiled from source); all of that tooling lives outside the repository and nothing generated by it is committed. Every category is reported separately, and `PASS` / `NOT RUN` / `NOT AVAILABLE` / `NOT PERFORMED` are never merged:
 

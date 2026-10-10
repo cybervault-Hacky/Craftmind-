@@ -303,13 +303,80 @@ Belongs to the deployment, and cannot be verified from this repository:
    invented.
 6. **`/live` and `/health` wiring** into whatever probe mechanism the platform provides (2–10 s intervals are well
    inside the unauthenticated-read cost; the readiness check is one indexed `SELECT`).
-7. **A CI runner.** `.github` does not exist in this repository. `ci-workflow.yml.example` at the root is an
-   installable, dependency-free pipeline whose every step is a command this phase ran locally; installing it requires
-   workflow-write permission and is an owner action. No workflow here deploys anything, because there is nothing to
-   deploy to.
+7. **A CI runner and an Android build runner — both prepared, neither installed.** `ci-workflow.yml.example` and
+   `android-apk-workflow.yml.example` at the repository root are install-ready pipelines: the first runs the backend
+   suite, the four repository checkers, and the Security Guardian at `--fail-on HIGH`; the second runs the Gradle unit
+   tests and then produces a debug APK artifact with a recorded size and SHA-256. Neither can be installed from this
+   workspace: GitHub refuses every workflow-file write from the agent's App token (`git push` → `refusing to allow a
+   GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission`; the Contents API →
+   `403 Resource not accessible by integration`), and this repository has therefore never had a workflow or a run
+   (`GET /repos/…/actions/workflows` → `total_count: 0`). That is the whole reason they are examples rather than
+   `.github/workflows/*.yml`, and it is why no CI result may be claimed for CraftMind. Owner actions, in order: paste
+   each example into the web editor at `.github/workflows/ci.yml` and `.github/workflows/android-apk.yml`, then
+   require the checks before merge with branch protection on `main`. Nothing in either file deploys or publishes
+   anything, and no step needs a secret — `website/github-pages-workflow.yml.example` stays uninstalled by the same
+   rule now that Netlify is the intended host.
 
-The static website's publishing path is unchanged and remains `website/github-pages-workflow.yml.example`, still
-shipped as an example for an operator to install.
+The static site's hosting target is Netlify (`netlify.toml` at the repository root: publish directory `website`, no
+build step, security headers, APK downloads redirected to GitHub). The configuration is committed and validated as
+data; **no deployment has been performed and no public URL has been verified**, because publishing requires the
+owner's Netlify account. `docs/production-operations.md` §"Netlify and the APK download path" is the procedure.
+
+## Netlify and the APK download path
+
+Everything in this section is repository configuration plus a procedure. **Nothing has been deployed and no public
+URL has been verified**: publishing needs the owner's Netlify account, and this workspace has neither that account nor
+a token for it. The claims below are about what the repository guarantees, not about a live host.
+
+### What `netlify.toml` says, and why
+
+| Setting | Value | Reason |
+| --- | --- | --- |
+| `build.command` | `""` (empty) | the site is 42 static pages with no bundler, no transpile step and no `package.json`; there is nothing to build, and a guessed `npm run build` would fail every deploy. If Netlify's UI rejects an empty command, leave the field blank — it is the same instruction |
+| `build.publish` | `website` | the publishable directory. The repository root also holds `backend/`, `app/`, `scripts/` and `docs/`, and none of those may ever be served |
+| redirects | none | no SPA fallback. With 42 real pages, `/* → /index.html 200` would turn a deleted or mistyped page into a silent success; a missing page must 404 |
+| headers | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()` | four that cannot break a page and each closes a real hole |
+| Content-Security-Policy | deliberately absent | the assets are not fingerprinted, and this environment has no browser to verify a policy against. A wrong `script-src`/`style-src` would blank the site on the owner's phone while every static check stayed green — so CSP is a change for someone who can open a browser, and the pages' existing inline `style="…"` attributes must be allowed for it |
+| `[build.environment]` | empty | see below |
+
+Netlify environment variables have **no effect on this site**, because there is no build step to consume them. That
+is also why nothing sensitive can leak into it by accident. The account-service origin is read at runtime from
+`CRAFTMIND_SITE_CONFIG` (`website/assets/adapters.js`), which a deployer defines before `assets/site.js` loads — a
+deliberate deployment decision made alongside the backend that answers it, never a value committed here. An unset
+origin is a real configuration: every account page then says "no account service is configured for this site" instead
+of offering a form that cannot work.
+
+### Deploying it, from a phone
+
+1. In the phone browser, sign in to Netlify → **Add a new site** → **Import an existing project** → **Deploy with
+   GitHub** → authorise the app if asked → pick `cybervault-Hacky/Craftmind-` → branch `main`.
+2. On the "Import your project" screen, leave the build command empty and the publish directory at `website` — both
+   come from `netlify.toml`, so nothing needs typing. Deploy.
+3. Site settings → **Domain management** → enable **HTTPS** and **Force HTTPS**. Netlify provisions the certificate for
+   its own `*.netlify.app` hostname automatically. Force HTTPS is not decoration: the site's own data boundary accepts
+   only an `https://` origin.
+4. Open the URL Netlify prints (or shows under Site details) and check the pages by hand — home, marketplace,
+   membership, sign-in, recovery, and **Download**. This manual pass is the only browser verification the project
+   currently has: there is no browser E2E harness installed (blocker B3).
+5. Configure a custom domain only if the owner wants one; nothing in the site assumes it.
+
+No PC, editor, or command line is needed for any step above.
+
+### Where the APK actually lives
+
+The binary is not Netlify's business and never the repository's: `website/download.html` names the source
+repository, `website/assets/adapters.js` asks the release service for its newest published release, and the page turns
+the control into a link **only** if that release really carries an `.apk` asset whose URL belongs to this same
+repository. So "never offer a file that does not exist" holds by construction rather than by memory — the link and
+the file come from the same answer, and deleting or renaming the release makes the button honest again the next time
+anyone opens the page, with no edit to the site.
+
+| Step | Who does it | What happens |
+| --- | --- | --- |
+| Debug APK for testing | owner, once the Android pipeline is installed | `android-apk-workflow.yml.example` → `:app:testDebugUnitTest` + `:bridge-protocol:test`, then `:app:assembleDebug`, then a size/checksum check and a 30-day artifact upload. A debug APK is a test artifact signed with a throwaway key; it is not a release and the site never offers it |
+| Signed release APK | owner, with an approved signing identity | `./gradlew :app:assembleRelease` where the four `CRAFTMIND_RELEASE_*` values exist (see `RELEASE_CHECKLIST.md`), verified with `scripts/verify-release-apk.sh`. The repository holds no keystore and refuses to build an unsigned release, by design |
+| Publish | owner, deliberately | GitHub → this repository → **Releases** → **Draft a new release** → tag `v1.0.0` → attach the verified APK (and its SHA-256, or rely on the digest GitHub computes for the asset). Uploading from a phone works: the release form takes a file attachment |
+| Website | nobody | no edit. `download.html` picks the asset up on the next page load, so the release page and the download button cannot disagree |
 
 ## Supported commands
 
