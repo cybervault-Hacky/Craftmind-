@@ -1,0 +1,106 @@
+[
+  {
+    "rule": "CRAFTMIND_SECRET_LITERAL",
+    "path": "backend/src/leak.js",
+    "bad": "const apiKey = \"sk_live_51H8xQv2eZvMY7Yq0P3dLk\";\n",
+    "good": "const apiKey = process.env.CRAFTMIND_DEVELOPER_AI_API_KEY;\nconst INVALID_PASSWORD = \"INVALID_PASSWORD\";\n"
+  },
+  {
+    "rule": "CRAFTMIND_PRIVATE_KEY_BLOCK",
+    "path": "backend/src/keyfile.js",
+    "bad": "const PEM = \"-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEAx7Vh2\\n\";\n",
+    "good": "const PEM = \"-----BEGIN PUBLIC KEY-----\\nMIIBIjANBg\\n\";\n"
+  },
+  {
+    "rule": "CRAFTMIND_CLEARTEXT_HTTP",
+    "path": "backend/src/client.js",
+    "bad": "const base = \"http://api.craftmind-hosting.net:8080/v1\";\n",
+    "good": "export function pathOf(request) { return new URL(request.url ?? \"/\", \"http://internal.invalid\").pathname; }\n"
+  },
+  {
+    "rule": "CRAFTMIND_SQL_INTERPOLATION",
+    "path": "backend/src/query.js",
+    "bad": "export function rows(database, { table }) {\n  return database.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(\"1\");\n}\n",
+    "good": "const A = \"users\";\nexport function rows(database, { table }) {\n  if (![\"users\"].includes(table)) throw new Error(\"nope\");\n  return database.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(\"1\");\n}\n",
+    "expectSeverity": "HIGH",
+    "expectBenignSeverity": "INFORMATIONAL"
+  },
+  {
+    "rule": "CRAFTMIND_SHELL_COMMAND_FROM_DATA",
+    "path": "backend/src/run.js",
+    "bad": "export function render(userInput) { return execSync(`convert ${userInput} out.png`); }\n",
+    "good": "import { spawnSync } from \"node:child_process\";\nexport function status() { return spawnSync(\"git\", [\"status\", \"--short\"], { encoding: \"utf8\" }); }\n"
+  },
+  {
+    "rule": "CRAFTMIND_DYNAMIC_CODE_EVALUATION",
+    "path": "backend/src/eval.js",
+    "bad": "export function apply(payload) { return eval(payload.script); }\n",
+    "good": "export function apply(payload) { return JSON.parse(payload.script); }\n"
+  },
+  {
+    "rule": "CRAFTMIND_UNCONTAINED_FILE_PATH",
+    "path": "backend/src/files.js",
+    "bad": "import { readFile } from \"node:fs/promises\";\nexport async function get(request) { const { params } = request; return readFile(join(base, params.name), \"utf8\"); }\n",
+    "good": "import { readFile } from \"node:fs/promises\";\nimport { resolve } from \"node:path\";\nexport async function get(request) {\n  const { params } = request;\n  const full = resolve(base, params.name);\n  if (!full.startsWith(resolve(base) + \"/\")) throw new Error(\"outside\");\n  return readFile(full, \"utf8\");\n}\n"
+  },
+  {
+    "rule": "CRAFTMIND_WORLD_ACCESSIBLE_FILE",
+    "path": "backend/src/write.js",
+    "bad": "writeFileSync(target, secret, { mode: 0o666 });\n",
+    "good": "writeFileSync(target, secret, { mode: 0o600 });\n"
+  },
+  {
+    "rule": "CRAFTMIND_TLS_VERIFICATION_DISABLED",
+    "path": "backend/src/tls.js",
+    "bad": "const agent = https.request(url, { rejectUnauthorized: false });\n",
+    "good": "const agent = https.request(url, { rejectUnauthorized: true });\n"
+  },
+  {
+    "rule": "CRAFTMIND_SENSITIVE_VALUE_IN_LOG",
+    "path": "backend/src/log.js",
+    "bad": "logger.info({ accessToken, userId }, \"session issued\");\n",
+    "good": "logger.info({ requestId, userId }, \"session issued\");\n"
+  },
+  {
+    "rule": "CRAFTMIND_HARDCODED_SERVICE_ORIGIN",
+    "path": "website/assets/wire.js",
+    "bad": "const baseUrl = \"https://api.craftmind-live.io\";\n",
+    "good": "const baseUrl = config.accountServiceOrigin;\n"
+  },
+  {
+    "rule": "CRAFTMIND_CREDENTIAL_IN_BROWSER_STORAGE",
+    "path": "website/assets/state.js",
+    "bad": "localStorage.setItem(\"accessToken\", token);\n",
+    "good": "localStorage.setItem(\"theme\", \"dark\");\n"
+  },
+  {
+    "rule": "CRAFTMIND_PROTOCOL_VERSION_LITERAL",
+    "path": "app/src/main/java/com/craftmind/app/Plan.kt",
+    "bad": "fun ready(plan: Plan) = plan.metadata.schemaVersion == 2\n",
+    "good": "fun ready(plan: Plan) = plan.metadata.schemaVersion == BuildPlanContractValidator.BUILD_PLAN_SCHEMA_VERSION\n"
+  },
+  {
+    "rule": "CRAFTMIND_WEAK_ANDROID_CREDENTIAL_STORAGE",
+    "path": "app/src/main/java/com/craftmind/app/Store.kt",
+    "bad": "val entry = KeyGenParameterSpec.Builder(\"k\", PURPOSE_SIGN).setExportable(true).build()\n",
+    "good": "val entry = KeyGenParameterSpec.Builder(\"k\", PURPOSE_SIGN).setUserAuthenticationRequired(true).build()\n"
+  },
+  {
+    "rule": "CRAFTMIND_PREDICTABLE_SECURITY_RANDOM",
+    "path": "backend/src/ids.js",
+    "bad": "const token = Math.random().toString(36).slice(2);\n",
+    "good": "const token = randomUUID();\nconst width = 100 + Math.floor(Math.random() * 40);\n"
+  },
+  {
+    "rule": "CRAFTMIND_SKIPPED_SECURITY_TEST",
+    "path": "backend/test/security-x.test.js",
+    "bad": "describe(\"x\", () => {\n  test.skip(\"revocation\", () => {});\n});\n",
+    "good": "describe(\"x\", () => {\n  test(\"revocation\", () => {});\n});\n"
+  },
+  {
+    "rule": "CRAFTMIND_CORS_WILDCARD",
+    "path": "backend/src/cors.js",
+    "bad": "headers[\"access-control-allow-origin\"] = \"*\";\n",
+    "good": "headers[\"access-control-allow-origin\"] = allowList[0];\n"
+  }
+]

@@ -45,14 +45,14 @@
         <p class="crumbs"><a href="index.html">Home</a> <span aria-hidden="true">/</span> <span>Download</span></p>
       <p class="eyebrow">CRAFTMIND FOR ANDROID</p>
       <h1 id="page-title">Download CraftMind</h1>
-      <p class="lead">The app is not published yet. This page explains exactly what will be distributed, how it will be verified, and why the button below is inactive today.</p>
+      <p class="lead">The app is not published yet. This page explains exactly what will be distributed, how it will be verified, and why the button below is inactive today. The status line under the button is checked against this repository's published releases each time the page loads; everything else here describes the source as committed, so the two can never disagree silently.</p>
     </section>
     <section class="section container" aria-labelledby="availability-title">
       <div class="download-panel">
         <div class="download-copy">
           <p class="eyebrow">RELEASE STATUS</p>
           <h2 id="availability-title">Not available yet.</h2>
-          <p>Version 1.0.0 is configured in source. A signed APK has not yet been built, installed, or published, so this page intentionally offers no download file and no fabricated URL.</p>
+          <p>Version 1.0.0 is configured in source. A signed APK has not yet been built, installed, or published, so this page intentionally offers no download file and no fabricated URL. The control above becomes a link only when the repository reports a published release carrying an Android package, and the link is that release asset — never a guessed path.</p>
           <div class="release-facts" aria-label="Configured release details">
             <span><b>VERSION</b> 1.0.0</span>
             <span><b>VERSION CODE</b> 10000</span>
@@ -60,9 +60,10 @@
             <span><b>SUPPORTED ANDROID</b> Android 8.0+ (API 26)</span>
           </div>
         </div>
-        <div class="download-action">
-          <button class="button button-disabled" type="button" disabled aria-describedby="apk-status">DOWNLOAD APK</button>
-          <p id="apk-status" class="download-status"><span class="status-dot status-dot-muted" aria-hidden="true"></span> Not available — no signed APK has been published.</p>
+        <div class="download-action" data-release-channel data-release-repository="cybervault-Hacky/Craftmind-">
+          <button class="button button-disabled" type="button" disabled aria-describedby="apk-status" data-release-cta>DOWNLOAD APK</button>
+          <p id="apk-status" class="download-status" aria-live="polite"><span class="status-dot status-dot-muted" aria-hidden="true"></span><span data-release-status-text> Not available — no release build has been published.</span></p>
+          <div class="release-live" data-release-region hidden></div>
           <a class="text-link" href="faq.html">Why is it not available? <span aria-hidden="true">↗</span></a>
         </div>
       </div>
@@ -72,13 +73,13 @@
       <div class="section-heading">
         <p class="eyebrow">DISTRIBUTION</p>
         <h2 id="distribution-title">Direct from this website.</h2>
-        <p>When a release exists, the signed APK and its published SHA-256 checksum will be served from this website as the primary channel. The repository's release page is a mirror, not the main download experience, and no third-party store is announced.</p>
+        <p>The binary lives with the source: the APK is an asset on a GitHub Release of this repository, and this website — hosted on Netlify, which serves no binaries — links to that asset and to the checksum GitHub publishes with it. Keeping the file out of the site's own source tree means no generated artifact is ever committed, and one release page stays the place a build is described, versioned, and superseded.</p>
       </div>
       <ul class="summary-list" style="margin-top:34px">
-        <li><strong>Primary channel</strong> — signed APK published on this website with a checksum</li>
-        <li><strong>Mirror</strong> — the repository release page, for reference only</li>
+        <li><strong>Binary</strong> — the APK attached to a published GitHub Release of this repository</li>
+        <li><strong>Link</strong> — this page, with the asset resolved live so a removed release cannot leave a dead promise</li>
         <li><strong>Verification</strong> — compare the published SHA-256 before installing</li>
-        <li><strong>Today</strong> — no APK, no checksum, no installer to sideload</li>
+        <li><strong>Today</strong> — no release exists, so no APK, no checksum, and no installer to sideload</li>
       </ul>
     </section>
 
@@ -99,7 +100,8 @@
     <section class="section container" aria-labelledby="integrity-title">
       <div class="prose">
         <h2 id="integrity-title">Security and integrity</h2>
-        <p>Only a signed build will be published, and only alongside its checksum. The download button on this page stays disabled until that artifact exists — CraftMind never ships a placeholder APK, and this website never links to an unverified binary.</p>
+        <p>Only a signed build will be published, and only alongside its checksum. The download button on this page stays disabled until that artifact exists — CraftMind never ships a placeholder APK, and this website never links to an unverified binary. A debug build from a workflow run is a test artifact for a device you own: it is signed with a throwaway debug key, arrives through a GitHub Actions artifact rather than a release, and is never presented here as the app's release.</p>
+        <p>Android will refuse to install a build from outside the Play store until you allow it for the app you used to fetch the file, and it will warn you about an unrecognised publisher. Read those prompts and act on them: install the file this page linked, whose checksum you compared, and nothing else.</p>
         <p>App-side, your provider credential is encrypted with AES-GCM using a key held by the Android Keystore and stored in app-private, no-backup storage. The credential is never sent to the Minecraft bridge and is never displayed back to you in full.</p>
         <p>See the <a class="text-link" href="privacy.html">privacy summary</a> for the full data flow, or the <a class="text-link" href="faq.html">FAQ</a> for common questions.</p>
       </div>

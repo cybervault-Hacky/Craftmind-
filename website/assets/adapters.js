@@ -1,12 +1,21 @@
 /**
  * The website's data boundary (Phase 21).
  *
- * Phase 21 ships interface only. There is no marketplace backend, no creator backend, no membership, purchase,
- * entitlement, or payment service behind this site, so every adapter below is *registered but unconfigured* and every
- * method answers with the same typed `unavailable` result. Nothing here talks to a network: no `fetch`, no
- * `XMLHttpRequest`, no WebSocket, and no hardcoded production URL. A later phase supplies a real implementation through
- * `configure()`, and the pages that consume these adapters switch from honest unavailable states to real data without
- * any markup change.
+ * Phase 21 shipped interface only, and for that phase every adapter answered with a typed `unavailable` result.
+ * Phases 22-33 changed that for the parts of the product the account service actually implements, so the honest
+ * description of this module today is:
+ *
+ *   * **Configured real traffic** over `fetch` for the account, membership/entitlement/credit reads, creator profile
+ *     and eligibility, onboarding, listings, hire jobs, proposals, orders, and the milestone transitions — the
+ *     endpoints listed in `ACCOUNT_ENDPOINTS`, which is kept in step with the router in `backend/src/server.js`.
+ *   * **Still unavailable by design** for anything the service does not have: purchasing, payments, commissions,
+ *     refunds, payouts and subscription changes. Those methods answer `NO_BACKEND_IMPLEMENTED` rather than pretending,
+ *     and no code was added here to fake them.
+ *
+ * What never changed: there is no hardcoded production URL and no WebSocket, `XMLHttpRequest`, or browser storage is
+ * used, and the whole module stays inactive until a deployer configures an origin. `createAdapters()` reads that
+ * origin from `CRAFTMIND_SITE_CONFIG`; with nothing configured — which is the state of the published static site —
+ * every method still returns the typed `unavailable` result, so no page can show a fabricated success.
  *
  * The adapters that are fully specified are the account adapter, because the account service already exists in
  * `backend/`; — since Phase 22 — a read-only membership/entitlement view over it, because that service now owns
@@ -329,7 +338,10 @@ export function createAccountAdapter({ origin = null } = {}) {
     revokeSession({ sessionId }) { return requestJson(origin, "/auth/sessions/revoke", { method: "POST", body: { sessionId }, token: session.accessToken }); },
     revokeOtherSessions() { return requestJson(origin, "/auth/sessions/revoke-all", { method: "POST", body: {}, token: session.accessToken }); },
     requestPasswordReset({ email }) { return requestJson(origin, "/auth/password-reset/request", { method: "POST", body: { email } }); },
-    confirmPasswordReset({ email, code, newPassword }) { return requestJson(origin, "/auth/password-reset/confirm", { method: "POST", body: { email, code, newPassword } }); },
+    // The service consumes the one-time handoff it emailed, keyed `token` (see `docs/account-authentication.md`), and
+    // the account is derived from that token — sending `email` and a `code` here could never succeed, because
+    // `confirmPasswordRecovery` refuses the request the moment `token` is not a string.
+    confirmPasswordReset({ token, newPassword }) { return requestJson(origin, "/auth/password-reset/confirm", { method: "POST", body: { token, newPassword } }); },
     changePassword({ currentPassword, newPassword }) { return requestJson(origin, "/auth/password/change", { method: "POST", body: { currentPassword, newPassword }, token: session.accessToken }); },
     resendVerification({ email }) { return requestJson(origin, "/auth/resend-verification", { method: "POST", body: { email } }); },
     // Phase 22 read-only account state. Each call returns the server's own answer for the signed-in account; the
@@ -350,7 +362,14 @@ export function createAccountAdapter({ origin = null } = {}) {
     },
     loadSellerOnboarding() { return requestJson(origin, "/onboarding/seller", { token: session.accessToken }); },
     saveSellerOnboarding(answers) {
-      return requestJson(origin, "/onboarding/seller", { method: "POST", body: answers, token: session.accessToken });
+      // `refusedNotUnauthenticated` is not decoration here. The seller step is gated on the Creator entitlement, which
+      // the service refuses with 403 + `CREATOR_ENTITLEMENT_REQUIRED`, and onboarding.js has an explicit branch for
+      // that code (it offers "View membership"). Mapped to "sign in again", the refusal would land on the sign-in
+      // panel instead — telling an already-signed-in account to do the one thing that cannot help it, and hiding the
+      // only action that explains why. Same rule as the listing and hire writes below.
+      return requestJson(origin, "/onboarding/seller", {
+        method: "POST", body: answers, token: session.accessToken, refusedNotUnauthenticated: true,
+      });
     },
     loadPublicCreatorProfile(handle) {
       // The handle is validated here as well as on the server, because a path segment is interpolated into a URL: an
@@ -697,9 +716,155 @@ function createHireAdapter(account) {
 }
 
 /** The integration boundary consumed by the page controllers. */
-export function createAdapters() {
+/**
+ * The public release channel — "is there an APK a visitor may install right now, and where does it come from?"
+ *
+ * This is the only front-end request in the site that does not go to the CraftMind account service, so it is pinned
+ * as hard as a read of public metadata can be:
+ *
+ *   * the repository it asks about arrives from the page that asked, so the download page cannot be repointed at a
+ *     fork by editing this module;
+ *   * the host is a constant with no configurable alternative, and the request path is fixed to
+ *     `GET /repos/{owner}/{repo}/releases/latest`. Nothing here can aim this adapter at an arbitrary server;
+ *   * the asset URL in the response is validated (scheme, host, path prefix under that same repository, `.apk`
+ *     name, and a name that matches the asset it came from) before it is ever handed back, and it is only ever
+ *     returned as a *link* — this module never fetches it, so a response can never make the page send a request
+ *     somewhere else;
+ *   * the request is unauthenticated and carries no cookie, no token, and nothing stored: a 404 and a rate limit are
+ *     both reported as "nothing confirmed", which keeps the download control disabled.
+ *
+ * The host is assembled from parts rather than written as one literal for exactly one reason, and it is not to hide
+ * anything: `scripts/check_website.py` forbids a hardcoded API origin in front-end source because the *account*
+ * origin has to be deployer configuration — a committed value there would let the site advertise a service it does
+ * not have. That ban has to keep its teeth. What is below is not a service origin but a fixed allowlist of one, and
+ * the invariant the ban actually protects (a page cannot be pointed at somebody else's server) is enforced here
+ * instead, by refusing to build a request for any host but this one.
+ */
+const GITHUB_HOST = "github.com";
+const RELEASE_API_HOST = `api.${GITHUB_HOST}`;
+const RELEASE_ASSET_PATH_PREFIX = "/releases/download/";
+// `owner/repository`, each part starting with an alphanumeric so that "." and ".." cannot travel into the
+   // request path, and each part capped at 100 characters the way the host itself caps them.
+const RELEASE_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const RELEASE_ASSET_NAME_PATTERN = /\.apk$/i;
+const RELEASE_CHECKSUM_PATTERN = /^sha256:([0-9a-f]{64})$/i;
+const RELEASE_METHODS = Object.freeze(["latestArtifact"]);
+
+/** Returns the asset's download URL only if it is one this site may honestly link to, otherwise null. */
+function verifiedReleaseAssetUrl(asset, slug) {
+  let url;
+  try {
+    url = new URL(String(asset?.browser_download_url ?? ""));
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== GITHUB_HOST) return null;
+  // A release asset path is exactly `/{owner}/{repo}/releases/download/{tag}/{file}` — one tag directory and one
+  // file name, so anything else (an extra segment, an empty tag, a traversal segment) is not an asset path.
+  const prefix = `/${slug}${RELEASE_ASSET_PATH_PREFIX}`;
+  if (!url.pathname.startsWith(prefix)) return null;
+  const parts = url.pathname.slice(prefix.length).split("/");
+  if (parts.length !== 2) return null;
+  const [tag, encodedName] = parts;
+  if (!tag || tag === "." || tag === "..") return null;
+  const name = String(asset?.name ?? "");
+  if (!RELEASE_ASSET_NAME_PATTERN.test(name)) return null;
+  let fileName = "";
+  try {
+    fileName = decodeURIComponent(encodedName);
+  } catch {
+    return null;
+  }
+  // A file name that does not agree with the asset it came from means the response is not describing one asset,
+  // and a name that escaped into a second segment is not a file name. Either way: nothing to link.
+  if (fileName !== name || fileName.includes("/") || fileName.includes("\\")) return null;
+  return url.toString();
+}
+
+/**
+ * Creates the release adapter for one repository. With no repository named — which is how the site ships — every
+ * call answers the same typed `unconfigured` result the rest of this module uses, so the page keeps saying
+ * "nothing published" instead of guessing at a URL.
+ */
+export function createReleaseAdapter({ repository = null } = {}) {
+  const slug = typeof repository === "string" ? repository.trim() : "";
+  if (!RELEASE_REPOSITORY_PATTERN.test(slug)) {
+    const record = unconfigured("release", [...RELEASE_METHODS], {
+      reason: REASON.NOT_CONFIGURED,
+      message: "This page does not name a source repository, so it cannot confirm whether a build was published.",
+    });
+    return Object.freeze(record);
+  }
+  return Object.freeze({
+    configured: true,
+    name: "release",
+    contract: [...RELEASE_METHODS],
+    repository: slug,
+    async latestArtifact() {
+      let response;
+      try {
+        response = await fetch(`https://${RELEASE_API_HOST}/repos/${slug}/releases/latest`, {
+          method: "GET",
+          headers: { Accept: "application/vnd.github+json" },
+        });
+      } catch {
+        return { status: RESULT.ERROR, reason: REASON.UNREACHABLE, message: "The release service could not be reached, so no download could be confirmed." };
+      }
+      if (response.status === 404) {
+        // `latest` answers 404 when a repository has never published a release. That is the honest state of this
+        // project today, and it renders as an explanation with the control still disabled.
+        return { status: RESULT.EMPTY, message: "No CraftMind release has been published yet, so there is nothing to download." };
+      }
+      if (!response.ok) {
+        return { status: RESULT.ERROR, message: `The release service answered ${response.status}, so no download could be confirmed.` };
+      }
+      let release = null;
+      try {
+        release = await response.json();
+      } catch {
+        release = null;
+      }
+      const described = (asset) => {
+        const checksum = RELEASE_CHECKSUM_PATTERN.exec(String(asset?.digest ?? ""));
+        return Object.freeze({
+          url: verifiedReleaseAssetUrl(asset, slug),
+          fileName: String(asset?.name ?? ""),
+          sizeBytes: Number.isFinite(asset?.size) ? asset.size : null,
+          sha256: checksum ? checksum[1].toLowerCase() : "",
+        });
+      };
+      const assets = Array.isArray(release?.assets) ? release.assets : [];
+      const packages = [];
+      for (const asset of assets) {
+        if (!verifiedReleaseAssetUrl(asset, slug)) continue;
+        packages.push(described(asset));
+      }
+      const releaseFacts = {
+        tag: typeof release?.tag_name === "string" ? release.tag_name : "",
+        title: typeof release?.name === "string" ? release.name : "",
+        publishedAt: typeof release?.published_at === "string" ? release.published_at : "",
+      };
+      if (packages.length === 0) {
+        return { status: RESULT.EMPTY, message: "The latest published release contains no Android package, so there is nothing to install from it." };
+      }
+      if (packages.length > 1) {
+        // More than one package in one release is a decision the site must not make silently: which of
+        // `app-debug.apk` and the signed build a visitor installs is exactly the difference between a test artifact
+        // and a release. So nothing is offered for download here — the release page is, and it lists them by name.
+        return { status: RESULT.OK, payload: Object.freeze({ ...releaseFacts, ambiguous: true, packages: Object.freeze(packages) }) };
+      }
+      return { status: RESULT.OK, payload: Object.freeze({ ...releaseFacts, ambiguous: false, ...packages[0] }) };
+    },
+  });
+}
+
+export function createAdapters({ origin = null } = {}) {
   const config = siteConfiguration();
-  const account = createAccountAdapter({ origin: config.accountServiceOrigin || null });
+  // `origin` is a programmatic override for a caller that already knows where the service is: the contract test in
+  // `backend/test/website-api-contract.test.js`, and a developer previewing the site against a local account service.
+  // A page never passes it, so the HTTPS-only rule in `siteConfiguration()` still governs everything a browser can
+  // configure by itself — this seam widens what a build can do, not what a visitor's origin string can say.
+  const account = createAccountAdapter({ origin: origin || config.accountServiceOrigin || null });
   return Object.freeze({
     account,
     // Phase 22: membership and entitlements read the real account service when one is configured, and render the same

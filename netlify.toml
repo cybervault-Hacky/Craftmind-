@@ -1,0 +1,37 @@
+# Netlify configuration for the CraftMind static website.
+#
+# This file describes the site as it actually is; nothing here invents a build step, a service, or a credential.
+# No deployment has been performed from the repository's side, and no public URL has been verified: publishing
+# requires the owner's Netlify account. See docs/production-operations.md, "Netlify and the APK download path".
+
+[build]
+  # The site is 42 hand-written pages under `website/` with no bundler, no package.json, and no transpile step, so
+  # there is nothing to build. An empty command is Netlify's "publish as-is" instruction — it is deliberately not
+  # replaced with a guessed `npm run build`.
+  command = ""
+  publish = "website"
+
+[build.environment]
+  # Intentionally empty. A static publish needs no environment variables, and the account-service origin is NOT set
+  # here: `website/assets/adapters.js` reads `CRAFTMIND_SITE_CONFIG` at runtime, and putting a value in this file
+  # would publish it to every visitor's browser. Anything server-side belongs on the backend host, never here.
+
+# No SPA fallback. `/* → /index.html  200` would turn every mistyped or deleted page into a silent success, and this
+# site has 42 real pages that `scripts/check_website.py` proves resolve. A missing page must return 404.
+
+# Response headers. Deliberately narrow: these four cannot break a page and each one closes a real hole. A
+# Content-Security-Policy is NOT set here, because the site ships no fingerprinted asset names and the environment
+# has no browser to verify a policy against — a wrong `script-src`/`style-src` would blank the site on the owner's
+# phone while every static check stayed green. Add CSP with `scripts/check_website.py` plus a real browser pass, and
+# note that `style-src` must allow the inline `style="…"` attributes the pages already use.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+# The APK is never hosted here and never copied into the repository: GitHub Releases holds the binary and
+# `website/download.html` links to the release asset that actually exists. `Content-Disposition` on `*.apk` would
+# only matter if Netlify served the file, which is the design this project rejected.

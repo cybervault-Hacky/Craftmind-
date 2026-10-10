@@ -31,6 +31,10 @@ export const RESOURCE_KIND = Object.freeze({
   /** Phase 27: marketplace orders and their milestones. */
   ORDER: "ORDER",
   ORDER_MILESTONE: "ORDER_MILESTONE",
+  /** Phase 30: marketplace trust reports, the counterparty avoid/block list, and order disputes. */
+  MARKETPLACE_REPORT: "MARKETPLACE_REPORT",
+  MARKETPLACE_BLOCK: "MARKETPLACE_BLOCK",
+  ORDER_DISPUTE: "ORDER_DISPUTE",
 });
 
 const RESOURCE_KINDS = new Set(Object.values(RESOURCE_KIND));

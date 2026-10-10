@@ -122,6 +122,19 @@ export const ErrorCode = Object.freeze({
   MILESTONE_STATE_CONFLICT: "MILESTONE_STATE_CONFLICT",
   REVISION_LIMIT_REACHED: "REVISION_LIMIT_REACHED",
 
+  // Phase 30 marketplace trust, disputes, and creator protection
+  REPORT_NOT_FOUND: "REPORT_NOT_FOUND",
+  REPORT_STATE_CONFLICT: "REPORT_STATE_CONFLICT",
+  DISPUTE_NOT_FOUND: "DISPUTE_NOT_FOUND",
+  DISPUTE_STATE_CONFLICT: "DISPUTE_STATE_CONFLICT",
+  ORDER_DISPUTED: "ORDER_DISPUTED",
+  MARKETPLACE_BLOCKED: "MARKETPLACE_BLOCKED",
+  MARKETPLACE_BLOCK_NOT_FOUND: "MARKETPLACE_BLOCK_NOT_FOUND",
+
+  // Phase 32 referral and campaign attribution. Only one code is added: an unrecognized, own, or otherwise unusable
+  // referral code is deliberately *not* a distinct code, so the API can never be queried as an existence oracle.
+  REFERRAL_CLAIM_CONFLICT: "REFERRAL_CLAIM_CONFLICT",
+
   // Phase 20 security event, incident, and automated response layer
   SECURITY_EVENT_INVALID: "SECURITY_EVENT_INVALID",
   SECURITY_ACTION_UNKNOWN: "SECURITY_ACTION_UNKNOWN",
@@ -242,6 +255,14 @@ const STATUS_BY_CODE = Object.freeze({
   [ErrorCode.MILESTONE_NOT_FOUND]: 404,
   [ErrorCode.MILESTONE_STATE_CONFLICT]: 409,
   [ErrorCode.REVISION_LIMIT_REACHED]: 409,
+  [ErrorCode.REPORT_NOT_FOUND]: 404,
+  [ErrorCode.REPORT_STATE_CONFLICT]: 409,
+  [ErrorCode.DISPUTE_NOT_FOUND]: 404,
+  [ErrorCode.DISPUTE_STATE_CONFLICT]: 409,
+  [ErrorCode.ORDER_DISPUTED]: 409,
+  [ErrorCode.MARKETPLACE_BLOCKED]: 403,
+  [ErrorCode.MARKETPLACE_BLOCK_NOT_FOUND]: 404,
+  [ErrorCode.REFERRAL_CLAIM_CONFLICT]: 409,
   [ErrorCode.NETWORK_ERROR]: 503,
   [ErrorCode.BACKEND_UNAVAILABLE]: 503,
   [ErrorCode.UNKNOWN_ERROR]: 500,
@@ -345,6 +366,14 @@ const SAFE_MESSAGES = Object.freeze({
   [ErrorCode.MILESTONE_NOT_FOUND]: "That milestone does not exist, or it is not available to you.",
   [ErrorCode.MILESTONE_STATE_CONFLICT]: "The milestone is no longer in the state this change requires, so nothing was changed.",
   [ErrorCode.REVISION_LIMIT_REACHED]: "This milestone has reached its agreed revision limit. Further requests must be raised as a scope change.",
+  [ErrorCode.REPORT_NOT_FOUND]: "That report does not exist, or it is not available to you.",
+  [ErrorCode.REPORT_STATE_CONFLICT]: "The report is no longer in the state this change requires, so nothing was changed.",
+  [ErrorCode.DISPUTE_NOT_FOUND]: "That dispute does not exist, or it is not available to you.",
+  [ErrorCode.DISPUTE_STATE_CONFLICT]: "The dispute is no longer in the state this change requires, so nothing was changed.",
+  [ErrorCode.ORDER_DISPUTED]: "This order has an open dispute, so it cannot be completed or cancelled while the dispute is open. Resolve or withdraw the dispute first. No money moves in this phase.",
+  [ErrorCode.MARKETPLACE_BLOCKED]: "A block between these two accounts prevents this connection.",
+  [ErrorCode.MARKETPLACE_BLOCK_NOT_FOUND]: "No block matches that request, so nothing was changed.",
+  [ErrorCode.REFERRAL_CLAIM_CONFLICT]: "This account already carries a referral attribution, and attribution is not overwritten. Nothing was changed.",
   [ErrorCode.NETWORK_ERROR]: "The account service could not complete the network request.",
   [ErrorCode.BACKEND_UNAVAILABLE]: "The account service cannot serve this request right now.",
   [ErrorCode.UNKNOWN_ERROR]: "The account service could not complete this request.",

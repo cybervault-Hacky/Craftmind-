@@ -131,7 +131,7 @@ same implementations as Phases 1–14. Full detail:
 - **Settings and About.** Settings is Appearance / AI providers / Minecraft / Data / About, with keys always masked and the Keystore-backed credential handling untouched. About states the developer (Sarthak Bharambe), the application ID, version and versionCode from the installed build, the certified target, acknowledgements, licences, and the Privacy/Terms/website entries — and claims no company, team, office, history, customers, investors, partnerships, awards, funding, or certification; Terms is marked as a draft requiring final legal review.
 - **Accessibility and motion are requirements.** AA contrast in both palettes, ≥48dp touch targets everywhere, labels and content descriptions, keyboard/focus behaviour, honest error wording, and a real reduced-motion observer that collapses every duration to zero while state changes still render. No looping, glowing, particle, or decorative animation exists anywhere.
 - **Website: eight pages, not one.** `index`, `how-it-works`, `features`, `download`, `about`, `faq`, `privacy`, and `terms` share one navigation (`Home / How it works / Features / Download / About / FAQ`) and one footer, in a dependency-free static site with no remote fonts, no analytics, and no CDN requests. `scripts/check_website.py` enforced the architecture, honest copy, and the download policy. (Phase 15 shipped these pages with no JavaScript at all; Phase 21 later added progressive-enhancement modules and the new sections — see the Phase 21 section below.)
-- **Download stays unavailable.** No signed APK exists, so `download.html` owns the site's single disabled `DOWNLOAD APK` control and the copy says the release has not yet been built, installed, or published. No APK, AAB, keystore, or key material is committed, and GitHub is not the primary download path.
+- **Download stays unavailable.** No APK of any kind exists, so `download.html` owns the site's single `DOWNLOAD APK` control and ships it disabled, with the copy saying the release has not yet been built, installed, or published. The control resolves itself at page load: `assets/download.js` asks the repository named in the page for its newest *published* release and turns the control into a link only when that release really carries an `.apk` asset whose URL belongs to the same repository — every other answer re-disables it and states the reason. No APK, AAB, keystore, or key material is committed, and the binary is never served from the website's own files: it is a release asset, and the site only ever links what the release service confirms.
 - **Status in this build:** `ANDROID_BUILD = NOT_RUN` (no Android SDK or Gradle distribution in this environment), `REAL_RUNTIME_TESTS = NOT_PERFORMED`. Verification in this phase: design-system tests 15/15 PASS, the JVM suite at 358 run / 5 known-pre-existing failures before the sandbox was reset, the website and release-configuration checks PASS, and whole-tree Kotlin syntax plus raw-colour scans clean. Compose rendering and the instrumented tests were not executed here.
 
 ## Phase 18 — Account Experience & Production Authentication Hardening
@@ -289,6 +289,299 @@ and Server are defined, granted internally, and deliberately not for sale. Full 
   → PASS (30 pages, 884 links); a jsdom check of the membership and credit states; `ANDROID_BUILD = NOT_RUN` (no Android
   toolchain here). No live deployment, external security review, payment provider call, or live AI call is claimed.
 
+## Marketplace roadmap (Phases 23–30): a note on numbering
+
+The chronological `## Phase NN` headings above track the app-facing story (compatibility, UI, accounts, membership).
+The **marketplace** is built on the roadmap whose phase numbers appear in the backend source and commit history:
+**Phase 23** creator & server capability foundation, **24** buyer/seller onboarding, **25** listings & discovery,
+**26** Hire a Builder, **27** order lifecycle, then **30** below. Phases 23–27 were implemented with full services and
+test suites (see `git log` and each module's file header) but were not given separate `## Phase` headings; their
+contracts live in `backend/src/*.js` and `backend/test/*.test.js`. `Phase 28` (payments, commissions, refunds,
+payouts) and `Phase 29` (purchasable memberships, credit purchases, and the Trusted Seller marker) are **deliberately
+deferred by the owner** and remain unimplemented; this repository does not treat a deferred monetization phase as
+done, and no phase here asserts that money moves.
+
+## Phase 30 — marketplace trust, disputes, and creator protection
+
+Phase 30 adds a **non-monetary** trust layer over the existing marketplace, extending the Phase 23–27 services and the
+Phase 19/20 audit/rate-limit/authorization machinery rather than standing up a parallel one. Full contract:
+[`docs/marketplace-trust-disputes.md`](docs/marketplace-trust-disputes.md).
+
+- **Reports, the block list, and disputes.** `backend/src/marketplace-trust.js` adds reports against a `LISTING`, a
+  `JOB`, or the counterparty of your own `ORDER`, plus a self-service avoid/block list derived only from a
+  one-to-one relationship you actually hold. `backend/src/order-disputes.js` adds an order-scoped, participants-only
+  dispute workflow. All endpoints are session-authoritative; no body ever names a reporter, a target, a blocked
+  account, a status, an outcome, or an amount.
+- **The gap Phase 27 left is now closed — without money.** A dispute freezes completion/cancellation while it is open
+  (an inert `hasOpenDisputeForOrder` read, so undisputed orders behave exactly as before) and, only when **both**
+  parties record the same position, either keeps the order `ACTIVE` (`CONTINUE`) or closes it as `CANCELLED` (`CLOSE`)
+  with every milestone, delivery, and revision preserved. There is no refund, payout, commission, or settlement
+  surface anywhere in the phase.
+- **Privacy is the point.** The party a report is about sees the category and subject only — never who filed it, never
+  the note — and the trust summary is a private self-visible count, not a fabricated public score. Statements are
+  append-only immutable evidence, database-trigger-enforced like deliveries.
+- **Additive and audited.** SQLite `v10 → v11` creates five tables and rebuilds `admin_audit_log` once more (the
+  v6–v10 shadow-table pattern) to accept twelve new action types (`REGISTERED_AUDIT_ACTION_TYPES` `90 → 102`); two
+  dedicated rate budgets protect writes. No existing table, route, guarantee, or test was weakened.
+- **Verification status:** `cd backend && npm test` → **306/306 passed across 53 suites** (up from 278/43), including
+  the new `marketplace-trust.test.js` (12) and `order-disputes.test.js` (16) and a migration-upgrade test that proves
+  a seeded v10 database upgrades to v11 with order rows and audit history preserved. `python3
+  scripts/check_website.py` → PASS (41 pages — no website change was required, and the site's existing "refunds,
+  payouts… not yet supported" copy stays true); `python3 scripts/check_release_config.py` → PASS; `node --check` on
+  every module → PASS. `ANDROID_BUILD = NOT_RUN` (no toolchain here). No live deployment, browser/device E2E, external
+  security review, or payment-provider call is performed or claimed.
+
+## Phase 31 — marketplace analytics & insights (read-only)
+
+Phase 31 adds a **derived, non-collecting** analytics layer over the same Phase 23–30 tables. It reuses the session
+auth, the `SESSION` security category, the shared read transaction, and the error/rate-limit conventions — it does not
+stand up a second analytics store, add a table or migration, or introduce a new dependency. Full contract:
+[`docs/marketplace-analytics.md`](docs/marketplace-analytics.md).
+
+- **Two authorized reads.** `GET /marketplace/analytics/overview` returns coarse whole-marketplace aggregates (listing
+  and job counts, order lifecycle totals, milestone/delivery/revision activity, and dispute/report roll-ups by
+  category/state). `GET /marketplace/analytics/creator` returns an account's **own** listings, submitted proposals,
+  creator-side orders, milestone/delivery/revision work, and disputes it is a party to. Both require a session; neither
+  accepts a client-supplied identity.
+- **Correct by construction.** A completed *order* is counted separately from an approved *milestone*, and one order
+  with several milestones is never fanned out into several orders — order totals read `orders`, while delivery
+  submissions and distinct delivered orders are reported apart. Every metric's definition is embedded in the response.
+- **Honest about gaps.** Signals the platform does not record — listing views, clicks, ratings, revenue — are returned
+  under `unavailable` with a reason, never as a zero that looks like "no activity." Security, abuse, and rate-limit
+  counters are explicitly `excluded`: analytics never read the audit log or security signals, and reads are not audited.
+- **Privacy enforced server-side.** The personal view is scoped by the token, not by any id in the request, so a
+  cross-account read is unrepresentable; the global overview carries no ids or per-account breakdown and cannot
+  enumerate who reported whom. Report notes/reporters/targets and dispute statements/parties are never surfaced.
+- **Analytics-only.** No payments, commissions, refunds, payouts, subscriptions, or purchased credits (Phases 28–29
+  stay deferred), and no website dashboard is fabricated — the site has no authenticated backend-bound dashboard yet,
+  which is documented as the prerequisite rather than worked around insecurely.
+- **Verification status:** `cd backend && npm test` → **325/325 pass across 60 suites** (new `marketplace-analytics.test.js`:
+  19 tests over 7 suites), with no schema change (`SCHEMA_VERSION` stays 11, audit vocabulary stays 102).
+  `python3 scripts/check_website.py` → PASS (41 pages, website unchanged); `python3 scripts/check_release_config.py` → PASS;
+  `node --check` → PASS. `ANDROID_BUILD = NOT_RUN`. No browser/device E2E, deployment, external review, or provider call is claimed.
+
+## Phase 32 — referral tracking & marketing campaign attribution
+
+Phase 32 records **who brought whom** and **which campaign a claimed account arrived with**, on the existing
+session-authenticated architecture: a CSPRNG code per account, one immutable attribution per referred account, and
+three normalized campaign fields. No rewards, no payouts, no cash referral program — a referral is stored as a fact,
+not as a debt. Full contract: [`docs/referrals-and-attribution.md`](docs/referrals-and-attribution.md).
+
+- **Four self-only routes, no new identity surface.** `POST /marketing/referrals/code` (idempotent: one code per
+  account, ever), `POST /marketing/referrals/claim`, `POST /marketing/referrals/verify`, and
+  `GET /marketing/referrals/me`. Identity is always the bearer token; the referrer is resolved from the **code row**
+  by the server, and `strictBody` means `{"userId":…}`, `{"referrerUserId":…}` or `{"status":"VERIFIED"}` is a
+  refusal rather than something to be second-guessed.
+- **Integrity is enforced by the database.** `UNIQUE (referred_user_id)` means one attribution per account with no
+  check-then-insert window (five concurrent claims converge on one row), `CHECK (referrer_user_id <> referred_user_id)`
+  makes self-referral unrepresentable, and a `BEFORE UPDATE` trigger freezes a finalized attribution — everything
+  except the one-way `OBSERVED → VERIFIED` promotion, so a recorded relationship can never be quietly re-pointed.
+- **Observed and verified are different facts, in storage and in every response.** `OBSERVED` means a valid claim was
+  recorded; `VERIFIED` means two columns the server owns both hold — the referred account's `users.email_verified_at`
+  is non-null **and** the referrer's `users.status = 'ACTIVE'`. Never a client assertion, never mere registration, and
+  `verifiedAt` is the account's real verification time rather than the time someone called the endpoint. An account
+  suspended for abuse stops accumulating verified referrals while the record itself survives.
+- **Campaign fields are labels, not URLs.** `source` reuses the existing `REFERRAL_SOURCES` allowlist from onboarding,
+  so marketing reporting and the signup survey speak one vocabulary; `medium` (≤40) and `campaign` (≤64) are
+  trimmed, lower-cased and pattern-constrained by both the service and a table `CHECK`, so `https://…?ref=SECRET`
+  cannot be stored and over-length input is refused instead of silently truncated. Nothing reads a query string,
+  cookie, `localStorage`, referrer URL or device identifier, and no third-party analytics SDK is introduced.
+- **Privacy is the default response shape.** Unknown, malformed and self-claims return one identical `400`, so the
+  endpoint is not an existence oracle; a referrer sees counts and never a list of who used their code; a referee sees
+  `referrerDisclosed: false` and no id or email; there is no `supporters` field to add later. Private referral
+  relationships are deliberately **not** copied into the developer-visible security audit log — `REGISTERED_AUDIT_ACTION_TYPES`
+  stays 102, and the table is the durable record instead.
+- **Additive v12 migration, extended rather than duplicated analytics.** Two tables, two indexes and one trigger in
+  the repo's existing migration sequence (tested by upgrading a real v11 database that is first asserted to lack both
+  tables), with the referral metrics derived inside the Phase 31 analytics service. Only three numbers moved in
+  existing suites — the schema version, the `schema_migrations` row count, and the `ErrorCode` key count — and every
+  earlier contract (windows, `?window=5d → 400`, unknown query keys ignored) still holds.
+- **Website integration: none, on purpose.** The site already collects a self-reported `referralSource` survey answer,
+  and there is no secure binding to wire: a `?ref=` link needs server-issued link signing, a pre-session verification
+  path, and a disclosure surface in settings — the document names all three as the prerequisite, instead of shipping
+  an attacker-forgeable query parameter and a decorative button.
+- **Verification status:** `cd backend && npm test` → **357/357 pass across 69 suites** (new `referrals.test.js`: 32
+  tests over 9 suites), `python3 scripts/check_website.py` → PASS (41 pages, website unchanged),
+  `python3 scripts/check_release_config.py` → PASS, `node --check` → PASS, `git diff --check` clean.
+  `ANDROID_BUILD = NOT_RUN`. No browser/device E2E, deployment, external review, or payment-provider call is claimed;
+  payments, commissions, refunds, payouts, subscriptions, purchased credits, cash referral rewards and Trusted Seller
+  status remain out of scope, and Phases 28–29 stay deferred.
+
+## Phase 33 — production hardening: startup, HTTP bounds, database recovery, observability
+
+Phase 33 changes **no product surface**. It hardens the runtime that already exists — configuration validation before
+anything is opened, request and shutdown bounds, liveness versus readiness, log hygiene, and a rehearsed
+database backup/restore path — and writes down plainly what still depends on infrastructure this repository does not
+have. No dependency was added, no `.env` file or `.env.example` was touched, and no hosting provider, container
+platform, reverse proxy or monitoring service was assumed or invented. Full operational contract:
+[`docs/production-operations.md`](docs/production-operations.md).
+
+- **Startup is staged, and a refusal happens before anything is half-open.** `src/index.js` now runs five named
+  stages (runtime, configuration, database, service, bind), each with one owner. `src/config.js` gained the checks that
+  were missing: `HOST` is validated as a bindable host or `host:port` (a real IPv6 form is accepted,
+  `HOST=0.0.0.0:8787` is refused rather than silently mis-parsed), body and rate-limit keys are bounded, access-token
+  TTL must be shorter than refresh-token TTL for both credential pairs, the security protection window cannot exceed its
+  own maximum, and the three server timeouts plus the grace window are cross-checked against each other because
+  Node's own defaults make some configured combinations unreachable. A refusal is actionable but never repeats a
+  configured value — proven by putting a sentinel string in every secret-ish field and asserting it appears nowhere in
+  the output. A failed start closes what it opened and exits **2**, distinct from a clean shutdown's `0`.
+- **Liveness and readiness are now different questions.** One new route, `GET /live` (no database probe, so a pod is
+  not pulled from rotation for a slow migration or a locked file); `GET /health` keeps every field earlier suites
+  assert (`status`, `service`, `schemaVersion`) and *additionally* answers `database: "reachable"` and
+  `schema: "current"`. When the database is unreadable, readiness returns `503` with categories only
+  (`{status:"unavailable",database:"unreachable",failure:"CLOSED"}`) — never an error message, driver name, file path
+  or row count.
+- **HTTP bounds are enforced, and one of them was chosen by measurement.** `REQUEST_TIMEOUT_MS`, `HEADERS_TIMEOUT_MS`,
+  `KEEP_ALIVE_TIMEOUT_MS` and `SHUTDOWN_GRACE_MS` are configurable within validated ranges and carried onto the
+  `http.Server`. Measured on Node 22: `requestTimeout` bounds receiving the head but does **not** reap a client that
+  sends a head, declares a large body and then stalls, so `server.timeout` (socket inactivity) is set from the same
+  bound and the pair is validated against `keepAliveTimeout`. A client disconnect is now `account_http_client_aborted`
+  plus `status: 499` in the log only — no security signal and no internal-error line, which is what it used to be
+  — while a typed refusal outranks socket state, so an oversized body still receives its `413` even though reading it
+  early destroys the request. Security headers, exact-origin CORS, `Content-Type` gating, streaming body caps, the
+  existing rate limiters and every auth, marketplace and referral contract are unchanged; no redundant middleware was
+  added to make the count of checks look larger.
+- **Shutdown is safe to repeat.** Idle connections close, in-flight work gets the grace window, the remainder is
+  force-closed, and the database handle is closed once. A second signal — or a signal after a failed bind — is a
+  no-op, which is the property a supervisor's SIGTERM-then-SIGKILL actually depends on.
+- **Backups use a mechanism that exists, and restore was rehearsed.** This runtime's `node:sqlite` has no online-backup
+  API (`database.backup` is absent), so `scripts/backup-database.mjs` takes the snapshot with `VACUUM INTO` on a
+  **read-only** handle — never `openDatabase()`, which would run migrations against the live file. The snapshot is
+  verified (`integrity_check`, schema watermark) and deleted if verification fails, written `0600` in a `0700`
+  directory, and refused outright inside `backend/public`. `restore-database.mjs` supports `--dry-run` and requires
+  `--force` to replace an existing target, removing stale `-wal`/`-shm` sidecars only in that explicit case. There is
+  **no automated backup scheduler** and none is claimed: the repository ships a command you can schedule, and
+  `docs/production-operations.md` names the rotation, off-box copy and rehearsal that a real deployment still needs.
+- **Redaction is structural, not a filter.** One JSON line per request with the router's *pattern* (`/marketplace/*`)
+  rather than the concrete path, so a log file cannot become a list of handles and slugs; the only request-derived
+  string that reaches a line is that pattern, so `\n` in a URL cannot split a log line. Bodies, `Authorization`
+  headers, tokens, passwords, signing secrets, referral attributions, report notes and dispute statements are never
+  logged; an internal failure logs `errorType` and discards the message on purpose, with the `requestId` (also
+  returned to the client) as the correlation handle. No external monitoring service is claimed.
+- **Deployment preparation, minus the theatre.** `scripts/check_deployment_readiness.py` verifies that every key the
+  backend actually reads is documented, that the runtime floor agrees across `config.js`, `package.json` and `README.md`,
+  and that the CI example's environment still parses — it runs against this repository today and reports
+  **107 configuration keys, all documented**. Running it surfaced real pre-existing drift: 31 keys in `config.js`
+  were written down nowhere, and they are now documented. The pipeline ships as `ci-workflow.yml.example` and is
+  **not installed**, because adding a workflow would claim a hosted runner this repository does not have; the backend
+  declares zero dependencies, so there is deliberately no invented lockfile.
+- **The new suite caught two defects in this phase's own code, and both were fixed rather than asserted around:** a
+  `let closing` in its temporal dead zone made a busy port crash with a `ReferenceError` instead of refusing cleanly,
+  and a restore into a fresh path reported `replaced: true`, claiming a clobber that had not happened.
+- **Verification status:** `cd backend && npm test` → **393/393 pass across 76 suites** (baseline 357 preserved, plus
+  a new `test/production-hardening.test.js`: 36 tests over 7 suites), `node --check` → clean across **77** backend
+  files, `python3 scripts/check_deployment_readiness.py` → PASS, `python3 scripts/check_release_config.py` → PASS,
+  `python3 scripts/check_website.py` → PASS (41 pages, 1179 links, website untouched), `git diff --check` clean. A
+  **25-check** end-to-end rehearsal ran against real processes: fresh boot migrates to v12, a genuine v11 database
+  built with the app's own migrator is upgraded by a real boot, repeated startup neither duplicates nor advances the
+  watermark, `POST /auth/register` still returns 201 through the hardened path, a snapshot's contents and `0600` mode
+  are verified, the live file is untouched by backing it up, restore refuses without `--force`, and **the restored
+  database boots the service**. Phases 30–32 are pinned by explicit assertions, not by hope: schema v12, 108
+  `ErrorCode` keys, 102 registered audit action types, the `/health` shape, the Phase 31 window contract, the referral
+  route surface and result codes, and the immutability trigger. `ANDROID_BUILD = NOT_RUN` (no Gradle/network
+  provisioning here), **no browser E2E or device test was run** (this phase has no UI surface), no deployment, no
+  restore rehearsal against real infrastructure, and no external service was contacted. Residual risks stated rather
+  than papered over: development-mode CORS still trusts the `Host` header, `x-forwarded-proto` can satisfy the HTTPS
+  gate if the app is exposed directly instead of behind the TLS terminator that sets it, no monitoring or alerting is
+  wired, no CI is installed, and there is **no downgrade path** — rolling back means restoring a pre-upgrade backup.
+
+
+## Phase 34 — Android, website, and Minecraft end-to-end release readiness
+
+Phase 34 added no feature. It read the three clients and the service end to end, fixed the two contract defects that
+audit surfaced, and wrote down what is and is not provable from this environment. The full component map, the
+contract matrix, the blocked-check list, and the prioritised residual blockers live in
+[`docs/release-readiness.md`](docs/release-readiness.md).
+
+- **Two real defects, both in the website's HTTP boundary.** `confirmPasswordReset` posted `{email, code, newPassword}`
+  to a route that calls `requireString(body,"token")` and `("newPassword")` — a guaranteed 400 for a flow the server,
+  `docs/account-authentication.md`, and the Android builder all agree on. And `saveSellerOnboarding` mapped the
+  service's `403 CREATOR_ENTITLEMENT_REQUIRED` onto `UNAUTHORIZED`, which sent already-signed-in applicants to a
+  sign-in prompt and made `onboarding.js`'s own "View membership" branch dead code. Both fixed with the smallest
+  change that makes the shipped contract correct; nothing else in `website/` was touched.
+- **Regression coverage that is load-bearing, not decorative.** `backend/test/website-api-contract.test.js` (13 tests /
+  5 suites) imports the **real** `website/assets/adapters.js` and drives it over HTTP against `startService()` — the
+  account journey, recovery, sessions, membership/credits, onboarding writes against the server's exact key sets,
+  discovery, the job lifecycle, entitlement refusals, the deliberately inert payments/orders/reviews/analytics surface,
+  and "every endpoint the site declares exists on the service". Reverting either fix turns it red (11/13) with exactly
+  the two intended failures.
+- **`scripts/check_api_contracts.py`** is the durable half of the audit: it reads the router's 106 routes, the website's
+  declared/called endpoints, the Android client's 14 paths and their builders, the `strictBody`/`requireX` key
+  contracts, and the release facts repeated across Gradle, `download.html`, `verify-release-apk.sh`, and the bridge
+  protocol/schema constants — then fails on drift, and reports as notes the routes whose contract it cannot read rather
+  than guessing them into a pass.
+- **Android and the bridge were verified as far as a machine without a JDK can verify them:** release ID/version,
+  env-var-only keystore with hard refusal of partial or in-checkout signing config, unsigned `packageRelease` throwing,
+  one exported component with `INTERNET` only, `allowBackup=false`, `usesCleartextTraffic=false`, no plaintext credential
+  path, every XML resource reference resolving and no `R.` reference dangling, and `BridgeProtocol.VERSION = 2` /
+  `BUILD_PLAN_SCHEMA_VERSION = 2` / mod `1.2.0` / loader `0.16.10` / Fabric API `0.92.2+1.20.1` agreeing with the docs.
+  `ANDROID_BUILD = NOT_RUN`; the 64 JVM unit and 10 instrumented suites were not executed, and no protocol or schema
+  version was downgraded to make anything appear compatible.
+- **The download experience stays honest.** No APK or AAB exists in this repository, so the button remains disabled and
+  `download.html`'s stated VERSION/VERSION CODE/PACKAGE/minSdk are now asserted equal to what Gradle actually produces.
+  Phases 28–29 remain deferred: the payment/marketplace/monetisation adapters must keep answering `NOT_IMPLEMENTED`, and
+  the new checker fails if such a surface ever appears in `adapters.js`.
+- **Verification status:** `cd backend && npm test` → **406/406 pass across 81 suites** (~98 s; the 393-test Phase 33
+  baseline preserved with no test weakened, skipped, or deleted, plus the 13 new contract tests); `node --check` clean on
+  both touched files; `check_website.py` → PASS (41 pages, 1179 links); `check_release_config.py` → PASS;
+  `check_deployment_readiness.py` → PASS (107 configuration keys); `check_api_contracts.py` → PASS;
+  `bash -n scripts/verify-release-apk.sh` clean; `git diff --check` clean. **Not run, and not claimed:** Gradle
+  build/lint/unit/instrumented tests, Fabric mod build and any Minecraft server test, browser E2E (no runner in this
+  repo), Play submission, deployment, and any credential generation. The website's HTTP boundary is proven at the
+  service level, which is where both defects lived; its DOM was not rendered by a browser here.
+
+## Phase 35 — Security Guardian: developer-facing static source analysis
+
+Phase 35 added a bounded security *scanner*, not a security posture. `backend/src/security-guardian.js` reads source
+files and reports evidence-backed review items; `backend/scripts/security-guardian.mjs` is the operator CLI. It runs
+alongside — never inside — the Phase 20 runtime subsystem: it reads no live traffic, registers no HTTP route, mints no
+authorisation, cannot disable a control, and does not duplicate `scripts/check_release_config.py`, which keeps the
+authority over tracked artifacts and secret-bearing file names. Full description, policy, and rule table:
+[`docs/security-guardian.md`](docs/security-guardian.md).
+
+- **Deterministic first, and provably so.** 20 rules over an allow-listed path set; content-derived finding ids; a
+  versioned record per finding (rule, severity **and** confidence, root-relative file, line range, masked one-line
+  evidence, danger, impact, remediation, regression-test suggestion, status, scanner/rule version, timestamp) validated
+  by `validateScanReport()`. Two identical scans render byte-identical reports. Nothing is inferred into existence: no
+  path, line, or CVE the source does not show, and `CRITICAL` is reachable only by the two rules that are self-proving.
+- **The safety contract is enforced in code, and tested.** The module imports `node:child_process`, `node:crypto`,
+  `node:fs`, `node:fs/promises`, `node:path` and nothing else — no network module, no dependency, no environment read,
+  so no report can be uploaded and no provider key can leak. Scanned files are never imported or executed; symlinks
+  outside the root are refused as `symlink-escape`; 8 MiB/500-findings/600-second bounds and `.gitignore`-style
+  exclusions are respected; malformed UTF-8 is tolerated; credential matches are reported as a length with `«redacted»`
+  in place of the value, in JSON, Markdown, terminal output, and `--output` files alike (`0600`, refused under `website/`).
+- **A scan that could not finish never looks clean.** `CLEAN` / `FINDINGS` / `INCOMPLETE` / `FAILED` are distinct,
+  the report always states what was not covered, and the CLI exits `0`/`1`/`2`/`3` for pass / gate-blocking finding /
+  did not run / stopped early, so an unread file cannot be read as a pass.
+- **Calibration was the work, not an afterthought.** The first correctly-functioning run produced 73 HIGH and 2 CRITICAL
+  findings — nearly all of them literal passwords in `backend/test/**` and `app/src/test/**`, plus the scanner reporting
+  its own test suite. Both were resolved in rule logic rather than by suppression: the credential rule now states its own
+  policy (in test paths, only a provider-prefixed value reports, and then as HIGH — a live key in a test is an
+  emergency), the rule case table moved to a `.corpus` data file the scanner does not treat as source, and every
+  remaining informational item is left visible, including one in the Guardian's own test file. The 4 MEDIUM findings
+  are `schemaVersion == 2` literals in shipped Android UI, reported with their evidence and **not** edited, because
+  changing bridge-facing version handling is out of this phase's scope.
+- **Writing the tests found three real bugs**, all fixed rather than accommodated: the CLI's `--fail-on` comparison was
+  inverted (a `MEDIUM` gate would have let a HIGH finding through), the finding cap was recorded only when another file
+  followed, and coverage loss was outranked in the headline status by findings already collected.
+- **Optional AI review, kept on a leash.** `reviewFindingsWithAi()` adds commentary over the deterministic findings only
+  on explicit `consent: true`, sending at most 24 sanitised excerpts and no source; the contract is `MESSAGE_ONLY` with
+  `tools: []` and `maximumToolCalls: 0`, so an `// IGNORE ALL INSTRUCTIONS` line in a scanned file is quoted as evidence
+  and changes nothing. It cannot raise a severity, resolve a finding, or produce a patch, and its refusals
+  (`AI_CONSENT_REQUIRED`, `AI_UNAVAILABLE`, `AI_TIMEOUT`, `AI_RESPONSE_INVALID`) are reported instead of faked. The CLI
+  never calls a provider at all: `--ai-review` prints the exact brief and the disclosure it would imply.
+- **Verification status:** `cd backend && npm test` → **468/468 pass across 88 suites** (the Phase 34 baseline of
+  406/406 preserved with nothing weakened, skipped, or deleted, plus 62 new Guardian tests in 7 suites);
+  `check_api_contracts.py`, `check_website.py`, `check_release_config.py`, `check_deployment_readiness.py` → all PASS;
+  `node --check` clean on module, CLI, and test; `git diff --check` clean; `backend/package.json` untouched — the
+  scanner adds **no dependency** to a backend that still has none. Repository scan on `2381f36`: `FINDINGS`, 21 open,
+  0 CRITICAL / 0 HIGH / 4 MEDIUM / 17 INFORMATIONAL, 458 of 466 candidate files read, 39 routes inspected, 456 tracked
+  files reviewed, all 20 rules consulted. **Not run, and not claimed:** no CI wiring (none exists in this repository),
+  no dependency/SCA scanning, no CVE database lookup, no penetration testing or runtime exploitation, no browser or
+  device testing, and no Android source change. A green Guardian run is a statement about 20 patterns, not about
+  CraftMind's security.
+
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
@@ -361,7 +654,7 @@ The Android UI reports the authenticated session, bridge-reported edition/Minecr
 - Other provider adapters or user-configurable AI endpoints.
 - Manual build editing/design tools, block palettes, coordinate editors, templates, rollback, undo, or visual/screenshot verification of a constructed world.
 - Cloud sync, account-owned build history, cross-device settings, ads, premium tiers, or an AI gateway/provider-billing backend. The account service handles authentication only; local build history and BYOK provider credentials are not attached to accounts.
-- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard; Phase 21 adds only interface and state foundations for the marketplace, creator studio, membership, and account center, with no service behind them and no capability to purchase, sell, publish, or subscribe. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable.
+- Subscriptions, payment processing, credits, gifts, marketplace/creator payouts, full moderation, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds remain **NOT IMPLEMENTED**. Phase 19 adds only a separate developer control plane and provider-neutral AI boundary; Phase 20 adds only a backend security-response layer and a read-only Security Center section inside that same developer dashboard; Phase 21 adds only interface and state foundations for the marketplace, creator studio, membership, and account center — at that point with no service behind them. **Correction for the current checkout:** Phases 23–30 have since put real, server-authoritative services behind those surfaces, so a signed-in user *can* hold a creator profile, complete onboarding, publish and archive listings, post a job, exchange proposals, run an order with milestones/deliveries/revisions, and file reports, hold a block, or open/resolve a dispute (Phases 22 and 30 in particular). What remains **NOT IMPLEMENTED** is exactly the deferred monetization and its neighbors: purchase, checkout, subscriptions, payment processing, marketplace/creator payouts, refunds, commission, escrow, credit *purchasing*, the Trusted Seller marker, gifts, full platform moderation beyond the existing developer tools, normal-user AI gateway/billing, OAuth/social sign-in, cloud sync, and account-owned builds. No real AI provider adapter is bundled or claimed. Account deletion remains unavailable.
 - Bedrock execution: no Bedrock bridge implementation exists here, no Bedrock version is runtime-certified, and the Bedrock block/state catalog is empty, so the Bedrock bridge never receives a BuildPlan. Bedrock cannot load the Java Fabric mod. No unsafe client automation (screen scraping, input simulation, injection, patching, anti-cheat/DRM/license bypass) is implemented or planned as a substitute.
 - Manual Minecraft runtime selection or override: there is no edition/Minecraft-version/loader/adapter picker, no nearest-version fallback, no cross-edition matching, and no "execute anyway" control. The runtime comes only from the authenticated bridge; a runtime that cannot be detected stays unknown and construction stays disabled.
 - Legacy/beta/snapshot/experimental execution: no legacy bridge, Forge mod, or legacy runtime integration exists here; the two declared legacy contracts are `EXPERIMENTAL` with `NOT_PERFORMED` certification and an empty block/state catalog, so a recognized legacy runtime is refused with a typed `RUNTIME_NOT_CERTIFIED` failure before any bridge call. Support would require a real runtime test recorded in the registry first.
@@ -396,6 +689,40 @@ cd minecraft-bridge
 ```
 
 `test` from the root includes Android unit tests and `bridge-protocol` tests; it does **not** build the separate Fabric project. `connectedDebugAndroidTest` requires a configured Android SDK and attached emulator/device. `build` in `minecraft-bridge/` produces the remapped mod jar when successful.
+
+Everything the repository can verify without an Android SDK, a browser, or a hosted service runs with these six
+commands:
+
+```bash
+cd backend && npm test                                   # backend suites, including the website contract suites
+python3 scripts/check_website.py                         # page set, links, navigation, honesty and privacy invariants
+python3 scripts/check_api_contracts.py                   # website + Android calls resolved against the real router
+python3 scripts/check_release_config.py                  # release config, signing guards, tracked-artifact/credential sweep
+python3 scripts/check_deployment_readiness.py            # runtime floor, config documentation, backup/restore tooling
+(cd backend && node --no-warnings=ExperimentalWarning scripts/security-guardian.mjs --fail-on HIGH)
+```
+
+Two install-ready pipelines are committed as examples and are **not installed**:
+
+| File | What it would run |
+| --- | --- |
+| `ci-workflow.yml.example` | exactly the six commands above, on every push to `main` and every pull request |
+| `android-apk-workflow.yml.example` | `:app:testDebugUnitTest` and `:bridge-protocol:test`, then `:app:assembleDebug`, then an APK existence/size/checksum check and a 30-day artifact upload |
+
+No CI run has ever executed in this repository (`GET /repos/…/actions/workflows` reports `total_count: 0`), and this
+phase could not change that: the workspace's GitHub App token is refused by both routes able to create a workflow
+file — `git push` → `refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without
+workflows permission`, and `PUT /repos/…/contents/.github/workflows/…` → `403 Resource not accessible by
+integration`. Installing either is therefore an owner action, and a small one: copy the example verbatim to
+`.github/workflows/<name>.yml` in the web editor and commit. Neither file references a secret, installs a project
+dependency, or publishes anything; the Android file needs no credential because a debug APK is signed with the
+runner's throwaway debug key, and `:app:packageRelease` refuses to run without the four `CRAFTMIND_RELEASE_*`
+variables by design.
+
+A browser E2E job is **not** part of that pipeline: the project has no browser test dependency, and
+`website/e2e/password-recovery.spec.mjs` has never been executed (blocker B3). Likewise no `:app` Gradle job — the
+Android module has never been compiled in any environment (B1, B2), so promoting it into a required gate would
+produce a badge rather than evidence. Those are owner-environment steps in `RELEASE_CHECKLIST.md`, not passes.
 
 **Checkout verification status (Phase 14):** the Gradle build still cannot run in this sandbox — there is no Android SDK/AGP, no Gradle distribution, and no egress to Maven Central/Google, so `./gradlew test`, `lint`, `assembleDebug`, `connectedDebugAndroidTest`, and the Fabric mod build were **not** executed. Verification was performed outside Gradle with locally reconstructed tooling (a JDK 17 runtime, JDK 8 `javac` from a packaged `tools.jar` plus a synthetic Java-8 platform jar derived from the JDK 17 runtime image, Kotlin `2.1.10` with the matching serialization compiler plugin, kotlinx-serialization `1.8.0` compiled from source, and gson/junit/hamcrest compiled from source); all of that tooling lives outside the repository and nothing generated by it is committed. Every category is reported separately, and `PASS` / `NOT RUN` / `NOT AVAILABLE` / `NOT PERFORMED` are never merged:
 

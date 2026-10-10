@@ -13,6 +13,8 @@ import { initHireDirectory, initHireJob, initHireManage, initHireOrders, initHir
 import { initMarketplace, initMarketplaceDirectory } from "./marketplace.js";
 import { initMembership } from "./membership.js";
 import { initBuyerOnboarding, initOnboardingHub, initSellerOnboarding, initSignIn } from "./onboarding.js";
+import { initRecovery } from "./recovery.js";
+import { initDownload } from "./download.js";
 import { ensureLiveRegion } from "./state.js";
 
 /** Progressive enhancement marker: CSS may style `[data-js="on"]` refinements without breaking the no-JS reading. */
@@ -50,6 +52,8 @@ function initContextLine() {
 
 function initCurrentPage() {
   const page = document.body.dataset.page ?? "";
+  // Final phase: the download page checks the release channel before it will enable anything.
+  if (page === "download") initDownload();
   if (page.startsWith("marketplace")) initMarketplace();
   if (page === "creators" || page === "creator-profile") initMarketplaceDirectory();
   if (page === "membership") initMembership();
@@ -65,6 +69,8 @@ function initCurrentPage() {
   if (page.startsWith("account")) initAccount();
   // Phase 24: the dedicated account-experience pages — sign-in/registration, role choice, and the two forms.
   if (page === "signin") initSignIn();
+  // Phase 38: the web password-recovery screen — request a one-time code and consume it, signed out.
+  if (page === "recovery") initRecovery();
   if (page === "onboarding") initOnboardingHub();
   if (page === "onboarding-buyer") initBuyerOnboarding();
   if (page === "onboarding-seller") initSellerOnboarding();

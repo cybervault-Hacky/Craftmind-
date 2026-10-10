@@ -59,7 +59,7 @@ ROUTES = (
     ("index.html", "index", "index.html", ()),
     ("how-it-works.html", "how-it-works", "how-it-works.html", ()),
     ("features.html", "features", "features.html", ()),
-    ("download.html", "download", "download.html", ()),
+    ("download.html", "download", "download.html", ("data-release-channel", "data-release-cta", "data-release-status-text", "data-release-region")),
     ("about.html", "about", "about.html", ()),
     ("faq.html", "faq", "faq.html", ()),
     ("privacy.html", "privacy", None, ()),
@@ -67,6 +67,9 @@ ROUTES = (
     # Phase 24: the dedicated account experience — sign-in/registration, role choice, and the two onboarding forms.
     # None: these pages sit outside the public navigation and the account section shell, and render no side navigation.
     ("signin.html", "signin", None, ("data-signin-region", "data-register-region")),
+    # Phase 38: the web password-recovery screen. Signed-out by nature, so it sits outside the account shell (None)
+    # and renders the two panels its controller wires: the code entry form and the request form.
+    ("recovery.html", "recovery", None, ("data-recovery-region", "data-recovery-request-region")),
     ("onboarding/index.html", "onboarding", None, ("data-onboarding-state", "data-role-choice")),
     ("onboarding/buyer.html", "onboarding-buyer", None, ("data-buyer-status", "data-buyer-form")),
     ("onboarding/seller.html", "onboarding-seller", None, ("data-seller-status", "data-seller-form")),
@@ -145,7 +148,16 @@ HONESTY_REQUIREMENTS = (
     ("assets/state.js", "Not available yet"),
     ("assets/components.js", "No ratings yet"),
     ("assets/account.js", "No account service is configured for this site"),
+    # Phase 38: the recovery screen keeps the two honesty rules that matter to a locked-out visitor — it never claims a
+    # message was sent, and it never implies the code arrived by link.
+    ("assets/recovery.js", "Nothing was queued or sent"),
+    ("assets/recovery.js", "no CraftMind page reads a recovery code from a URL parameter"),
     ("assets/adapters.js", "unavailable"),
+    # The download page keeps stating what it could not confirm, and the release adapter keeps the exact
+    # policy that makes that answer trustworthy rather than decorative.
+    ("assets/download.js", "No release has been verified just now"),
+    ("assets/adapters.js", "RELEASE_API_HOST"),
+    ("assets/adapters.js", "/releases/download/"),
     ("assets/preview-catalog.js", "Sample build"),
     # Phase 24: the onboarding controller keeps stating what does not exist, even in success paths.
     ("assets/onboarding.js", "No account service is configured for this site"),
@@ -482,6 +494,22 @@ def check_front_end_sources() -> None:
         if re.search(rf"\b{secret}", account):
             fail(f"website/assets/account.js must never render internal identifiers or credentials ({secret})")
 
+    # Phase 38: a recovery code is a credential, and the only safe handoff is one the visitor performs. A code that
+    # travelled in a URL would land in browser history, in the referrer of the next page, and in every access log
+    # between there and here, so the recovery controller must not parse the address bar at all — and it must not
+    # write a value out to the console either, where a devtools log would keep the plaintext longer than the request.
+    recovery = read("assets/recovery.js")
+    for pattern, label in (
+        (re.compile(r"URLSearchParams|location\.search|location\.hash|location\.href\s*="), "reading or rewriting the page URL"),
+        (re.compile(r"\bconsole\.\w+\s*\("), "a console write"),
+    ):
+        found = pattern.search(recovery)
+        if found:
+            fail(f"website/assets/recovery.js must not use {label} (found {found.group(0)!r}); the code and the new "
+                 "password stay inside one POST body")
+    if "initRecovery(" not in read("assets/site.js"):
+        fail("website/assets/site.js must route the recovery page to its controller")
+
     # The developer control plane is authorised by the backend, never by a public link.
     if not (ROOT / "backend" / "public" / "developer.html").is_file():
         fail("backend/public/developer.html is missing: the protected developer area must be preserved")
@@ -515,6 +543,41 @@ def check_pages() -> dict[str, tuple[str, PageInspector]]:
                 fail(f"website/{relative}: found {description}")
         inspected[relative] = (html, parser)
     return inspected
+
+
+def check_release_channel() -> None:
+    """The live download check must stay unable to enable anything it has not verified.
+
+    `website/download.html` answers "is there an APK?" by asking this repository's public release metadata, so three
+    properties are load-bearing and each is checked here rather than trusted: the page names the repository it asks
+    about (so it cannot silently point at a fork), the controller performs no request of its own (so it cannot be
+    redirected by anything but the adapter), and the adapter pins both the origin and the asset URL it will link to
+    (so a response cannot make the page link somewhere else). The static disabled control stays governed by
+    `check_shared_copy`, which requires exactly one, on the download page, disabled.
+    """
+    page = read("download.html")
+    named = re.search(r'data-release-repository="([^"]*)"', page)
+    if not named or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}", named.group(1)):
+        fail("website/download.html must name the source repository the release check queries, as owner/repository")
+
+    controller = read("assets/download.js")
+    if re.search(r"\bfetch\s*\(|XMLHttpRequest", controller):
+        fail("website/assets/download.js must not perform a network request; only the adapter may")
+    if "button.disabled = true" not in controller:
+        fail("website/assets/download.js must keep re-disabling the control on every non-verified answer")
+    if 'region.hidden = true' not in controller:
+        fail("website/assets/download.js must hide the live release region when nothing was verified")
+
+    adapters = read("assets/adapters.js")
+    for marker, why in (
+        ('url.hostname !== GITHUB_HOST', "the release adapter must pin the host it links to"),
+        ('url.protocol !== "https:"', "the release adapter must accept HTTPS asset URLs only"),
+        ("RELEASE_REPOSITORY_PATTERN", "the release adapter must reject a malformed repository name before requesting"),
+    ):
+        if marker not in adapters:
+            fail(f"website/assets/adapters.js: {why} (missing {marker!r})")
+    if re.search(r"fetch\s*\([^)]*browser_download_url", adapters):
+        fail("website/assets/adapters.js must link to a release asset, never fetch it")
 
 
 def check_css() -> None:
@@ -604,6 +667,7 @@ def main() -> None:
     inspected = check_pages()
     check_shared_copy(inspected)
     check_front_end_sources()
+    check_release_channel()
     check_css()
 
     print(

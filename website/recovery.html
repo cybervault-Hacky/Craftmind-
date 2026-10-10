@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101713">
+  <meta name="description" content="Recover access to a CraftMind account in the browser: request a one-time recovery code, enter it with a new password, and the account service revokes every existing session.">
+  <title>Password recovery — CraftMind</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="assets/site.js"></script>
+</head>
+<body data-page="recovery">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="CraftMind home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="42" height="42" rx="13" fill="#1d2a22" />
+          <path d="M24 9 38 17 24 25 10 17 24 9Z" fill="#b8e4c5" />
+          <path d="M10 20 21.5 26.5v13L10 33V20Z" fill="#55a77a" />
+          <path d="M26.5 26.5 38 20v13l-11.5 6.5v-13Z" fill="#e7bb78" />
+        </svg>
+        <span>CRAFTMIND</span>
+      </a>
+      <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="main-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="index.html">Home</a>
+        <a href="marketplace/index.html">Marketplace</a>
+        <a href="membership/index.html">Membership</a>
+        <a href="creators/index.html">Creators</a>
+        <a href="how-it-works.html">How it works</a>
+        <a href="features.html">Features</a>
+        <a href="download.html">Download</a>
+        <a href="about.html">About</a>
+        <a href="faq.html">FAQ</a>
+        <a href="download.html" class="nav-cta">Get the app <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+    <div class="container context-strip">
+      <p class="context-label"><span class="badge badge--muted">Account recovery</span> <span class="context-current">One-time code · every session revoked on success</span></p>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero container" aria-labelledby="page-title">
+      <p class="crumbs"><a href="index.html">Home</a> <span aria-hidden="true">/</span> <a href="signin.html">Sign in</a> <span aria-hidden="true">/</span> <span>Recovery</span></p>
+      <p class="eyebrow">ACCOUNT RECOVERY</p>
+      <h1 id="page-title">Prove the code,<br>then change the password.</h1>
+      <p class="lead">CraftMind recovers an account with a one-time code, the same mechanism the Android app uses. There is no link to click that carries your credentials for you: the message contains a code, you paste it below with a new password, and the account service replaces the password and revokes every session it holds for that account. This page works while you are signed out — that is the point of it.</p>
+    </section>
+
+    <section class="page-section container">
+      <div class="stack-lg">
+        <div class="stack" id="recovery-confirm" data-recovery-region></div>
+        <div class="stack" data-recovery-request-region></div>
+        <div class="panel">
+          <div class="panel-head"><div><h3>How this works, and what it does not do</h3>
+          <p class="small muted">Every statement below describes the account service that exists in this repository, not a plan.</p></div></div>
+          <div class="card-grid two">
+            <article class="card">
+              <span class="card-meta">THE CODE ITSELF</span>
+              <h3>Single use, and it expires</h3>
+              <p>A recovery code works once. It stops working at the expiry time the message states, and a used or expired code cannot be revived — the service refuses it and your password stays exactly as it was. Requesting another code replaces the outstanding ones.</p>
+            </article>
+            <article class="card">
+              <span class="card-meta">NO ACCOUNT ENUMERATION</span>
+              <h3>The answer never confirms an address</h3>
+              <p>The request endpoint answers the same way whether or not an eligible account exists, so this page cannot be used to test an email address. A code is issued only for an active account with a verified email address, and that stays the server's decision.</p>
+            </article>
+            <article class="card">
+              <span class="card-meta">WHAT CHANGES ON SUCCESS</span>
+              <h3>New password, all sessions gone</h3>
+              <p>The service replaces the password hash and revokes every session for the account — including any that were stolen. You sign in again afterwards. Nothing is emailed back to you, and the code is never returned in a response or a log line.</p>
+            </article>
+            <article class="card">
+              <span class="card-meta">HONEST LIMITS</span>
+              <h3>What recovery cannot do here</h3>
+              <p>There is no phone verification, no multi-factor reset, no backup-code vault, and no support agent who can reset a password for you. Mail delivery is best-effort with no durable queue, so a missing message is a real possibility rather than a promise you can hold this site to.</p>
+            </article>
+          </div>
+          <p class="price-note">This page needs JavaScript, because the account service answers JSON and there is no form to post to a server here. It never puts the code or the new password in the address bar, in browser storage, or in a log, and it never reads a recovery code from a URL parameter.</p>
+          <div class="state-actions">
+            <a class="button button-secondary button-small" href="signin.html">Back to sign in</a>
+            <a class="button button-secondary button-small" href="account/security.html">Account security page</a>
+            <a class="button button-secondary button-small" href="faq.html">Account questions in the FAQ</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand footer-brand" href="index.html" aria-label="CraftMind home"><span class="footer-cube" aria-hidden="true">◆</span><span>CRAFTMIND</span></a>
+      <p>AI Minecraft Builder · A review-first tool, not a promise of perfect builds.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="marketplace/index.html">Marketplace</a>
+        <a href="membership/index.html">Membership</a>
+        <a href="creator/index.html">Creator studio</a>
+        <a href="account/index.html">Account</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <a href="download.html">Download</a>
+        <a href="faq.html">FAQ</a>
+        <a href="https://github.com/cybervault-Hacky/Craftmind-">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

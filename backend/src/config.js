@@ -10,11 +10,73 @@ const MINIMUM_PROVIDER_TOKEN_LENGTH = 24;
 const MINIMUM_BOOTSTRAP_SECRET_LENGTH = 43;
 const MINIMUM_DEVELOPER_AI_KEY_LENGTH = 24;
 
+/**
+ * A body cap below this cannot carry the largest legitimate request this API accepts (a marketplace listing or an
+ * order statement), so an operator who sets it that low has misconfigured the service rather than hardened it.
+ */
+const MINIMUM_BODY_BYTES = 1024;
+
+/** The lowest runtime that provides `node:sqlite`, which the persistence layer is built on. */
+export const MINIMUM_NODE_VERSION = Object.freeze({ major: 22, minor: 5, patch: 0 });
+
 export class ConfigurationError extends Error {
   constructor(message) {
     super(message);
     this.name = "ConfigurationError";
   }
+}
+
+/**
+ * Startup preflight, run before any module that touches `node:sqlite` is imported, so an unsupported runtime produces
+ * one actionable line instead of `ERR_UNKNOWN_BUILTIN_MODULE` from inside the dependency graph.
+ *
+ * @param {{ nodeVersion?: string, sqliteSpecifier?: string }} [options] test seams; production uses the real runtime.
+ */
+export async function assertSupportedRuntime(options = {}) {
+  const declared = options.nodeVersion ?? process.versions.node;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(declared).trim());
+  if (!match) {
+    throw new ConfigurationError(`the Node.js version in use (${declared}) is not a version this service can validate`);
+  }
+  const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const minimum = MINIMUM_NODE_VERSION;
+  const older = major < minimum.major
+    || (major === minimum.major && (minor < minimum.minor || (minor === minimum.minor && patch < minimum.patch)));
+  if (older) {
+    throw new ConfigurationError(
+      `Node.js ${minimum.major}.${minimum.minor}.${minimum.patch} or newer is required for the built-in SQLite driver (this runtime is ${declared})`,
+    );
+  }
+  try {
+    await import(options.sqliteSpecifier ?? "node:sqlite");
+  } catch {
+    throw new ConfigurationError(
+      `Node.js ${declared} is new enough but does not expose node:sqlite; on 22.x start it with --experimental-sqlite`,
+    );
+  }
+}
+
+/**
+ * `HOST` is bound straight into `server.listen`, so a typo must fail here rather than as an opaque
+ * `ERR_INVALID_ARG_VALUE` from inside the listen callback — after the database has already been opened and migrated.
+ * Bracketed IPv6 is accepted and unwrapped because `listen()` wants the bare address.
+ */
+function listenHost(environment) {
+  const raw = (environment.HOST ?? "127.0.0.1").trim();
+  if (!raw) {
+    throw new ConfigurationError("HOST must be an IPv4 address, an IPv6 address, or a hostname (for example 127.0.0.1, ::1, or 0.0.0.0)");
+  }
+  const candidate = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  const ipv4 = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(candidate);
+  // Hex-and-colons only, or that form with an IPv4 tail: `0.0.0.0:8787` is deliberately *not* accepted, because it is
+  // a host:port typo and `listen()` would fail on it later with a far less useful message.
+  const ipv6 = (candidate.includes(":") && /^[0-9A-Fa-f:]+$/.test(candidate) && /^[0-9A-Fa-f:]*:[0-9A-Fa-f:]*$/.test(candidate))
+    || /^(?:[0-9A-Fa-f]{1,4}:){1,7}(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/.test(candidate);
+  const hostname = /^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*\.?$/.test(candidate);
+  if ((!ipv4 && !ipv6 && !hostname) || candidate.length > 253) {
+    throw new ConfigurationError("HOST must be an IPv4 address, an IPv6 address, or a hostname; it must not include a port or a URL");
+  }
+  return candidate;
 }
 
 function positiveInteger(environment, name, fallback, maximum = Number.MAX_SAFE_INTEGER, allowZero = false) {
@@ -107,17 +169,26 @@ function securityConfiguration(environment) {
       malformedRequests: detectionThresholds(environment, "MALFORMED_REQUESTS", { windowMs: 300_000, medium: 5, high: 10, critical: 20 }),
       requestBurst: detectionThresholds(environment, "REQUEST_BURST", { windowMs: 60_000, medium: 120, high: 240, critical: 400 }),
     }),
-    response: Object.freeze({
+    response: (() => {
       // Automated protections are temporary by construction. No automated action is allowed to become permanent.
-      defaultProtectionSeconds: positiveInteger(environment, "SECURITY_DEFAULT_PROTECTION_SECONDS", 900, 86_400),
-      maximumProtectionSeconds: positiveInteger(environment, "SECURITY_MAX_PROTECTION_SECONDS", 3_600, 86_400),
-      throttleMaximum: positiveInteger(environment, "SECURITY_THROTTLE_MAX", 5, 600),
-      throttleWindowMs: positiveInteger(environment, "SECURITY_THROTTLE_WINDOW_MS", 300_000, 3_600_000),
-      burstCooldownMs: positiveInteger(environment, "SECURITY_BURST_COOLDOWN_MS", 60_000, 3_600_000),
-      notificationCooldownMs: positiveInteger(environment, "SECURITY_NOTIFICATION_COOLDOWN_MS", 300_000, 86_400_000),
-      // A hard rejection is only ever issued against an abusive request source, never against an account or session.
-      deniableScopes: Object.freeze(["SOURCE"]),
-    }),
+      const defaultProtectionSeconds = positiveInteger(environment, "SECURITY_DEFAULT_PROTECTION_SECONDS", 900, 86_400);
+      const maximumProtectionSeconds = positiveInteger(environment, "SECURITY_MAX_PROTECTION_SECONDS", 3_600, 86_400);
+      if (defaultProtectionSeconds > maximumProtectionSeconds) {
+        // A default longer than the ceiling would either clamp silently or hand a route a duration its own policy
+        // forbids; both are worse than refusing to start.
+        throw new ConfigurationError("SECURITY_DEFAULT_PROTECTION_SECONDS cannot exceed SECURITY_MAX_PROTECTION_SECONDS");
+      }
+      return Object.freeze({
+        defaultProtectionSeconds,
+        maximumProtectionSeconds,
+        throttleMaximum: positiveInteger(environment, "SECURITY_THROTTLE_MAX", 5, 600),
+        throttleWindowMs: positiveInteger(environment, "SECURITY_THROTTLE_WINDOW_MS", 300_000, 3_600_000),
+        burstCooldownMs: positiveInteger(environment, "SECURITY_BURST_COOLDOWN_MS", 60_000, 3_600_000),
+        notificationCooldownMs: positiveInteger(environment, "SECURITY_NOTIFICATION_COOLDOWN_MS", 300_000, 86_400_000),
+        // A hard rejection is only ever issued against an abusive request source, never against an account or session.
+        deniableScopes: Object.freeze(["SOURCE"]),
+      });
+    })(),
     retention: Object.freeze({
       eventsSeconds: positiveInteger(environment, "SECURITY_EVENT_RETENTION_SECONDS", 2_592_000, 31_536_000),
       notificationsSeconds: positiveInteger(environment, "SECURITY_NOTIFICATION_RETENTION_SECONDS", 7_776_000, 31_536_000),
@@ -227,10 +298,12 @@ export function loadConfiguration(environment = process.env, options = {}) {
     throw new ConfigurationError("production requires TRUST_PROXY_TLS=true behind a trusted HTTPS terminator");
   }
 
-  const corsAllowedOrigins = originList(environment);
+  // Checked before parsing, so an operator who writes `*` in production is told that wildcards are the problem,
+  // rather than getting the generic "must be an absolute HTTPS origin" from the parser that runs afterwards.
   if (production && (environment.CORS_ALLOWED_ORIGINS ?? "").includes("*")) {
     throw new ConfigurationError("production CORS does not allow wildcard origins");
   }
+  const corsAllowedOrigins = originList(environment);
 
   const developerBootstrapEmailRaw = (environment.CRAFTMIND_DEV_BOOTSTRAP_EMAIL ?? "").trim();
   const developerBootstrapSecret = (environment.CRAFTMIND_DEV_BOOTSTRAP_SECRET ?? "").trim();
@@ -261,18 +334,62 @@ export function loadConfiguration(environment = process.env, options = {}) {
     throw new ConfigurationError("CRAFTMIND_DEVELOPER_AI_API_KEY is outside its supported length range");
   }
 
+  /*
+   * Runtime bounds. Every value here is one an operator can set by hand, so each is checked at startup rather than
+   * discovered later by `listen()` after the database has already been opened, or by a session token that outlives
+   * the refresh window meant to rotate it.
+   */
+  const host = listenHost(environment);
+  const port = positiveInteger(environment, "PORT", 8787, 65535);
+  const accessTokenTtlSeconds = positiveInteger(environment, "ACCESS_TOKEN_TTL_SECONDS", 3600, 31_536_000);
+  const refreshTokenTtlSeconds = positiveInteger(environment, "REFRESH_TOKEN_TTL_SECONDS", 2_592_000, 31_536_000);
+  if (accessTokenTtlSeconds >= refreshTokenTtlSeconds) {
+    throw new ConfigurationError("ACCESS_TOKEN_TTL_SECONDS must be shorter than REFRESH_TOKEN_TTL_SECONDS");
+  }
+  const developerAccessTokenTtlSeconds = positiveInteger(environment, "DEVELOPER_ACCESS_TOKEN_TTL_SECONDS", 900, 3600);
+  const developerRefreshTokenTtlSeconds = positiveInteger(environment, "DEVELOPER_REFRESH_TOKEN_TTL_SECONDS", 604_800, 2_592_000);
+  if (developerAccessTokenTtlSeconds >= developerRefreshTokenTtlSeconds) {
+    throw new ConfigurationError("DEVELOPER_ACCESS_TOKEN_TTL_SECONDS must be shorter than DEVELOPER_REFRESH_TOKEN_TTL_SECONDS");
+  }
+  const maxBodyBytes = positiveInteger(environment, "MAX_BODY_BYTES", 16_384, 1_048_576);
+  if (maxBodyBytes < MINIMUM_BODY_BYTES) {
+    throw new ConfigurationError(`MAX_BODY_BYTES must be at least ${MINIMUM_BODY_BYTES} bytes; below that the largest legitimate request cannot be served`);
+  }
+  const server = Object.freeze({
+    requestTimeoutMs: positiveInteger(environment, "REQUEST_TIMEOUT_MS", 30_000, 600_000),
+    headersTimeoutMs: positiveInteger(environment, "HEADERS_TIMEOUT_MS", 10_000, 120_000),
+    // Bounded by design: an idle keep-alive gap is closed quickly, but never so slowly that a page load with several
+    // sequential calls has to re-handshake between them.
+    keepAliveTimeoutMs: positiveInteger(environment, "KEEP_ALIVE_TIMEOUT_MS", 5_000, 300_000),
+    shutdownGraceMs: positiveInteger(environment, "SHUTDOWN_GRACE_MS", 10_000, 300_000),
+  });
+  if (server.headersTimeoutMs > server.requestTimeoutMs) {
+    throw new ConfigurationError("HEADERS_TIMEOUT_MS cannot exceed REQUEST_TIMEOUT_MS");
+  }
+  if (server.keepAliveTimeoutMs >= server.requestTimeoutMs) {
+    // Node runs both timers against the same socket, so a keep-alive gap that outlasts the request timer makes a
+    // healthy idle connection look like a slow client and get dropped.
+    throw new ConfigurationError("KEEP_ALIVE_TIMEOUT_MS must be shorter than REQUEST_TIMEOUT_MS");
+  }
+  if (server.headersTimeoutMs < server.keepAliveTimeoutMs) {
+    // Node can close an idle keep-alive socket on the headers timer, so the documented pairing is a head timeout at
+    // least as long as the idle timeout. Split them the other way and healthy connections start dropping.
+    throw new ConfigurationError("HEADERS_TIMEOUT_MS must not be shorter than KEEP_ALIVE_TIMEOUT_MS");
+  }
+
   const configuration = {
     databaseUrl,
     authSecret,
     nodeEnvironment,
     production,
-    host: (environment.HOST ?? "127.0.0.1").trim(),
-    port: positiveInteger(environment, "PORT", 8787, 65535),
-    accessTokenTtlSeconds: positiveInteger(environment, "ACCESS_TOKEN_TTL_SECONDS", 3600, 31_536_000),
-    refreshTokenTtlSeconds: positiveInteger(environment, "REFRESH_TOKEN_TTL_SECONDS", 2_592_000, 31_536_000),
+    host,
+    port,
+    accessTokenTtlSeconds,
+    refreshTokenTtlSeconds,
     verificationTokenTtlSeconds: positiveInteger(environment, "EMAIL_VERIFICATION_TTL_SECONDS", 86_400, 604_800),
     passwordResetTokenTtlSeconds: positiveInteger(environment, "PASSWORD_RESET_TTL_SECONDS", 3600, 86_400),
-    maxBodyBytes: positiveInteger(environment, "MAX_BODY_BYTES", 16_384, 1_048_576),
+    maxBodyBytes,
+    server,
     emailProvider,
     emailWebhookUrl,
     emailWebhookToken: emailProvider === "webhook" ? emailWebhookToken : null,
@@ -280,8 +397,8 @@ export function loadConfiguration(environment = process.env, options = {}) {
     emailDeliveryMode: emailProvider === "memory" ? "DEVELOPMENT_SINK" : "PROVIDER_CONFIGURED",
     developerBootstrapEmail: developerBootstrapEmailRaw ? developerBootstrapEmailRaw.toLowerCase() : null,
     developerBootstrapSecret: developerBootstrapSecret || null,
-    developerAccessTokenTtlSeconds: positiveInteger(environment, "DEVELOPER_ACCESS_TOKEN_TTL_SECONDS", 900, 3600),
-    developerRefreshTokenTtlSeconds: positiveInteger(environment, "DEVELOPER_REFRESH_TOKEN_TTL_SECONDS", 604_800, 2_592_000),
+    developerAccessTokenTtlSeconds,
+    developerRefreshTokenTtlSeconds,
     developerConfirmationTtlSeconds: positiveInteger(environment, "DEVELOPER_CONFIRMATION_TTL_SECONDS", 300, 900),
     developerAi: Object.freeze({
       provider: developerAiProvider || null,
@@ -332,6 +449,10 @@ export function loadConfiguration(environment = process.env, options = {}) {
       orderWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_ORDER_WRITE_MAX", 60, 10_000), windowMs: positiveInteger(environment, "RATE_ORDER_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       deliveryWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_DELIVERY_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DELIVERY_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
       revisionWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_REVISION_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_REVISION_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      // Phase 30: reports, blocks, and disputes are bounded state changes with their own budgets so a burst in one
+      // trust category can never spend another's. Reads reuse the ordinary authenticated-read budget.
+      trustWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_TRUST_WRITE_MAX", 20, 10_000), windowMs: positiveInteger(environment, "RATE_TRUST_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
+      disputeWrite: Object.freeze({ maximum: positiveInteger(environment, "RATE_DISPUTE_WRITE_MAX", 30, 10_000), windowMs: positiveInteger(environment, "RATE_DISPUTE_WRITE_WINDOW_MS", 900_000, 86_400_000) }),
     }),
   };
   return Object.freeze(configuration);

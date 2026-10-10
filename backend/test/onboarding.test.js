@@ -838,8 +838,8 @@ describe("Phase 24 audit and resilience", () => {
     ).run(), /CHECK constraint failed/);
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 10);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
+    assert.equal(SCHEMA_VERSION, 12);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 12);
     // Existing data preserved, with values.
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_p23'").get().display_name, "Phase23");
     const membership = database.prepare("SELECT * FROM membership_accounts WHERE user_id = 'usr_p23'").get();
@@ -867,7 +867,7 @@ describe("Phase 24 audit and resilience", () => {
     assert.throws(() => database.prepare("DELETE FROM admin_audit_log WHERE audit_id = 'aud_p23'").run(), /append-only/);
     // No destructive path: re-running is a no-op.
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 12);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM admin_audit_log").get().count, 2);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM creator_profiles").get().count, 1);
     database.close();

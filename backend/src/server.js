@@ -4,6 +4,7 @@
  */
 
 import { createServer } from "node:http";
+import { livenessPayload, readiness } from "./health.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -90,6 +91,35 @@ import {
   startMilestoneForSession,
   submitDeliveryForSession,
 } from "./order-api.js";
+import {
+  addBlockForSession,
+  createReportForSession,
+  myBlocksForSession,
+  myReportsForSession,
+  removeBlockForSession,
+  reportsAboutMeForSession,
+  trustSummaryForSession,
+  withdrawReportForSession,
+} from "./marketplace-trust-api.js";
+import {
+  addDisputeStatementForSession,
+  disputeDetailForSession,
+  listMyDisputesForSession,
+  listOrderDisputesForSession,
+  openDisputeForSession,
+  setDisputePositionForSession,
+  withdrawDisputeForSession,
+} from "./order-dispute-api.js";
+import {
+  creatorAnalyticsForSession,
+  overviewAnalyticsForSession,
+} from "./marketplace-analytics-api.js";
+import {
+  claimReferralForSession,
+  confirmReferralForSession,
+  myReferralSummaryForSession,
+  referralCodeForSession,
+} from "./referrals-api.js";
 import { isWellFormedEmail } from "./ids.js";
 import { InMemoryRateLimiter } from "./rate-limiter.js";
 import { SecurityEngine } from "./security-engine.js";
@@ -133,7 +163,17 @@ const SECURITY_HEADERS = Object.freeze({
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 });
 
+function isSendable(response) {
+  // A client that hung up mid-request is normal traffic, not a failure to report: writing to a finished or destroyed
+  // response only raises ERR_HTTP_HEADERS_SENT from inside the handler that was already trying to answer.
+  return Boolean(response) && response.writableEnded !== true && response.destroyed !== true && response.headersSent !== true;
+}
+
 function sendJson(response, status, payload, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   const body = Buffer.from(JSON.stringify(payload), "utf8");
   response.writeHead(status, {
     ...SECURITY_HEADERS,
@@ -145,11 +185,19 @@ function sendJson(response, status, payload, requestId, extraHeaders = {}) {
 }
 
 function sendNoContent(response, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   response.writeHead(204, { ...SECURITY_HEADERS, "X-Request-Id": requestId, ...extraHeaders });
   response.end();
 }
 
 function sendDeveloperAsset(response, status, body, contentType, requestId, extraHeaders = {}) {
+  if (!isSendable(response)) {
+    response.destroy();
+    return;
+  }
   const bytes = Buffer.from(body, "utf8");
   response.writeHead(status, {
     ...SECURITY_HEADERS,
@@ -273,6 +321,24 @@ function safeQuery(request) {
   }
 }
 
+/**
+ * Distinguishes "the client stopped caring" from "the service failed". A request that is aborted, a socket reset in
+ * flight, and the premature close that a `for await` over the body reports are all the same event, and treating it as
+ * an internal failure would both page an operator for nothing and spend a caller's malformed-request budget on a
+ * browser tab that was closed.
+ */
+function isClientAbort(error, request, response) {
+  // A typed refusal outranks the socket's state. Reading the body with `for await` destroys the request stream when
+  // the loop exits early, so an oversized body arrives here with `request.destroyed === true` — and that is a 413 the
+  // client is entitled to, not a disconnect. Only an error with no answer of its own counts as an abort.
+  if (error instanceof AccountApiError) return false;
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED", "ABORTED"].includes(code)) return true;
+  if (code === "ERR_STREAM_PREMATURE_CLOSE") return request?.aborted === true || request?.complete === false;
+  if (response?.destroyed === true || request?.aborted === true) return true;
+  return /premature close/i.test(String(error?.message ?? "")) && request?.aborted === true;
+}
+
 async function enforceNonEnumeratingResponseFloor(startedAt) {
   const remaining = startedAt + NON_ENUMERATING_RESPONSE_FLOOR_MS - Date.now();
   if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
@@ -325,6 +391,18 @@ function routeSecurityCategory(pathKey) {
   // Phase 27 order routes: reads and mutations under /orders/… are session-scoped (ownership is derived from the
   // token, never the body); the static /buyer/orders and /creator/orders paths join their hire siblings.
   if (pathKey.startsWith("/orders/") || pathKey === "/buyer/orders" || pathKey.startsWith("/creator/orders")) return "SESSION";
+  // Phase 30 trust routes: reports, the block list, and the trust summary are session-scoped reads and writes over
+  // the caller's own relationships, so they join the SESSION category. The public /marketplace/listings and
+  // /marketplace/jobs reads are unaffected and stay ordinary request-category traffic. (Order disputes already live
+  // under /orders/, which the line above routes here.)
+  if (pathKey.startsWith("/marketplace/reports") || pathKey.startsWith("/marketplace/blocks")
+    || pathKey.startsWith("/marketplace/disputes") || pathKey === "/marketplace/trust") return "SESSION";
+  // Phase 31 analytics reads are session-scoped over the caller's own relationships (and a global, non-identifying
+  // overview that still requires a session), so they share the SESSION category with the trust routes above.
+  if (pathKey.startsWith("/marketplace/analytics")) return "SESSION";
+  // Phase 32 referral routes are self-only session writes and reads. They are NOT registration routes: a referral
+  // claim can never create or reach an account, so it stays out of the credential-attack categories entirely.
+  if (pathKey.startsWith("/marketing/referrals")) return "SESSION";
   return "REQUEST";
 }
 
@@ -845,6 +923,112 @@ export function createAccountService({ database, configuration, logger = console
       const searchParams = new URL(request.url ?? "/", "http://orders.local").searchParams;
       return { status: 200, payload: creatorOrdersForSession(database, configuration, token, searchParams) };
     }],
+    // Phase 30 marketplace trust: reports and the avoid/block list. Every route identifies the caller from the bearer
+    // session alone and derives every relationship server-side; none accepts a reporter, a target, a blocked account
+    // (on create), a subject status, or a money field. Writes spend the dedicated trust budget; reads the ordinary one.
+    ["POST /marketplace/reports", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 201, payload: createReportForSession(database, configuration, token, body) };
+    }],
+    ["GET /marketplace/reports", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: myReportsForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/reports/about-me", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: reportsAboutMeForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/trust", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: trustSummaryForSession(database, configuration, token) };
+    }],
+    ["POST /marketplace/blocks", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: addBlockForSession(database, configuration, token, body) };
+    }],
+    ["POST /marketplace/blocks/remove", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: removeBlockForSession(database, configuration, token, body) };
+    }],
+    ["GET /marketplace/blocks", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "trust-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: myBlocksForSession(database, configuration, token) };
+    }],
+    ["GET /marketplace/disputes", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://trust.local").searchParams;
+      return { status: 200, payload: listMyDisputesForSession(database, configuration, token, searchParams) };
+    }],
+    // Phase 31 analytics. Both are session-scoped aggregate READS (no body, no client-supplied id): the identity
+    // that scopes the personal view is the bearer token, and the overview requires a live session purely so analytics
+    // are not anonymous. They reuse the creator-read budget under a dedicated `analytics-read` bucket, so a burst
+    // here cannot spend the trust or order buckets (and vice versa). No write, no audit, no money.
+    ["GET /marketplace/analytics/overview", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "analytics-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://analytics.local").searchParams;
+      return { status: 200, payload: overviewAnalyticsForSession(database, configuration, token, searchParams) };
+    }],
+    ["GET /marketplace/analytics/creator", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "analytics-read", request, "", configuration.rateLimit.creatorProfileRead);
+      const searchParams = new URL(request.url ?? "/", "http://analytics.local").searchParams;
+      return { status: 200, payload: creatorAnalyticsForSession(database, configuration, token, searchParams) };
+    }],
+    // Phase 32 referrals and campaign attribution. All four are session-scoped and self-only: identity is the bearer
+    // token, no route takes an account id, and there is deliberately no administrative or listing surface here. Writes
+    // borrow the tight trust-write budget under their own `referral-write` bucket, so claim attempts are bounded per
+    // origin without adding a new knob to the environment, and a referral burst cannot spend the trust or order budget.
+    ["POST /marketing/referrals/code", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: referralCodeForSession(database, configuration, token) };
+    }],
+    ["POST /marketing/referrals/claim", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      const body = await readJsonBody(request, configuration.maxBodyBytes);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      const payload = claimReferralForSession(database, configuration, token, body);
+      // 201 the first time an account is attributed; 200 when the same code is re-submitted, which changes nothing.
+      return { status: payload.idempotent ? 200 : 201, payload };
+    }],
+    ["POST /marketing/referrals/verify", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-write", request, "", configuration.rateLimit.trustWrite);
+      return { status: 200, payload: confirmReferralForSession(database, configuration, token) };
+    }],
+    ["GET /marketing/referrals/me", async (request) => {
+      const token = bearerToken(request);
+      if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+      consumeLimit(limits, "referral-read", request, "", configuration.rateLimit.creatorProfileRead);
+      return { status: 200, payload: myReferralSummaryForSession(database, configuration, token) };
+    }],
     ["GET /developer", async () => ({ status: 200, asset: { body: DEVELOPER_DASHBOARD, contentType: "text/html; charset=utf-8" } })],
     ["GET /developer/developer.js", async () => ({ status: 200, asset: { body: DEVELOPER_SCRIPT, contentType: "text/javascript; charset=utf-8" } })],
     ["GET /developer/developer.css", async () => ({ status: 200, asset: { body: DEVELOPER_STYLES, contentType: "text/css; charset=utf-8" } })],
@@ -967,7 +1151,15 @@ export function createAccountService({ database, configuration, logger = console
         }),
       };
     }],
-    ["GET /health", async () => ({ status: 200, payload: { status: "ok", service: "craftmind-auth", schemaVersion: SCHEMA_VERSION } })],
+    // Liveness answers "is this process serving" and touches nothing; readiness answers "may it be given traffic"
+    // and checks the database handle plus the migration watermark. Both are deliberately unauthenticated, and the
+    // unavailable body stays a category rather than an error message: a probe consumer must never need to read a
+    // failure detail to do its job, and a caller must never receive one.
+    ["GET /health", async () => {
+      const state = readiness(database);
+      return { status: state.httpStatus, payload: state.payload };
+    }],
+    ["GET /live", async () => ({ status: 200, payload: livenessPayload() })],
   ]);
 
   /**
@@ -1273,6 +1465,89 @@ export function createAccountService({ database, configuration, logger = console
         return { status: 200, payload: approveMilestoneForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(milestoneId), body) };
       },
     },
+    // Phase 30 trust and dispute routes. Report and dispute ids are validated inside the handlers (shape + a
+    // relationship the caller actually holds); the router only ever sees the route pattern in the request log, never a
+    // probeable id, and every actor is the session account. No path here reads or writes money.
+    {
+      method: "POST",
+      name: "/marketplace/reports/:id/withdraw",
+      pattern: /^\/marketplace\/reports\/([^/]{1,64})\/withdraw$/,
+      handler: (request, _context, reportId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "trust-write", request, "", configuration.rateLimit.trustWrite);
+        return { status: 200, payload: withdrawReportForSession(database, configuration, token, decodeURIComponent(reportId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes$/,
+      handler: async (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 201, payload: openDisputeForSession(database, configuration, token, decodeURIComponent(orderId), body) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/orders/:id/disputes",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes$/,
+      handler: (request, _context, orderId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: listOrderDisputesForSession(database, configuration, token, decodeURIComponent(orderId)) };
+      },
+    },
+    {
+      method: "GET",
+      name: "/orders/:id/disputes/:did",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})$/,
+      handler: (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-read", request, "", configuration.rateLimit.creatorProfileRead);
+        return { status: 200, payload: disputeDetailForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId)) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/statements",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/statements$/,
+      handler: async (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 201, payload: addDisputeStatementForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/position",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/position$/,
+      handler: async (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        const body = await readJsonBody(request, configuration.maxBodyBytes);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 200, payload: setDisputePositionForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId), body) };
+      },
+    },
+    {
+      method: "POST",
+      name: "/orders/:id/disputes/:did/withdraw",
+      pattern: /^\/orders\/([^/]{1,64})\/disputes\/([^/]{1,64})\/withdraw$/,
+      handler: (request, _context, orderId, disputeId) => {
+        const token = bearerToken(request);
+        if (token === undefined) throw new AccountApiError(ErrorCode.AUTHENTICATION_REQUIRED);
+        consumeLimit(limits, "dispute-write", request, "", configuration.rateLimit.disputeWrite);
+        return { status: 200, payload: withdrawDisputeForSession(database, configuration, token, decodeURIComponent(orderId), decodeURIComponent(disputeId)) };
+      },
+    },
   ];
   /**
    * Method-aware matching, and deliberately so: a pattern match without a method match must not run a handler at all.
@@ -1358,8 +1633,11 @@ export function createAccountService({ database, configuration, logger = console
       if (asset) sendDeveloperAsset(response, status, asset.body, asset.contentType, requestId, corsHeaders);
       else sendJson(response, status, payload, requestId, corsHeaders);
     } catch (error) {
+      const aborted = isClientAbort(error, request, response);
       const typed = error instanceof AccountApiError ? error : new AccountApiError(ErrorCode.UNKNOWN_ERROR);
-      status = typed.status;
+      // 499 is the conventional "client closed request" code and it exists only in the log: there is no socket left
+      // to answer, and inventing a 500 here would make ordinary browser behaviour look like a server fault.
+      status = aborted ? 499 : typed.status;
       // The single security ingestion point for rejected requests. Account/session references are resolved internally
       // and stored only as opaque identifiers. A route that already recorded a richer signal (it knows the attempted
       // account) marks the error so the same failure is never counted twice.
@@ -1375,6 +1653,11 @@ export function createAccountService({ database, configuration, logger = console
       } catch (signalError) {
         logger.warn?.(JSON.stringify({ event: "security_signal_failed", errorType: signalError?.name ?? "Error" }));
       }
+      if (aborted) {
+        // Nothing to record and nothing to log at error level: the request never became a completed attempt, so it is
+        // not evidence about the client and not an incident.
+        return;
+      }
       if (!(error instanceof AccountApiError)) {
         // The class name is safe; the message may contain a body or provider response and is discarded.
         logger.error?.(JSON.stringify({ event: "account_request_internal_failure", errorType: error?.name ?? "Error", requestId }));
@@ -1382,7 +1665,7 @@ export function createAccountService({ database, configuration, logger = console
       sendError(response, typed, requestId, corsHeaders);
     } finally {
       const logEntry = {
-        event: "account_http_request",
+        event: status === 499 ? "account_http_client_aborted" : "account_http_request",
         method: request.method,
         route: logRoute,
         status,
@@ -1392,6 +1675,22 @@ export function createAccountService({ database, configuration, logger = console
       logger.info?.(JSON.stringify(logEntry));
     }
   });
+
+  /*
+   * Bounded socket lifetimes. Without these, Node's 300-second default request window lets a client hold a connection
+   * open with a dribbling body indefinitely, occupying a request slot for minutes on an endpoint whose legitimate
+   * bodies are kilobytes. The values are configuration, validated at startup, and 0 restores Node's behaviour.
+   */
+  const runtimeBounds = configuration.server ?? {};
+  server.requestTimeout = runtimeBounds.requestTimeoutMs ?? 30_000;
+  server.headersTimeout = runtimeBounds.headersTimeoutMs ?? 10_000;
+  server.keepAliveTimeout = runtimeBounds.keepAliveTimeoutMs ?? 5_000;
+  // `requestTimeout` covers receiving the head; measured on Node 22, a client that sends a head, declares a large
+  // body and then stops is *not* reaped by it once the request has been dispatched to a handler. `server.timeout` is
+  // the socket-inactivity bound that closes exactly that gap, and it is set from the same configured value so there
+  // is one knob. It stays above `keepAliveTimeout` (validated in config) so an idle keep-alive connection is closed
+  // by the idle timer, which is the one meant to decide that, not by an inactivity trip.
+  server.timeout = runtimeBounds.requestTimeoutMs ?? 30_000;
 
   server.once("close", () => clearInterval(cleanupTimer));
   return server;

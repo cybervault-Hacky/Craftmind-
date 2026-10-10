@@ -1,0 +1,116 @@
+# Install as `.github/workflows/ci.yml` from a checkout with workflow-write permission.
+#
+# Why this is still an example, measured in the final phase rather than inherited from an older report: the agent
+# workspace holds a GitHub App token that GitHub will not let touch workflow files at all. `git push` of a commit that
+# creates `.github/workflows/ci.yml` is rejected with "refusing to allow a GitHub App to create or update workflow
+# .github/workflows/ci.yml without workflows permission", and `PUT /repos/…/contents/.github/workflows/…` answers
+# 403 "Resource not accessible by integration". No route exists from here to install it, and routing around a
+# permission guard is not an option, so this stays a paste-and-commit owner action in the web editor.
+#
+# Every step below is a command that was run locally and passed, so the first run is expected to be green. That is an
+# expectation, not a result: this repository has never had a workflow or a workflow run (its Actions API reports
+# `total_count: 0`), so nothing here may be reported as "passing in CI" until someone actually runs it.
+#
+# What this pipeline deliberately does NOT do, and why:
+#   * it installs no dependencies — the backend declares none, so there is nothing to cache and nothing for a supply
+#     chain to slip into;
+#   * it references no `secrets.*` and deploys, provisions, or publishes nothing: this repository operates no hosted
+#     environment, and a workflow that pretended otherwise would be theatre;
+#   * it runs no browser E2E job, because the project has no browser test dependency and adding one is the owner's
+#     decision (blocker B3). `website/e2e/password-recovery.spec.mjs` exists and has never executed; a job for it
+#     belongs to whoever makes that decision, not to a green tick earned here;
+#   * it does not build the Android app. `:app` has never been compiled in any environment (blockers B1, B2), so
+#     promoting an unproven toolchain configuration into a *required* merge gate would trade a red badge for no
+#     information at all. The Gradle build lives in `android-apk-workflow.yml.example` instead: a separately
+#     dispatched pipeline whose job is to produce a verifiable artifact, not to block a pull request. A first
+#     `:app:assembleRelease` stays in `RELEASE_CHECKLIST.md` item 7, because it additionally needs a signing
+#     identity this repository must not hold.
+
+name: Verify CraftMind backend and website
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Node.js ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is 22.5 for `node:sqlite`; 22.x and 24.x are what an operator can actually deploy today.
+        node: ["22", "24"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Confirm the declared runtime floor is enforceable
+        run: node -e "const {MINIMUM_NODE_VERSION}=await import('./backend/src/config.js');const [maj,min]=process.versions.node.split('.').map(Number);if(maj<MINIMUM_NODE_VERSION.major||(maj===MINIMUM_NODE_VERSION.major&&min<MINIMUM_NODE_VERSION.minor)){console.error('runner Node predates the documented floor');process.exit(1)}" --input-type=module
+
+      - name: Syntax-check every backend module and test
+        run: |
+          set -e
+          find backend/src backend/test backend/scripts \( -name '*.js' -o -name '*.mjs' \) | while read -r file; do
+            node --check "$file"
+          done
+
+      - name: Run the backend suite (includes migration, HTTP, and privacy contracts)
+        run: npm test
+        working-directory: backend
+
+  repository-checks:
+    name: Website, release configuration, deployment readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify website structure and links
+        run: python3 scripts/check_website.py
+
+      # Phase 34 added this gate and Phase 39 noticed the workflow had not caught up with it: without this step,
+      # website/Android calls could drift from the router (the exact class of defect that made every browser password
+      # reset fail before defect A1 was found) while CI still looked green.
+      - name: Verify website and Android API contracts against the service router
+        run: python3 scripts/check_api_contracts.py
+
+      - name: Verify Android release configuration and tracked-file secrets
+        run: python3 scripts/check_release_config.py
+
+      - name: Verify runtime, configuration documentation, and backup tooling invariants
+        run: python3 scripts/check_deployment_readiness.py
+
+      - name: Set up Node.js for the source scan
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # RELEASE_CHECKLIST item 15 asks for a Guardian scan of the release commit; running it on every push means the
+      # release never discovers a finding for the first time. `--fail-on HIGH` is the gate: the 17 INFORMATIONAL
+      # closed-set SQL rows and the 4 version-literal MEDIUMs are reviewed and reported, not silenced — there is no
+      # suppression file in this repository, and `staleSuppressions` must stay empty.
+      - name: Scan the source tree for the reviewed security patterns
+        run: node --no-warnings=ExperimentalWarning scripts/security-guardian.mjs --fail-on HIGH
+        working-directory: backend

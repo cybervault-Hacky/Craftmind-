@@ -33,6 +33,9 @@ import { RESOURCE_KIND } from "./ownership.js";
 import { validateBoundedText, validateSafeReference } from "./text-fields.js";
 import { isKnownEdition } from "./compatibility.js";
 import { JOB_STATUS, PROPOSAL_STATUS } from "./hire-jobs.js";
+// Phase 30 integration. Order disputes live in their own module and read the orders table directly; importing only
+// these two read-only helpers here keeps the dependency one-directional (order-disputes never imports this file).
+import { hasOpenDisputeForOrder, openDisputeSummaryForOrder } from "./order-disputes.js";
 
 export const ORDER_STATUS = Object.freeze({ ACTIVE: "ACTIVE", COMPLETED: "COMPLETED", CANCELLED: "CANCELLED" });
 
@@ -471,6 +474,9 @@ export function orderDetailInTransaction(database, configuration, userId, orderI
     order: orderView(order, milestoneCounts(database, order.order_id), creatorSummary(database, order.creator_user_id)),
     role: participantRole(order, userId),
     milestones: Object.freeze(milestones.map((row) => milestoneView(row, latestVersions.get(row.milestone_id) ?? 0))),
+    // Phase 30: the open dispute (if any) on this order, so both parties see that closure is frozen and why. `null`
+    // whenever the order is undisputed — an order that has never been disputed reads exactly as it did in Phase 27.
+    dispute: openDisputeSummaryForOrder(database, order.order_id),
     readAt: nowIso(now),
   });
 }
@@ -674,6 +680,9 @@ export function completeOrderInTransaction(database, configuration, userId, orde
   requireAccount(database, userId);
   const order = participantOrderRow(database, orderId, userId);
   if (order.status !== ORDER_STATUS.ACTIVE) throw new AccountApiError(ErrorCode.ORDER_STATE_CONFLICT);
+  // Phase 30: an open dispute freezes closure (never the milestones), so neither side can complete past an unresolved
+  // dispute. With no dispute on the order this predicate is false and completion behaves exactly as in Phase 27.
+  if (hasOpenDisputeForOrder(database, order.order_id)) throw new AccountApiError(ErrorCode.ORDER_DISPUTED);
   const counts = milestoneCounts(database, order.order_id);
   if (counts.approved !== counts.total || counts.total === 0) {
     throw new AccountApiError(
@@ -702,6 +711,9 @@ export function cancelOrderInTransaction(database, configuration, userId, orderI
   requireAccount(database, userId);
   const order = participantOrderRow(database, orderId, userId);
   if (order.status !== ORDER_STATUS.ACTIVE) throw new AccountApiError(ErrorCode.ORDER_STATE_CONFLICT);
+  // Phase 30: an open dispute already routes this order through the dispute workflow, so a plain cancellation is
+  // refused while it is open — resolve or withdraw the dispute instead. Undisputed orders cancel exactly as before.
+  if (hasOpenDisputeForOrder(database, order.order_id)) throw new AccountApiError(ErrorCode.ORDER_DISPUTED);
   const counts = milestoneCounts(database, order.order_id);
   if (counts.approved > 0) {
     throw new AccountApiError(

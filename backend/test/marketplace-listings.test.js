@@ -223,9 +223,9 @@ function seededCreator(service, handle, displayName) {
 describe("Phase 25 listing persistence", () => {
   it("1. initializes the fresh schema at v10 with the listing table, constraints, indexes, and audit types", async () => {
     const service = await newService();
-    assert.equal(SCHEMA_VERSION, 10);
+    assert.equal(SCHEMA_VERSION, 12);
     const version = service.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version;
-    assert.equal(version, 10);
+    assert.equal(version, 12);
     const columns = service.database.prepare("PRAGMA table_info(marketplace_listings)").all().map((row) => row.name);
     for (const column of ["listing_id", "creator_id", "title", "description", "category", "edition",
       "minecraft_versions", "loaders", "tags", "image_references", "status", "published_at", "created_at", "updated_at"]) {
@@ -283,8 +283,8 @@ describe("Phase 25 listing persistence", () => {
     const appliedAt = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 7").get().applied_at;
 
     migrateToVersion(database, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 10);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 10);
+    assert.equal(SCHEMA_VERSION, 12);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 12);
     assert.equal(database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 7").get().applied_at, appliedAt);
     // Prior rows survive with their values.
     assert.equal(database.prepare("SELECT display_name FROM users WHERE user_id = 'usr_p24'").get().display_name, "Phase24");
@@ -318,7 +318,7 @@ describe("Phase 25 listing persistence", () => {
     const indexes = database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%'").get().count;
     migrateToVersion(database, SCHEMA_VERSION);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, versions);
-    assert.equal(versions, 10);
+    assert.equal(versions, 12);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name LIKE 'marketplace_listings%'").get().count, indexes);
     database.close();
   });
