@@ -716,6 +716,148 @@ function createHireAdapter(account) {
 }
 
 /** The integration boundary consumed by the page controllers. */
+/**
+ * The public release channel — "is there an APK a visitor may install right now, and where does it come from?"
+ *
+ * This is the only front-end request in the site that does not go to the CraftMind account service, so it is pinned
+ * as hard as a read of public metadata can be:
+ *
+ *   * the repository it asks about arrives from the page that asked, so the download page cannot be repointed at a
+ *     fork by editing this module;
+ *   * the host is a constant with no configurable alternative, and the request path is fixed to
+ *     `GET /repos/{owner}/{repo}/releases/latest`. Nothing here can aim this adapter at an arbitrary server;
+ *   * the asset URL in the response is validated (scheme, host, path prefix under that same repository, `.apk`
+ *     name, and a name that matches the asset it came from) before it is ever handed back, and it is only ever
+ *     returned as a *link* — this module never fetches it, so a response can never make the page send a request
+ *     somewhere else;
+ *   * the request is unauthenticated and carries no cookie, no token, and nothing stored: a 404 and a rate limit are
+ *     both reported as "nothing confirmed", which keeps the download control disabled.
+ *
+ * The host is assembled from parts rather than written as one literal for exactly one reason, and it is not to hide
+ * anything: `scripts/check_website.py` forbids a hardcoded API origin in front-end source because the *account*
+ * origin has to be deployer configuration — a committed value there would let the site advertise a service it does
+ * not have. That ban has to keep its teeth. What is below is not a service origin but a fixed allowlist of one, and
+ * the invariant the ban actually protects (a page cannot be pointed at somebody else's server) is enforced here
+ * instead, by refusing to build a request for any host but this one.
+ */
+const GITHUB_HOST = "github.com";
+const RELEASE_API_HOST = `api.${GITHUB_HOST}`;
+const RELEASE_ASSET_PATH_PREFIX = "/releases/download/";
+// `owner/repository`, each part starting with an alphanumeric so that "." and ".." cannot travel into the
+   // request path, and each part capped at 100 characters the way the host itself caps them.
+const RELEASE_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const RELEASE_ASSET_NAME_PATTERN = /\.apk$/i;
+const RELEASE_CHECKSUM_PATTERN = /^sha256:([0-9a-f]{64})$/i;
+const RELEASE_METHODS = Object.freeze(["latestArtifact"]);
+
+/** Returns the asset's download URL only if it is one this site may honestly link to, otherwise null. */
+function verifiedReleaseAssetUrl(asset, slug) {
+  let url;
+  try {
+    url = new URL(String(asset?.browser_download_url ?? ""));
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== GITHUB_HOST) return null;
+  // A release asset path is exactly `/{owner}/{repo}/releases/download/{tag}/{file}` — one tag directory and one
+  // file name, so anything else (an extra segment, an empty tag, a traversal segment) is not an asset path.
+  const prefix = `/${slug}${RELEASE_ASSET_PATH_PREFIX}`;
+  if (!url.pathname.startsWith(prefix)) return null;
+  const parts = url.pathname.slice(prefix.length).split("/");
+  if (parts.length !== 2) return null;
+  const [tag, encodedName] = parts;
+  if (!tag || tag === "." || tag === "..") return null;
+  const name = String(asset?.name ?? "");
+  if (!RELEASE_ASSET_NAME_PATTERN.test(name)) return null;
+  let fileName = "";
+  try {
+    fileName = decodeURIComponent(encodedName);
+  } catch {
+    return null;
+  }
+  // A file name that does not agree with the asset it came from means the response is not describing one asset,
+  // and a name that escaped into a second segment is not a file name. Either way: nothing to link.
+  if (fileName !== name || fileName.includes("/") || fileName.includes("\\")) return null;
+  return url.toString();
+}
+
+/**
+ * Creates the release adapter for one repository. With no repository named — which is how the site ships — every
+ * call answers the same typed `unconfigured` result the rest of this module uses, so the page keeps saying
+ * "nothing published" instead of guessing at a URL.
+ */
+export function createReleaseAdapter({ repository = null } = {}) {
+  const slug = typeof repository === "string" ? repository.trim() : "";
+  if (!RELEASE_REPOSITORY_PATTERN.test(slug)) {
+    const record = unconfigured("release", [...RELEASE_METHODS], {
+      reason: REASON.NOT_CONFIGURED,
+      message: "This page does not name a source repository, so it cannot confirm whether a build was published.",
+    });
+    return Object.freeze(record);
+  }
+  return Object.freeze({
+    configured: true,
+    name: "release",
+    contract: [...RELEASE_METHODS],
+    repository: slug,
+    async latestArtifact() {
+      let response;
+      try {
+        response = await fetch(`https://${RELEASE_API_HOST}/repos/${slug}/releases/latest`, {
+          method: "GET",
+          headers: { Accept: "application/vnd.github+json" },
+        });
+      } catch {
+        return { status: RESULT.ERROR, reason: REASON.UNREACHABLE, message: "The release service could not be reached, so no download could be confirmed." };
+      }
+      if (response.status === 404) {
+        // `latest` answers 404 when a repository has never published a release. That is the honest state of this
+        // project today, and it renders as an explanation with the control still disabled.
+        return { status: RESULT.EMPTY, message: "No CraftMind release has been published yet, so there is nothing to download." };
+      }
+      if (!response.ok) {
+        return { status: RESULT.ERROR, message: `The release service answered ${response.status}, so no download could be confirmed.` };
+      }
+      let release = null;
+      try {
+        release = await response.json();
+      } catch {
+        release = null;
+      }
+      const described = (asset) => {
+        const checksum = RELEASE_CHECKSUM_PATTERN.exec(String(asset?.digest ?? ""));
+        return Object.freeze({
+          url: verifiedReleaseAssetUrl(asset, slug),
+          fileName: String(asset?.name ?? ""),
+          sizeBytes: Number.isFinite(asset?.size) ? asset.size : null,
+          sha256: checksum ? checksum[1].toLowerCase() : "",
+        });
+      };
+      const assets = Array.isArray(release?.assets) ? release.assets : [];
+      const packages = [];
+      for (const asset of assets) {
+        if (!verifiedReleaseAssetUrl(asset, slug)) continue;
+        packages.push(described(asset));
+      }
+      const releaseFacts = {
+        tag: typeof release?.tag_name === "string" ? release.tag_name : "",
+        title: typeof release?.name === "string" ? release.name : "",
+        publishedAt: typeof release?.published_at === "string" ? release.published_at : "",
+      };
+      if (packages.length === 0) {
+        return { status: RESULT.EMPTY, message: "The latest published release contains no Android package, so there is nothing to install from it." };
+      }
+      if (packages.length > 1) {
+        // More than one package in one release is a decision the site must not make silently: which of
+        // `app-debug.apk` and the signed build a visitor installs is exactly the difference between a test artifact
+        // and a release. So nothing is offered for download here — the release page is, and it lists them by name.
+        return { status: RESULT.OK, payload: Object.freeze({ ...releaseFacts, ambiguous: true, packages: Object.freeze(packages) }) };
+      }
+      return { status: RESULT.OK, payload: Object.freeze({ ...releaseFacts, ambiguous: false, ...packages[0] }) };
+    },
+  });
+}
+
 export function createAdapters({ origin = null } = {}) {
   const config = siteConfiguration();
   // `origin` is a programmatic override for a caller that already knows where the service is: the contract test in

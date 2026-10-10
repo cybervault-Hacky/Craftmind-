@@ -125,6 +125,43 @@ for tool in (BACKUP_TOOL, RESTORE_TOOL):
         if check.returncode != 0:
             fail(f"{tool.name} does not parse: {check.stderr.strip().splitlines()[-1] if check.stderr else 'syntax error'}")
 
+# --- the static site's hosting configuration must describe the site that actually exists --------------------------
+# `netlify.toml` is the whole deployment contract for `website/`, so the properties that matter are checked here
+# rather than trusted: publishing the right directory, building nothing that has no build, exposing no value, and
+# adding no catch-all redirect that would hide a missing page behind the home page.
+netlify_text = read(ROOT / "netlify.toml")
+# Rules below are about directives, and a TOML comment is prose: `netlify.toml` explains at length why it sets no
+# CSP and no environment value, and prose must not be able to satisfy or violate a config rule. So comments are
+# stripped once, here, and every assertion reads the same stripped text.
+netlify_directives = "\n".join(
+    line.split("#", 1)[0] for line in netlify_text.splitlines() if not line.lstrip().startswith("#")
+)
+if netlify_text:
+    if 'publish = "website"' not in netlify_directives:
+        fail('netlify.toml must publish exactly "website"; publishing the repository root would serve backend source, '
+             "scripts, and docs")
+    if not re.search(r'^\s*command\s*=\s*""\s*$', netlify_directives, re.MULTILINE):
+        fail('netlify.toml must declare an empty build command (command = ""); the site ships as static files and a '
+             "guessed build step fails every deploy")
+    if not (ROOT / "website" / "index.html").is_file():
+        fail("netlify.toml publishes website/, but website/index.html does not exist")
+    if re.search(r'^\s*from\s*=\s*"[^"]*\*"', netlify_directives, re.MULTILINE) or "[[redirects]]" in netlify_directives:
+        fail("netlify.toml must not declare a redirect: with 42 real pages a catch-all fallback turns a missing page "
+             "into a silent 200 on the home page")
+    environment_block = re.search(r"^\[build\.environment\]\s*$(.*?)(?=^\[|\Z)", netlify_directives, re.MULTILINE | re.DOTALL)
+    if environment_block and re.search(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=", environment_block.group(1), re.MULTILINE):
+        fail("netlify.toml must set no build environment values: this site has no build step to consume them, and any "
+             "value placed here is a candidate for accidental publication")
+    if re.search(r"(?i)^\s*(?:[a-z_]*)(?:token|secret|password|apikey|api_key|private_key)\s*=", netlify_directives, re.MULTILINE):
+        fail("netlify.toml carries something that looks like a credential; hosting config for a static site never needs one")
+    for required_header in ("X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy"):
+        if required_header not in netlify_directives:
+            fail(f"netlify.toml must set {required_header} on the published site")
+    if "Content-Security-Policy" in netlify_directives:
+        fail("netlify.toml sets a Content-Security-Policy that no browser has verified here; add it only with a real "
+             "browser pass and style-src allowance for the inline attributes the pages use")
+    notes.append("netlify.toml publishes website/ with no build step, no environment values, and three response headers")
+
 if failures:
     print("FAIL: deployment readiness")
     for item in failures:

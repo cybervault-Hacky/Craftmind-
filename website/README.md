@@ -40,6 +40,7 @@ components" block. The modules under `assets/` are:
 | `preview-catalog.js` | Clearly named sample records used **only** when `?preview=1` is requested. Nothing else renders them. |
 | `components.js` | Shared markup builders: listing cards, placeholder covers, creator chips, metrics, data tables, price rows, media tiles, ratings. |
 | `marketplace.js`, `membership.js`, `creator-studio.js`, `account.js` | The page controllers for their sections. |
+| `download.js` | The download page's live release check: renders a verified release asset or keeps the control disabled. Performs no request of its own.
 | `recovery.js` | Phase 38: the password-recovery screen — request a one-time code and consume it, signed out. Reads the code only from the form, never from the URL, and never from or into browser storage. |
 
 Reviewing the interface with sample data: add `?preview=1` to a marketplace, creators, or creator-studio address. Preview
@@ -69,21 +70,43 @@ the adapter module, sample data gated behind an explicit preview request, disabl
 undefined (never hardcoded) commission figure, and the phrases that state what is not implemented — plus exactly one
 disabled `DOWNLOAD APK` control site-wide and no fabricated APK link.
 
-## GitHub Pages deployment
+## Hosting
 
-A manual-only workflow template is at `website/github-pages-workflow.yml.example`. It is intentionally not installed
-under `.github/workflows`. The expected project URL is
-`https://cybervault-hacky.github.io/Craftmind-/` — a deployment target, not a claim that Pages is live. No custom domain
-is configured.
+Netlify is the deployment target, configured by `netlify.toml` at the repository root: publish directory `website`,
+no build command, four response headers, no SPA fallback, no environment variables. `docs/production-operations.md`
+("Netlify and the APK download path") is the procedure, including the phone-only steps. **Nothing is deployed and no
+public URL is verified from here** — publishing needs the owner's Netlify account.
 
-## Download placeholder
+A manual-only GitHub Pages template also sits at `website/github-pages-workflow.yml.example`, still uninstalled: it
+predates the Netlify decision and is kept because it is a working alternative for someone who would rather not open an
+account. Neither workflow file can be installed by an agent in this workspace: GitHub refuses every workflow write
+from its token (see the repository README), so installing any of them is an owner action.
 
-`download.html` owns the **single** disabled `DOWNLOAD APK` control in the site; the hero link on the home page scrolls to
-it. No signed APK exists yet, so the control stays visibly unavailable and the page says the release has not yet been
-built, installed, or published. Do not replace it with a fabricated APK or a `releases/latest/download` URL, and do not
-make GitHub the primary download experience. After a verified `v1.0.0` release exists (signed, checked with
-`scripts/verify-release-apk.sh`), publish the matching SHA-256 on the download page, enable the control, and rerun
-`python3 scripts/check_website.py`.
+`check_deployment_readiness.py` re-verifies the parts of this that are checkable statically: that `netlify.toml`
+publishes `website` and nothing else, and that the file declares no build step and no environment value.
+
+## The download control, and how it is allowed to become a link
+
+`download.html` owns the **single** `DOWNLOAD APK` control in the site; the hero link on the home page scrolls to it. It
+ships **disabled**, because no release exists yet: the repository has never published one, and no APK has been built in
+any environment.
+
+`assets/download.js` resolves the control at page load instead of encoding a URL in the markup. The page names the
+source repository (`data-release-repository`), `assets/adapters.js` asks that repository's newest published release for
+an Android package — from a host pinned in the adapter, never from anything a visitor can configure — and the control
+becomes a link only when such an asset really exists, showing its name, size, publish time, and the SHA-256 published
+with it. Every other answer re-disables it and states the reason: no release, a release with no APK, a rate limit, an unreachable host, a page naming no repository — and a release carrying **more than one** package, which the page lists by name without ever choosing one, because picking the first asset is how a debug build gets offered as "the release". So the button can never outlive the artifact: remove the release and
+the page goes back to "not available" on the next load.
+
+Do not shorten this with a hardcoded `releases/latest/download` link or a committed `.apk` path: `check_website.py`
+fails the site on a fabricated APK link, on a release check that performs its own request, on an adapter that drops
+its host pin, and on a control that can be enabled without a verified asset. It also still requires exactly one
+`DOWNLOAD APK` button site-wide, disabled, on this page — the runtime link is an `<a>`, not that button.
+
+A real browser has never run this page: there is no browser in the environment and no Playwright dependency to install
+(blocker B3). What exists instead is `backend/test/website-download-page.test.js` — a module test against a fabricated
+DOM that proves the state transitions, and `backend/test/website-release-channel.test.js`, which drives the real adapter
+through every answer the release service can give. Neither is a browser test and neither is claimed as one.
 
 ## Adding a page later
 
