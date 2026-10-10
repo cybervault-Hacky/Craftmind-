@@ -207,5 +207,9 @@ finding count of zero on a small `--paths` list is not progress.
 
 The rule case table lives in a `.corpus` file rather than in this test source, and the private-key marker is
 assembled at runtime: a scanner that reads its own fixtures as source would report them all, which says nothing about
-CraftMind and buries anything real. The policy that keeps the suite quiet — provider-prefixed credentials in test
+CraftMind and buries anything real. Because that corpus is tracked with a real PEM marker inside it, `scripts/check_release_config.py` — the release
+gate that sweeps tracked files for credential patterns — exempts exactly that one path and nothing else, and the
+exemption fails the gate if it ever goes stale, points outside `backend/test/fixtures/security-guardian/`, or stops
+matching a pattern. That last clause is the point: the fastest way to silence the gate is to soften the corpus, and the
+gate now refuses that. The policy that keeps the suite quiet — provider-prefixed credentials in test
 paths still report as HIGH — is itself under test, so the exemption cannot widen by accident.

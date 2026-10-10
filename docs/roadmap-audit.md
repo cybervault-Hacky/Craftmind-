@@ -171,8 +171,30 @@ deferred phases; `check_api_contracts.py` fails if such a surface ever appears i
 | **B6** Minecraft runtime | open | **BLOCKED.** Fabric 1.20.1 mod + loader 0.16.10 + API 0.92.2 exist as source; no JDK/Gradle, no server, no Docker → pairing/preflight/cancellation/refusal behaviour is unproven against a live instance. Static evidence that unsupported input is rejected *in code*: codec version check, `APP_VERSION_PATTERN`, and 9 unexecuted test files | source reading; PATH probe |
 | **B7** hosted deployment, SMTP, backups | open | **OPEN — with one correction to the earlier wording.** There is no Dockerfile, compose file, Procfile, fly/vercel/netlify config, or k8s manifest ✓; `backend/.env.example` carries 112 assignments (the readiness checker's figure is **107 validated keys, all documented**). The repo ships **no SMTP client by design**: `config.js:272-285` accepts `EMAIL_PROVIDER=memory|webhook` and *refuses to start* in production unless a webhook URL is supplied, so "SMTP not configured" understates it — delivery is delegated to an owner-hosted webhook. Backup/restore are single commands with no scheduler, which the doc already states | `ls` for deploy artifacts; `check_deployment_readiness.py` PASS line; `config.js` lines |
 | **B8** dependency/supply chain | open | **PARTIALLY VERIFIED.** Backend: `package.json` declares no `dependencies`/`devDependencies` and no lockfile exists → nothing to audit *for the backend*, and that must not be read as project-wide. The real surface is Gradle: 46 pinned entries in `gradle/libs.versions.toml`, **no dynamic or `+`/`latest.release` ranges** (checked), but the declared versions were never resolved or verified by this environment, and `scripts/*.py` use the Python standard library only | manifests read; grep for dynamic ranges; no `npm audit`/`pip audit` run (nothing to audit locally, no network to the registries) |
+| **B9** repository gate red on the current tip | not previously reported | **RESOLVED in Phase 37A** (was OPEN — found by this audit). `python3 scripts/check_release_config.py` → `FAIL: known credential/private-key pattern requires review in tracked file: backend/test/fixtures/security-guardian/rule-cases.corpus`. The corpus is the Security Guardian's own test data and legitimately contains a PEM marker in its `CRAFTMIND_PRIVATE_KEY_BLOCK` case, which is the one pattern of the checker's four (PEM, `AKIA…`, `AIza…`, `gh[pousr]_…`) that matches. The `sk_live_…` string this row originally blamed is not one of the checker's patterns — corrected here rather than silently rewritten, because the distinction is what made the diagnosis trustworthy. The checker sweeps *tracked* files and had no exclusion for it. `main` is green because the file does not exist there — **the gate broke exactly at `f547986`**. Consequence: line 75 of `ci-workflow.yml.example` runs this checker, so installing CI (B5) would have failed on the first run, and any release process running the documented gates failed. Fixed in Phase 37A by an exact-path exemption that validates its own reason to exist; see §4.1. | all four checkers PASS on the fixed tree; 8 new tests in `backend/test/release-config-corpus.test.js` |
 
-| **B9** repository gate red on the current tip | not previously reported | **OPEN — found by this audit.** `python3 scripts/check_release_config.py` → `FAIL: known credential/private-key pattern requires review in tracked file: backend/test/fixtures/security-guardian/rule-cases.corpus`. The corpus is the Security Guardian's own test data and legitimately contains one fake provider key (`sk_live_…`, 1 match) and one fake PEM marker (1 match); the checker sweeps *tracked* files and has no exclusion for it. `main` is green because the file does not exist there — **the gate broke exactly at `f547986`**. Consequence: line 75 of `ci-workflow.yml.example` runs this checker, so installing CI (B5) would fail on the first run, and any release process that runs the documented gates fails today. | re-run of all four checkers on a clean index: 3 PASS, 1 FAIL |
+
+### 4.1 B9: what the fix does, and what it deliberately cannot do
+
+`scripts/check_release_config.py` now carries one allow-listed path in `SECRET_SWEEP_EXEMPTIONS`, naming
+`backend/test/fixtures/security-guardian/rule-cases.corpus`, and the exemption applies to the credential sweep alone.
+The corpus stays tracked, stays inside the key/keystore/APK artifact check, and every other file keeps being scanned.
+
+Three guards keep the exception from rotting into a hole: an entry outside `backend/test/fixtures/security-guardian/`
+fails the gate, so the list can never be used to shelter application code; an entry that is no longer tracked fails as
+stale; and an entry whose contents no longer match any secret pattern also fails — which is precisely the check that
+would catch somebody "fixing" the gate by sanding the adversarial examples off the corpus. The skip is announced in the
+output (`NOTE: credential sweep skipped 1 tracked file(s) by exact-path exemption: …`), so an exemption can never be
+read as a sweep that covered it.
+
+Detection was re-proven rather than asserted: temporarily appending a PEM marker to `docs/security-guardian.md` made
+the gate exit 1 naming that file and the rule, with no key material echoed, and the file was restored byte-for-byte
+before committing. The check turned out to be load-bearing on its own author's work too: the first draft of the new
+regression test wrote the marker out as a contiguous literal, and once that file was tracked both gates caught it —
+the release gate failed on `backend/test/release-config-corpus.test.js`, and the Guardian gained a 22nd finding — until
+the literal was assembled at runtime the way the Guardian's suite already does it. A fix that had been graded only by
+"does the corpus stop complaining" would have shipped that instead. The rest — application code, a different fixture, files sitting adjacent to the exempt corpus inside
+the same directory — is covered by the eight new tests instead of by argument.
 
 **Also open, found by this audit and not in the earlier list:** (a) Phases 30–35 unmerged to `main` (§1.3.1);
 (b) no `LICENSE` on the integration branch (§1.3.2); (c) `docs/release-readiness.md` still describes B7 as
@@ -285,7 +307,7 @@ audit, per instruction; the fix belongs to an approved follow-up with the test t
 | `python3 scripts/check_api_contracts.py` | PASS (protocol/schema/bridge-version facts agree; 4 NOTEs for hand-reviewed contracts) |
 | `python3 scripts/check_website.py` | PASS (41 pages) |
 | `python3 scripts/check_deployment_readiness.py` | PASS (107 configuration keys, all documented; zero declared dependencies) |
-| `python3 scripts/check_release_config.py` | **FAIL** — see B9 (`rule-cases.corpus` flagged as a tracked file containing credential/private-key patterns). The identical command reported PASS during Phase 35 because the corpus was not yet tracked; re-run here on a clean index, it still fails. `check_api_contracts.py`, `check_website.py`, `check_deployment_readiness.py` all PASS on the same tree. |
+| `python3 scripts/check_release_config.py` | **FAIL** as audited, **PASS** after Phase 37A — see B9 and §4.1. The identical command reported PASS during Phase 35 because the corpus was not yet tracked; re-run here on a clean index it failed. `check_api_contracts.py`, `check_website.py`, `check_deployment_readiness.py` all PASS on the same tree, and still do. |
 | `node scripts/security-guardian.mjs …` (full scan + gate probes) | §5.1; `--fail-on HIGH` → exit 0, `--fail-on MEDIUM` → exit 1, `--paths docs` → exit 0 |
 | `node --check` on module, CLI, test | clean (3 files) |
 | `git diff --check` | clean |
@@ -325,14 +347,13 @@ the 467-path blob comparison was re-run after the reset to confirm zero content 
 Prioritised by *verified* blocker, kept deliberately narrow, and none of them can be completed inside this
 environment — which is itself the main finding of this audit.
 
-**Phase 37 prerequisite — make the repository's own gates green again (B9).** One small, owner-appropriate change in
-`scripts/check_release_config.py`: exclude the Guardian's fixture corpus from the tracked-secret sweep, with the
-exclusion itself constrained to `backend/test/fixtures/security-guardian/**` so a real key elsewhere still fails the
-check, and a comment saying why. Two alternatives were considered and rejected: deleting or neutering the fixture
-(which would silently weaken the scanner's regression suite — the pattern this project explicitly refuses), and
-encoding the fixture so the checker cannot see it (which only hides a tracked string from the tool meant to find it).
-The audit did not make this change itself: it is a checker-behaviour edit, not a documentation correction, and the
-decision to widen an allow-list belongs to the owner.
+**Phase 37 prerequisite — make the repository's own gates green again (B9): DONE in Phase 37A.** The gate passes on a
+clean tree now, and `ci-workflow.yml.example` needed no change — its invocation was always correct, the checker was
+wrong to call the corpus a leak. What shipped is an exact-path exemption rather than the directory-wide one this audit
+first sketched (`…/security-guardian/**` would also have exempted the benign fixture tree and anything later dropped
+into that directory), which is the kind of widening an audit's prose tends to authorise and an implementer should
+refuse. Two other options stayed rejected in execution as they were on paper: deleting or neutering the fixture, and
+encoding it so the checker cannot see it.
 
 **Phase 37 — Get an actual signed release artifact, and integrate it.** Addresses B1 + B2.
 - *Owner prerequisites:* JDK 17, Android SDK 35, a keystore created **outside** the repository, network access to
@@ -382,9 +403,7 @@ in Phases 28–29 (owner decision).
    values; then schedule `backup-database.mjs`, copy backups off-host, and rehearse `restore-database.mjs` (B7).
 5. Run the Fabric bridge against a disposable 1.20.1 server and pair a device; do not test on a valuable world (B6).
 6. Merge or explicitly set aside Phases 30–35, and resolve the license (`main` currently has none).
-7. Restore the red gate: approve the B9 exclusion in `check_release_config.py` (or move the fixture corpus outside the
-   tracked tree) before installing CI or claiming "all repository checks pass".
-8. Re-run the Guardian from a clean, fully-staged checkout so its tracked-file review covers everything (§2.3), and
+7. Re-run the Guardian from a clean, fully-staged checkout so its tracked-file review covers everything (§2.3), and
    consider adding `.css`/`.svg` to its source set (§5.3).
 
 Until items 1, 3, 4 and 5 are done, CraftMind is a well-tested **source** project with a disabled download button —
