@@ -257,6 +257,30 @@ not configured. What is now real and tested is the primitive an operator schedul
 verified, permission-restricted snapshot with no secret in its environment. Rotation is the deployer's job until a
 target exists (listed below).
 
+## Static source review (Security Guardian)
+
+Phase 35 adds one operator command and no runtime surface: `backend/src/security-guardian.js` is never imported by the
+server, so there is no new port, route, environment variable, dependency, or credential for a deployment to configure.
+Run it against the exact commit being released, from `backend/`:
+
+```bash
+cd backend && node --no-warnings=ExperimentalWarning scripts/security-guardian.mjs --fail-on HIGH
+```
+
+Exit `0` nothing at or above the gate · `1` an open finding at or above it · `2` the scan did not run · `3` the scan
+stopped early or could not read everything it was asked to. `3` is not a pass and must not be recorded as one: the
+report names what went unread. `--format json --output <file>` writes a `0600` report and refuses a path under
+`website/`, because that tree is published; a report contains internal paths and line numbers even though every
+credential in it is masked, so keep it with the release record rather than in the public site. The report stamps the
+commit and the scanner/rule-set version, which is what makes a re-run comparable after a rule change.
+
+Before a release: confirm the scan covered the intended roots, re-read every open finding at MEDIUM or above, and make
+sure any `security-guardian.json` decision still matches code (`staleSuppressions` says when it does not). What the
+Guardian cannot cover stays with the deployment: dependency vulnerabilities and CVE feeds, runtime and authorisation
+testing, device behaviour, and anything on a host this command cannot reach.
+`docs/security-guardian.md` is the contract; `scripts/check_release_config.py` remains the authority on tracked
+artifacts and secret-bearing file names.
+
 ## Deployment prerequisites (not configured, not claimed)
 
 Belongs to the deployment, and cannot be verified from this repository:
@@ -297,6 +321,8 @@ python3 scripts/check_website.py                                           # web
 python3 scripts/check_release_config.py                                   # Android + tracked-secret review
 python3 scripts/check_deployment_readiness.py                             # this phase's consistency rules
 python3 scripts/check_api_contracts.py                                   # website ↔ Android ↔ backend contract surface
+cd backend && node --no-warnings=ExperimentalWarning scripts/security-guardian.mjs   # Phase 35 static source review
+
 ```
 
 `check_api_contracts.py` is the Phase 34 addition, and it is what kept this phase honest about the two client defects it

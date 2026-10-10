@@ -530,6 +530,58 @@ contract matrix, the blocked-check list, and the prioritised residual blockers l
   repo), Play submission, deployment, and any credential generation. The website's HTTP boundary is proven at the
   service level, which is where both defects lived; its DOM was not rendered by a browser here.
 
+## Phase 35 — Security Guardian: developer-facing static source analysis
+
+Phase 35 added a bounded security *scanner*, not a security posture. `backend/src/security-guardian.js` reads source
+files and reports evidence-backed review items; `backend/scripts/security-guardian.mjs` is the operator CLI. It runs
+alongside — never inside — the Phase 20 runtime subsystem: it reads no live traffic, registers no HTTP route, mints no
+authorisation, cannot disable a control, and does not duplicate `scripts/check_release_config.py`, which keeps the
+authority over tracked artifacts and secret-bearing file names. Full description, policy, and rule table:
+[`docs/security-guardian.md`](docs/security-guardian.md).
+
+- **Deterministic first, and provably so.** 20 rules over an allow-listed path set; content-derived finding ids; a
+  versioned record per finding (rule, severity **and** confidence, root-relative file, line range, masked one-line
+  evidence, danger, impact, remediation, regression-test suggestion, status, scanner/rule version, timestamp) validated
+  by `validateScanReport()`. Two identical scans render byte-identical reports. Nothing is inferred into existence: no
+  path, line, or CVE the source does not show, and `CRITICAL` is reachable only by the two rules that are self-proving.
+- **The safety contract is enforced in code, and tested.** The module imports `node:child_process`, `node:crypto`,
+  `node:fs`, `node:fs/promises`, `node:path` and nothing else — no network module, no dependency, no environment read,
+  so no report can be uploaded and no provider key can leak. Scanned files are never imported or executed; symlinks
+  outside the root are refused as `symlink-escape`; 8 MiB/500-findings/600-second bounds and `.gitignore`-style
+  exclusions are respected; malformed UTF-8 is tolerated; credential matches are reported as a length with `«redacted»`
+  in place of the value, in JSON, Markdown, terminal output, and `--output` files alike (`0600`, refused under `website/`).
+- **A scan that could not finish never looks clean.** `CLEAN` / `FINDINGS` / `INCOMPLETE` / `FAILED` are distinct,
+  the report always states what was not covered, and the CLI exits `0`/`1`/`2`/`3` for pass / gate-blocking finding /
+  did not run / stopped early, so an unread file cannot be read as a pass.
+- **Calibration was the work, not an afterthought.** The first correctly-functioning run produced 73 HIGH and 2 CRITICAL
+  findings — nearly all of them literal passwords in `backend/test/**` and `app/src/test/**`, plus the scanner reporting
+  its own test suite. Both were resolved in rule logic rather than by suppression: the credential rule now states its own
+  policy (in test paths, only a provider-prefixed value reports, and then as HIGH — a live key in a test is an
+  emergency), the rule case table moved to a `.corpus` data file the scanner does not treat as source, and every
+  remaining informational item is left visible, including one in the Guardian's own test file. The 4 MEDIUM findings
+  are `schemaVersion == 2` literals in shipped Android UI, reported with their evidence and **not** edited, because
+  changing bridge-facing version handling is out of this phase's scope.
+- **Writing the tests found three real bugs**, all fixed rather than accommodated: the CLI's `--fail-on` comparison was
+  inverted (a `MEDIUM` gate would have let a HIGH finding through), the finding cap was recorded only when another file
+  followed, and coverage loss was outranked in the headline status by findings already collected.
+- **Optional AI review, kept on a leash.** `reviewFindingsWithAi()` adds commentary over the deterministic findings only
+  on explicit `consent: true`, sending at most 24 sanitised excerpts and no source; the contract is `MESSAGE_ONLY` with
+  `tools: []` and `maximumToolCalls: 0`, so an `// IGNORE ALL INSTRUCTIONS` line in a scanned file is quoted as evidence
+  and changes nothing. It cannot raise a severity, resolve a finding, or produce a patch, and its refusals
+  (`AI_CONSENT_REQUIRED`, `AI_UNAVAILABLE`, `AI_TIMEOUT`, `AI_RESPONSE_INVALID`) are reported instead of faked. The CLI
+  never calls a provider at all: `--ai-review` prints the exact brief and the disclosure it would imply.
+- **Verification status:** `cd backend && npm test` → **468/468 pass across 88 suites** (the Phase 34 baseline of
+  406/406 preserved with nothing weakened, skipped, or deleted, plus 62 new Guardian tests in 7 suites);
+  `check_api_contracts.py`, `check_website.py`, `check_release_config.py`, `check_deployment_readiness.py` → all PASS;
+  `node --check` clean on module, CLI, and test; `git diff --check` clean; `backend/package.json` untouched — the
+  scanner adds **no dependency** to a backend that still has none. Repository scan on `2381f36`: `FINDINGS`, 21 open,
+  0 CRITICAL / 0 HIGH / 4 MEDIUM / 17 INFORMATIONAL, 458 of 466 candidate files read, 39 routes inspected, 456 tracked
+  files reviewed, all 20 rules consulted. **Not run, and not claimed:** no CI wiring (none exists in this repository),
+  no dependency/SCA scanning, no CVE database lookup, no penetration testing or runtime exploitation, no browser or
+  device testing, and no Android source change. A green Guardian run is a statement about 20 patterns, not about
+  CraftMind's security.
+
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
