@@ -72,7 +72,7 @@ device, in a browser, or against a hosted service.
 
 | Phase | Reported | Verified state | Evidence in this tree |
 | --- | --- | --- | --- |
-| 1–5 (foundation, AI engine, bridge) | complete | **Verified complete**, unmerged history on `main` side; branch/protocol code present and unit-tested | `bridge-protocol/src/main` (15 `.java`), `minecraft-bridge/src/main` (32), 4 + 9 test files; README §Minecraft bridge |
+| 1–5 (foundation, AI engine, bridge) | complete | **Verified complete**, on the feature branch rather than in `main` at audit time; branch/protocol code present and unit-tested | `bridge-protocol/src/main` (15 `.java`), `minecraft-bridge/src/main` (32), 4 + 9 test files; README §Minecraft bridge |
 | 6 | — | **Historical status unclear** — no README section, no commit subject naming it, no dedicated module found | searched `README.md`, `docs/*.md`, commit index |
 | 7 (public video references) | complete | **Verified complete** | README §"Phase 7", `app/.../data/ai/` reference pipeline, backend tests |
 | 8 (v1.0.0 release prep) | complete | **Verified complete as preparation**; release NOT performed (correctly) | `RELEASE_NOTES_v1.0.0.md`, `RELEASE_CHECKLIST.md` (all items still open), `scripts/verify-release-apk.sh` |
@@ -86,12 +86,12 @@ device, in a browser, or against a hosted service.
 | 23–27 | complete | **Verified complete** (creator capability, onboarding, listings, hire-a-builder, order lifecycle) | `creator-profiles.js`, `marketplace-listings.js`, `hire-jobs.js`, `order-lifecycle.js` + one test file each; README §"note on numbering" |
 | 28 payments/commissions/refunds/payouts | deferred | **Deferred by owner decision — boundary intact** | no route, service, or client path: grep for `charge|stripe|paypal|payout` over `backend/src`, `website/assets`, `app/src/main` → **0 hits**; adapters answer `NO_BACKEND_IMPLEMENTED` |
 | 29 purchasable memberships/credit purchase/Trusted Seller | deferred | **Deferred by owner decision — boundary intact** | grep `trustedSeller|trusted_seller` → **0 hits** in code; `referrals.js:48` states "no payout, no commission, no subscription, no entitlement, and no balance. Phases 28-29 stay deferred." |
-| 30 trust, reports, disputes | complete | **Verified complete, unmerged** | `marketplace-trust.js`, `order-disputes.js`, `*-api.js`, `marketplace-trust.test.js`, `order-disputes.test.js`, `docs/marketplace-trust-disputes.md` |
-| 31 analytics & insights (read-only) | complete | **Verified complete, unmerged** | `marketplace-analytics*.js` + test, `docs/marketplace-analytics.md` |
-| 32 referral tracking & attribution | complete | **Verified complete, unmerged** | `referrals*.js` + `referrals.test.js`, `docs/referrals-and-attribution.md` |
-| 33 production hardening | complete | **Verified complete, unmerged** — see §2.1 | `config.js`, `server.js`, `health.js` (88 lines), `db-maintenance.js` (180), `index.js` (SIGTERM), `backend/scripts/{backup,restore}-database.mjs`, `production-hardening.test.js` (58 KB), `docs/production-operations.md` |
+| 30 trust, reports, disputes | complete | **Verified complete** (integration: see the PR history) | `marketplace-trust.js`, `order-disputes.js`, `*-api.js`, `marketplace-trust.test.js`, `order-disputes.test.js`, `docs/marketplace-trust-disputes.md` |
+| 31 analytics & insights (read-only) | complete | **Verified complete** (integration: see the PR history) | `marketplace-analytics*.js` + test, `docs/marketplace-analytics.md` |
+| 32 referral tracking & attribution | complete | **Verified complete** (integration: see the PR history) | `referrals*.js` + `referrals.test.js`, `docs/referrals-and-attribution.md` |
+| 33 production hardening | complete | **Verified complete** (integration: see the PR history) — see §2.1 | `config.js`, `server.js`, `health.js` (88 lines), `db-maintenance.js` (180), `index.js` (SIGTERM), `backend/scripts/{backup,restore}-database.mjs`, `production-hardening.test.js` (58 KB), `docs/production-operations.md` |
 | 34 release readiness | complete-with-blockers | **Partially complete by design** (audit + 2 defect fixes + checker; the artifact work it documents remains open) | see §2.2 |
-| 35 Security Guardian | complete | **Verified complete, unmerged** — see §2.3 and §5 | `backend/src/security-guardian.js` (1 419 lines, 20 rules), `scripts/security-guardian.mjs` (214), `test/security-guardian.test.js` (648, 62 tests/7 suites), `docs/security-guardian.md` |
+| 35 Security Guardian | complete | **Verified complete** (integration: see the PR history) — see §2.3 and §5 | `backend/src/security-guardian.js` (1 419 lines, 20 rules), `scripts/security-guardian.mjs` (214), `test/security-guardian.test.js` (648, 62 tests/7 suites), `docs/security-guardian.md` |
 | Live AI Build Mode | deferred | **Deferred; no partial implementation found** | grep `Live AI Build|liveAiBuild|LIVE_BUILD` → 0 hits |
 
 ### 2.1 Phase 33 — re-verified in source and by execution
@@ -196,7 +196,7 @@ the literal was assembled at runtime the way the Guardian's suite already does i
 "does the corpus stop complaining" would have shipped that instead. The rest — application code, a different fixture, files sitting adjacent to the exempt corpus inside
 the same directory — is covered by the eight new tests instead of by argument.
 
-**Also open, found by this audit and not in the earlier list:** (a) Phases 30–35 unmerged to `main` (§1.3.1);
+**Also open, found by this audit and not in the earlier list:** (a) Phases 30–35 not yet in `main` when this audit ran (§1.3.1);
 (b) no `LICENSE` on the integration branch (§1.3.2); (c) `docs/release-readiness.md` still describes B7 as
 "no hosted backend/SMTP" and B1/B2 as pending without noting that **this environment can never run them**, which is
 fine but should be stated so no future agent "fixes" it by faking a build.
