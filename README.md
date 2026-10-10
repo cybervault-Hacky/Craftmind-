@@ -500,7 +500,7 @@ contract matrix, the blocked-check list, and the prioritised residual blockers l
   sign-in prompt and made `onboarding.js`'s own "View membership" branch dead code. Both fixed with the smallest
   change that makes the shipped contract correct; nothing else in `website/` was touched.
 - **Regression coverage that is load-bearing, not decorative.** `backend/test/website-api-contract.test.js` (13 tests /
-  6 suites) imports the **real** `website/assets/adapters.js` and drives it over HTTP against `startService()` — the
+  5 suites) imports the **real** `website/assets/adapters.js` and drives it over HTTP against `startService()` — the
   account journey, recovery, sessions, membership/credits, onboarding writes against the server's exact key sets,
   discovery, the job lifecycle, entitlement refusals, the deliberately inert payments/orders/reviews/analytics surface,
   and "every endpoint the site declares exists on the service". Reverting either fix turns it red (11/13) with exactly

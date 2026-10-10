@@ -141,7 +141,7 @@ phase's own probes, recorded in the commit notes so nobody re-chases them.
 
 ## 5. Regression coverage added
 
-`backend/test/website-api-contract.test.js` — 13 tests / 6 suites. It imports the **real** `website/assets/adapters.js`
+`backend/test/website-api-contract.test.js` — 13 tests / 5 suites. It imports the **real** `website/assets/adapters.js`
 and drives it over HTTP against `startService()`, so it fails when either side drifts, not when a mock disagrees.
 To make the module address a test origin, `createAdapters({origin})` gained an optional override; pages never pass it,
 so the `^https://` gate in `siteConfiguration()` still governs browsers.
