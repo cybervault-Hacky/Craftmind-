@@ -296,7 +296,16 @@ cd backend && node --check src/index.js                                    # any
 python3 scripts/check_website.py                                           # website structure/links/CSP integrity
 python3 scripts/check_release_config.py                                   # Android + tracked-secret review
 python3 scripts/check_deployment_readiness.py                             # this phase's consistency rules
+python3 scripts/check_api_contracts.py                                   # website ↔ Android ↔ backend contract surface
 ```
+
+`check_api_contracts.py` is the Phase 34 addition, and it is what kept this phase honest about the two client defects it
+found: it reads the route table the backend serves and the requests each client actually builds, then fails on a route
+that does not exist, a required field that is missing, an extra field `strictBody` refuses, a monetisation surface
+appearing in an adapter that must stay inert, and release facts (Gradle version, download page, APK verifier, bridge
+protocol/schema) that have drifted apart. It is a **source-level** comparison — it says nothing about whether a browser
+rendered the response, an APK installed, or a Minecraft server accepted a build, and it prints the routes whose body
+contract it cannot read as notes instead of guessing them into a pass.
 
 `backend/package.json` declares exactly two scripts — `start` (`node --env-file=.env … src/index.js`) and `test` —
 and **zero dependencies**, so there is no lockfile to drift and no install step in CI. That invariant is itself

@@ -1,12 +1,21 @@
 /**
  * The website's data boundary (Phase 21).
  *
- * Phase 21 ships interface only. There is no marketplace backend, no creator backend, no membership, purchase,
- * entitlement, or payment service behind this site, so every adapter below is *registered but unconfigured* and every
- * method answers with the same typed `unavailable` result. Nothing here talks to a network: no `fetch`, no
- * `XMLHttpRequest`, no WebSocket, and no hardcoded production URL. A later phase supplies a real implementation through
- * `configure()`, and the pages that consume these adapters switch from honest unavailable states to real data without
- * any markup change.
+ * Phase 21 shipped interface only, and for that phase every adapter answered with a typed `unavailable` result.
+ * Phases 22-33 changed that for the parts of the product the account service actually implements, so the honest
+ * description of this module today is:
+ *
+ *   * **Configured real traffic** over `fetch` for the account, membership/entitlement/credit reads, creator profile
+ *     and eligibility, onboarding, listings, hire jobs, proposals, orders, and the milestone transitions — the
+ *     endpoints listed in `ACCOUNT_ENDPOINTS`, which is kept in step with the router in `backend/src/server.js`.
+ *   * **Still unavailable by design** for anything the service does not have: purchasing, payments, commissions,
+ *     refunds, payouts and subscription changes. Those methods answer `NO_BACKEND_IMPLEMENTED` rather than pretending,
+ *     and no code was added here to fake them.
+ *
+ * What never changed: there is no hardcoded production URL and no WebSocket, `XMLHttpRequest`, or browser storage is
+ * used, and the whole module stays inactive until a deployer configures an origin. `createAdapters()` reads that
+ * origin from `CRAFTMIND_SITE_CONFIG`; with nothing configured — which is the state of the published static site —
+ * every method still returns the typed `unavailable` result, so no page can show a fabricated success.
  *
  * The adapters that are fully specified are the account adapter, because the account service already exists in
  * `backend/`; — since Phase 22 — a read-only membership/entitlement view over it, because that service now owns
@@ -329,7 +338,10 @@ export function createAccountAdapter({ origin = null } = {}) {
     revokeSession({ sessionId }) { return requestJson(origin, "/auth/sessions/revoke", { method: "POST", body: { sessionId }, token: session.accessToken }); },
     revokeOtherSessions() { return requestJson(origin, "/auth/sessions/revoke-all", { method: "POST", body: {}, token: session.accessToken }); },
     requestPasswordReset({ email }) { return requestJson(origin, "/auth/password-reset/request", { method: "POST", body: { email } }); },
-    confirmPasswordReset({ email, code, newPassword }) { return requestJson(origin, "/auth/password-reset/confirm", { method: "POST", body: { email, code, newPassword } }); },
+    // The service consumes the one-time handoff it emailed, keyed `token` (see `docs/account-authentication.md`), and
+    // the account is derived from that token — sending `email` and a `code` here could never succeed, because
+    // `confirmPasswordRecovery` refuses the request the moment `token` is not a string.
+    confirmPasswordReset({ token, newPassword }) { return requestJson(origin, "/auth/password-reset/confirm", { method: "POST", body: { token, newPassword } }); },
     changePassword({ currentPassword, newPassword }) { return requestJson(origin, "/auth/password/change", { method: "POST", body: { currentPassword, newPassword }, token: session.accessToken }); },
     resendVerification({ email }) { return requestJson(origin, "/auth/resend-verification", { method: "POST", body: { email } }); },
     // Phase 22 read-only account state. Each call returns the server's own answer for the signed-in account; the
@@ -350,7 +362,14 @@ export function createAccountAdapter({ origin = null } = {}) {
     },
     loadSellerOnboarding() { return requestJson(origin, "/onboarding/seller", { token: session.accessToken }); },
     saveSellerOnboarding(answers) {
-      return requestJson(origin, "/onboarding/seller", { method: "POST", body: answers, token: session.accessToken });
+      // `refusedNotUnauthenticated` is not decoration here. The seller step is gated on the Creator entitlement, which
+      // the service refuses with 403 + `CREATOR_ENTITLEMENT_REQUIRED`, and onboarding.js has an explicit branch for
+      // that code (it offers "View membership"). Mapped to "sign in again", the refusal would land on the sign-in
+      // panel instead — telling an already-signed-in account to do the one thing that cannot help it, and hiding the
+      // only action that explains why. Same rule as the listing and hire writes below.
+      return requestJson(origin, "/onboarding/seller", {
+        method: "POST", body: answers, token: session.accessToken, refusedNotUnauthenticated: true,
+      });
     },
     loadPublicCreatorProfile(handle) {
       // The handle is validated here as well as on the server, because a path segment is interpolated into a URL: an
@@ -697,9 +716,13 @@ function createHireAdapter(account) {
 }
 
 /** The integration boundary consumed by the page controllers. */
-export function createAdapters() {
+export function createAdapters({ origin = null } = {}) {
   const config = siteConfiguration();
-  const account = createAccountAdapter({ origin: config.accountServiceOrigin || null });
+  // `origin` is a programmatic override for a caller that already knows where the service is: the contract test in
+  // `backend/test/website-api-contract.test.js`, and a developer previewing the site against a local account service.
+  // A page never passes it, so the HTTPS-only rule in `siteConfiguration()` still governs everything a browser can
+  // configure by itself — this seam widens what a build can do, not what a visitor's origin string can say.
+  const account = createAccountAdapter({ origin: origin || config.accountServiceOrigin || null });
   return Object.freeze({
     account,
     // Phase 22: membership and entitlements read the real account service when one is configured, and render the same

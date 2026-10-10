@@ -486,6 +486,50 @@ platform, reverse proxy or monitoring service was assumed or invented. Full oper
   wired, no CI is installed, and there is **no downgrade path** — rolling back means restoring a pre-upgrade backup.
 
 
+## Phase 34 — Android, website, and Minecraft end-to-end release readiness
+
+Phase 34 added no feature. It read the three clients and the service end to end, fixed the two contract defects that
+audit surfaced, and wrote down what is and is not provable from this environment. The full component map, the
+contract matrix, the blocked-check list, and the prioritised residual blockers live in
+[`docs/release-readiness.md`](docs/release-readiness.md).
+
+- **Two real defects, both in the website's HTTP boundary.** `confirmPasswordReset` posted `{email, code, newPassword}`
+  to a route that calls `requireString(body,"token")` and `("newPassword")` — a guaranteed 400 for a flow the server,
+  `docs/account-authentication.md`, and the Android builder all agree on. And `saveSellerOnboarding` mapped the
+  service's `403 CREATOR_ENTITLEMENT_REQUIRED` onto `UNAUTHORIZED`, which sent already-signed-in applicants to a
+  sign-in prompt and made `onboarding.js`'s own "View membership" branch dead code. Both fixed with the smallest
+  change that makes the shipped contract correct; nothing else in `website/` was touched.
+- **Regression coverage that is load-bearing, not decorative.** `backend/test/website-api-contract.test.js` (13 tests /
+  6 suites) imports the **real** `website/assets/adapters.js` and drives it over HTTP against `startService()` — the
+  account journey, recovery, sessions, membership/credits, onboarding writes against the server's exact key sets,
+  discovery, the job lifecycle, entitlement refusals, the deliberately inert payments/orders/reviews/analytics surface,
+  and "every endpoint the site declares exists on the service". Reverting either fix turns it red (11/13) with exactly
+  the two intended failures.
+- **`scripts/check_api_contracts.py`** is the durable half of the audit: it reads the router's 106 routes, the website's
+  declared/called endpoints, the Android client's 14 paths and their builders, the `strictBody`/`requireX` key
+  contracts, and the release facts repeated across Gradle, `download.html`, `verify-release-apk.sh`, and the bridge
+  protocol/schema constants — then fails on drift, and reports as notes the routes whose contract it cannot read rather
+  than guessing them into a pass.
+- **Android and the bridge were verified as far as a machine without a JDK can verify them:** release ID/version,
+  env-var-only keystore with hard refusal of partial or in-checkout signing config, unsigned `packageRelease` throwing,
+  one exported component with `INTERNET` only, `allowBackup=false`, `usesCleartextTraffic=false`, no plaintext credential
+  path, every XML resource reference resolving and no `R.` reference dangling, and `BridgeProtocol.VERSION = 2` /
+  `BUILD_PLAN_SCHEMA_VERSION = 2` / mod `1.2.0` / loader `0.16.10` / Fabric API `0.92.2+1.20.1` agreeing with the docs.
+  `ANDROID_BUILD = NOT_RUN`; the 64 JVM unit and 10 instrumented suites were not executed, and no protocol or schema
+  version was downgraded to make anything appear compatible.
+- **The download experience stays honest.** No APK or AAB exists in this repository, so the button remains disabled and
+  `download.html`'s stated VERSION/VERSION CODE/PACKAGE/minSdk are now asserted equal to what Gradle actually produces.
+  Phases 28–29 remain deferred: the payment/marketplace/monetisation adapters must keep answering `NOT_IMPLEMENTED`, and
+  the new checker fails if such a surface ever appears in `adapters.js`.
+- **Verification status:** `cd backend && npm test` → **406/406 pass across 81 suites** (~98 s; the 393-test Phase 33
+  baseline preserved with no test weakened, skipped, or deleted, plus the 13 new contract tests); `node --check` clean on
+  both touched files; `check_website.py` → PASS (41 pages, 1179 links); `check_release_config.py` → PASS;
+  `check_deployment_readiness.py` → PASS (107 configuration keys); `check_api_contracts.py` → PASS;
+  `bash -n scripts/verify-release-apk.sh` clean; `git diff --check` clean. **Not run, and not claimed:** Gradle
+  build/lint/unit/instrumented tests, Fabric mod build and any Minecraft server test, browser E2E (no runner in this
+  repo), Play submission, deployment, and any credential generation. The website's HTTP boundary is proven at the
+  service level, which is where both defects lived; its DOM was not rendered by a browser here.
+
 ## Minecraft bridge: Phase 4 foundation and Phase 5 construction
 
 Phase 4 established the separate, server-only Fabric mod (`minecraft-bridge/`), shared versioned protocol module (`bridge-protocol/`), and secure Android pairing/session flow. Phase 5 adds a narrow, explicit construction route to that existing bridge. Provider behavior, encrypted provider-key storage, provider-backed AI generation, on-device plan review, and immutable local plan history remain separate. Minecraft/bridge availability is optional for offline plan-history use; AI generation still needs the selected provider's network service. Construction is enabled only by an operator's server opt-in and only when Android has an authenticated compatible session reporting `construction.execute = true`.
