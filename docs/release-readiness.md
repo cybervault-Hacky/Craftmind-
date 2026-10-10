@@ -197,13 +197,19 @@ No browser was launched, no emulator attached, no Minecraft server contacted, no
 - The website's download link therefore does **not** point at a placeholder artifact; nothing was published.
 - Backend ships as source with `backend/.env.example` tracked and unchanged; the mod jar is built by the owner.
 
-To produce the artifacts (owner's machine, with secrets supplied through the environment only):
+To produce the artifacts (owner's machine, with secrets supplied through the environment only). Phase 37B corrected
+this block: it previously began `cd android`, a directory that does not exist, and named AGP's internal
+`signReleaseBundle`/`packageRelease` tasks instead of the canonical `assembleRelease`/`bundleRelease`; the full
+environment-readiness report and the pre-build test sequence are in
+[`docs/android-release-build.md`](android-release-build.md):
 
 ```bash
-cd android && CRAFTMIND_RELEASE_STORE_FILE=… CRAFTMIND_RELEASE_STORE_PASSWORD=… \
-  CRAFTMIND_RELEASE_KEY_ALIAS=… CRAFTMIND_RELEASE_KEY_PASSWORD=… \
-  ./gradlew :app:signReleaseBundle          # app/build/outputs/bundle/release/app-release.aab
-./gradlew :app:packageRelease               # app/build/outputs/apk/release/app-release.apk
+# Run from the repository root: there is no android/ directory, and ./gradlew is at the root.
+# Passwords are exported into the shell session only — never into a committed or local Gradle properties file.
+export CRAFTMIND_RELEASE_STORE_FILE=/secure/path/outside/checkout/craftmind-release.jks
+export CRAFTMIND_RELEASE_STORE_PASSWORD=… CRAFTMIND_RELEASE_KEY_PASSWORD=… CRAFTMIND_RELEASE_KEY_ALIAS=…
+./gradlew :app:assembleRelease              # app/build/outputs/apk/release/app-release.apk
+./gradlew :app:bundleRelease                # app/build/outputs/bundle/release/app-release.aab
 scripts/verify-release-apk.sh <path-to-apk> # package + versionCode/versionName against Gradle
 python3 scripts/check_api_contracts.py      # three-way contract consistency
 ```
