@@ -1,0 +1,159 @@
+# ============================================================================
+# PROPOSED REPLACEMENT for .github/workflows/android-apk.yml — NOT EXECUTED.
+#
+# This file is a complete, drop-in replacement prepared on the branch because
+# the session token has no `workflows` scope and GitHub refuses pushes that
+# modify anything under .github/workflows/. Copy this file's body (everything
+# from the comment line below marked "WORKFLOW START") to
+# .github/workflows/android-apk.yml and push it as-is.
+#
+# What changed versus the current tracked .github/workflows/android-apk.yml,
+# and why:
+#
+#   1. push.paths now includes the root `gradle.properties`. The file exists
+#      (android.useAndroidX=true, added in 58f3726) and changing it changes
+#      what compiles, but the current path filter would not trigger a rebuild
+#      for it, so a bad edit could ship silently on the next unrelated run.
+#
+#   2. The "Verify the APK" step now ASSERTS the identity facts instead of
+#      only printing them:
+#         - package name is exactly com.craftmind.app
+#         - versionCode is exactly 10000
+#         - versionName is exactly 1.0.0-debug (1.0.0 + the debug suffix)
+#      A mismatch fails the job, so an artifact that is not this app, this
+#      variant, at this version can never be offered for download.
+#
+#   3. push.branches adds arena/1f24e9fc-craftmind, the branch this session
+#      works on, so pushes to it trigger a build like they do for main.
+#
+# Everything else is byte-identical to the current tracked workflow (JDK 17,
+# Gradle caching, tests before assembleDebug, 45-minute timeout, 1 MB size
+# floor, SHA-256 recording, craftmind-debug-apk artifact retained 30 days,
+# run summary).
+#
+# WORKFLOW START — copy from here to the end of this file.
+# ============================================================================
+name: Build CraftMind Android APK (debug)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - arena/6e167066-craftmind
+      - arena/1f24e9fc-craftmind
+    paths:
+      - "app/**"
+      - "bridge-protocol/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-apk:
+    name: Debug APK (unit tests, then assembleDebug)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact commit being built
+        uses: actions/checkout@v4
+
+      - name: Record the commit this artifact came from
+        run: |
+          echo "commit:  ${{ github.sha }}"
+          echo "ref:     ${{ github.ref }}"
+          echo "trigger: ${{ github.event_name }}"
+          java -version 2>&1 | head -3
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+      - name: Set up JDK 17 (the version app/build.gradle.kts compiles and targets)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Ensure compileSdk 35 and build-tools 35.0.0 are present
+        # No-op when the runner image already carries them. If they are missing AND sdkmanager is unavailable the
+        # step fails visibly with the runner's own error text rather than pretending to have built anything.
+        run: |
+          set -euo pipefail
+          if [ ! -d "$ANDROID_HOME/platforms/android-35" ] || [ ! -d "$ANDROID_HOME/build-tools/35.0.0" ]; then
+            sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            test -x "$sdkmanager" || { echo "sdkmanager not found at $sdkmanager"; exit 1; }
+            yes | "$sdkmanager" --licenses > /dev/null || true
+            "$sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          fi
+          ls "$ANDROID_HOME/platforms"
+          ls "$ANDROID_HOME/build-tools"
+
+      - name: Run the Android and bridge-protocol unit tests
+        # Runs before any artifact is uploaded, and a failure here stops the job: no test is skipped, and nothing
+        # that did not pass its own tests is offered for download.
+        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :bridge-protocol:test
+
+      - name: Assemble the debug APK
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Verify the APK is exactly this app, variant, and version
+        id: apk
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$apk" ]; then
+            echo "expected $apk to exist after :app:assembleDebug"
+            exit 1
+          fi
+          bytes=$(wc -c < "$apk")
+          if [ "$bytes" -lt 1000000 ]; then
+            echo "APK is $bytes bytes; a Compose debug APK of this app is multi-megabyte, so this build is broken"
+            exit 1
+          fi
+          sha=$(sha256sum "$apk" | cut -d ' ' -f1)
+          echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          badging=$("$aapt2" dump badging "$apk")
+          echo "$badging" | grep -E "^(package|sdkVersion|targetSdkVersion|application-label)"
+          # Assert the identity facts. aapt2 prints e.g.:
+          #   package: name='com.craftmind.app' versionCode='10000' versionName='1.0.0-debug' ...
+          pkg_line=$(echo "$badging" | grep "^package:" || true)
+          echo "$pkg_line" | grep -q "name='com.craftmind.app'"       || { echo "package name is not com.craftmind.app"; exit 1; }
+          echo "$pkg_line" | grep -q "versionCode='10000'"            || { echo "versionCode is not 10000"; exit 1; }
+          echo "$pkg_line" | grep -q "versionName='1.0.0-debug'"      || { echo "versionName is not 1.0.0-debug"; exit 1; }
+          echo "package com.craftmind.app, versionCode 10000, versionName 1.0.0-debug: verified"
+          echo "APK: $apk"
+          echo "bytes: $bytes"
+          echo "sha256: $sha"
+
+      - name: Upload the debug APK for phone testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: craftmind-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Record the build in the run summary
+        run: |
+          {
+            echo "## CraftMind debug APK"
+            echo
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- App: \`com.craftmind.app\` version \`1.0.0-debug\` (versionCode 10000, verified with aapt2)"
+            echo "- Variant: \`debug\` (debug-signed; **not** a release artifact)"
+            echo "- Size: ${{ steps.apk.outputs.bytes }} bytes"
+            echo "- SHA-256: \`${{ steps.apk.outputs.sha256 }}\`"
+            echo "- Artifact: \`craftmind-debug-apk\` (retained 30 days)"
+            echo
+            echo "Install only from the artifact of a run you have checked, on a device you control."
+          } >> "$GITHUB_STEP_SUMMARY"
