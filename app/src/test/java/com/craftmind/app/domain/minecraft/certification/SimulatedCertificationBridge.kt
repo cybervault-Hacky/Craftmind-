@@ -15,6 +15,7 @@ import com.craftmind.app.domain.minecraft.MinecraftExecutionPhase
 import com.craftmind.app.domain.minecraft.MinecraftExecutionPreview
 import com.craftmind.app.domain.minecraft.MinecraftExecutionQueryResult
 import com.craftmind.app.domain.minecraft.MinecraftExecutionSnapshot
+import com.craftmind.app.BuildConfig
 import com.craftmind.app.domain.minecraft.TrustedMinecraftBridge
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCapability
 import com.craftmind.bridge.protocol.BridgeProtocol
@@ -582,7 +583,14 @@ class SimulatedCertificationBridge(
     }
 
     companion object {
-        const val CERTIFICATION_APP_VERSION = "1.0.0"
+        /**
+         * The app version this simulated bridge is paired with: the version of the app under test. The production
+         * wire codecs require the bridge to echo the exact [BuildConfig] version the client sent, so a debug
+         * unit-test run must echo the debug variant's version (e.g. `1.0.0-debug`), never a hardcoded release
+         * token — a hard-coded `1.0.0` makes every capability report a `BRIDGE_RESPONSE_MISMATCH` in the
+         * `testDebugUnitTest` variant, exactly the failure the real transport would flag.
+         */
+        val CERTIFICATION_APP_VERSION: String = BuildConfig.VERSION_NAME
         const val DEFAULT_SESSION_ID = "sim-session-1"
         const val FIXED_AUTHENTICATED_AT = 1_700_000_000_000L
         const val PREFLIGHT_TTL_MILLIS = 60_000L

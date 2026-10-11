@@ -118,6 +118,16 @@ android {
     }
 }
 
+// Surface individual test failures (with full stack traces) in the CI log as they happen, so a cancelled or
+// interrupted run still shows exactly which assertion failed instead of only the task-level result.
+tasks.withType<Test>().configureEach {
+    testLogging {
+        events("failed")
+        setExceptionFormat("full")
+        showStackTraces = true
+    }
+}
+
 // Do not allow AGP to silently create an unsigned release artifact when signing inputs are absent.
 tasks.configureEach {
     if (name == "packageRelease" || name == "signReleaseBundle") {
