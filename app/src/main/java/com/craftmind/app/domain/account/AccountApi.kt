@@ -65,8 +65,8 @@ sealed interface AccountApiOutcome<out T> {
 /**
  * Stable error codes of the account service.
  *
- * The wire strings are identical to the server's own codes, so a change on either side is caught by tests rather than
- * silently becoming UNKNOWN_ERROR at runtime.
+ * The wire strings are identical to the server's own codes (`backend/src/errors.js`), so a change on either side is
+ * caught by tests rather than silently becoming UNKNOWN_ERROR at runtime.
  */
 enum class AccountApiErrorCode(val wireValue: String, val retryable: Boolean) {
     INVALID_REQUEST("INVALID_REQUEST", retryable = false),
@@ -103,6 +103,93 @@ enum class AccountApiErrorCode(val wireValue: String, val retryable: Boolean) {
     RATE_LIMITED("RATE_LIMITED", retryable = true),
     EMAIL_DELIVERY_UNAVAILABLE("EMAIL_DELIVERY_UNAVAILABLE", retryable = true),
     PASSWORD_RESET_NOT_IMPLEMENTED("PASSWORD_RESET_NOT_IMPLEMENTED", retryable = false),
+
+    // The account service also reports the developer, entitlement, marketplace, and security domains added after the
+    // account foundation. They are mirrored here with their exact wire values because the parity test treats an
+    // unknown code, not a missing one, as the thing that must never happen silently: a client that cannot name a code
+    // the service really sends would report UNKNOWN_ERROR and hide a real, actionable outcome.
+    // Developer access (Phase 30): bootstrap, credential, session, tool, confirmation, and grant outcomes.
+    DEVELOPER_BOOTSTRAP_DISABLED("DEVELOPER_BOOTSTRAP_DISABLED", retryable = false),
+    DEVELOPER_BOOTSTRAP_INVALID("DEVELOPER_BOOTSTRAP_INVALID", retryable = false),
+    DEVELOPER_BOOTSTRAP_CONSUMED("DEVELOPER_BOOTSTRAP_CONSUMED", retryable = false),
+    DEVELOPER_INVALID_CREDENTIALS("DEVELOPER_INVALID_CREDENTIALS", retryable = false),
+    DEVELOPER_AUTHENTICATION_REQUIRED("DEVELOPER_AUTHENTICATION_REQUIRED", retryable = false),
+    DEVELOPER_SESSION_EXPIRED("DEVELOPER_SESSION_EXPIRED", retryable = false),
+    DEVELOPER_REFRESH_FAILED("DEVELOPER_REFRESH_FAILED", retryable = false),
+    DEVELOPER_ACCESS_DENIED("DEVELOPER_ACCESS_DENIED", retryable = false),
+    DEVELOPER_TOOL_UNKNOWN("DEVELOPER_TOOL_UNKNOWN", retryable = false),
+    DEVELOPER_TOOL_INPUT_INVALID("DEVELOPER_TOOL_INPUT_INVALID", retryable = false),
+    DEVELOPER_CONFIRMATION_INVALID("DEVELOPER_CONFIRMATION_INVALID", retryable = false),
+    DEVELOPER_CONFIRMATION_EXPIRED("DEVELOPER_CONFIRMATION_EXPIRED", retryable = false),
+    DEVELOPER_GRANT_ALREADY_ACTIVE("DEVELOPER_GRANT_ALREADY_ACTIVE", retryable = false),
+    DEVELOPER_GRANT_NOT_FOUND("DEVELOPER_GRANT_NOT_FOUND", retryable = false),
+    DEVELOPER_AI_UNAVAILABLE("DEVELOPER_AI_UNAVAILABLE", retryable = true),
+    DEVELOPER_AI_RESPONSE_INVALID("DEVELOPER_AI_RESPONSE_INVALID", retryable = false),
+
+    // Entitlement and the credit ledger.
+    INSUFFICIENT_CREDITS("INSUFFICIENT_CREDITS", retryable = false),
+    ENTITLEMENT_REQUIRED("ENTITLEMENT_REQUIRED", retryable = false),
+    MEMBERSHIP_UNAVAILABLE("MEMBERSHIP_UNAVAILABLE", retryable = true),
+    CREDIT_OPERATION_INVALID("CREDIT_OPERATION_INVALID", retryable = false),
+    CREDIT_OPERATION_DUPLICATE("CREDIT_OPERATION_DUPLICATE", retryable = false),
+    CREDIT_OPERATION_CONFLICT("CREDIT_OPERATION_CONFLICT", retryable = false),
+    CREDIT_LEDGER_BUSY("CREDIT_LEDGER_BUSY", retryable = true),
+
+    // Creator profiles and the accounts they may operate on.
+    CREATOR_ENTITLEMENT_REQUIRED("CREATOR_ENTITLEMENT_REQUIRED", retryable = false),
+    CREATOR_PROFILE_EXISTS("CREATOR_PROFILE_EXISTS", retryable = false),
+    CREATOR_PROFILE_NOT_FOUND("CREATOR_PROFILE_NOT_FOUND", retryable = false),
+    CREATOR_PROFILE_SUSPENDED("CREATOR_PROFILE_SUSPENDED", retryable = false),
+    CREATOR_HANDLE_UNAVAILABLE("CREATOR_HANDLE_UNAVAILABLE", retryable = false),
+    CREATOR_HANDLE_RESERVED("CREATOR_HANDLE_RESERVED", retryable = false),
+    CREATOR_VERIFICATION_REQUIRED("CREATOR_VERIFICATION_REQUIRED", retryable = false),
+    SERVER_ENTITLEMENT_REQUIRED("SERVER_ENTITLEMENT_REQUIRED", retryable = false),
+    SERVER_NOT_FOUND("SERVER_NOT_FOUND", retryable = false),
+    SERVER_ACCESS_DENIED("SERVER_ACCESS_DENIED", retryable = false),
+    SERVER_SUSPENDED("SERVER_SUSPENDED", retryable = false),
+    SERVER_LIMIT_REACHED("SERVER_LIMIT_REACHED", retryable = false),
+    SERVER_SLUG_RESERVED("SERVER_SLUG_RESERVED", retryable = false),
+    SERVER_SLUG_UNAVAILABLE("SERVER_SLUG_UNAVAILABLE", retryable = false),
+    OWNERSHIP_REQUIRED("OWNERSHIP_REQUIRED", retryable = false),
+    FEATURE_NOT_IMPLEMENTED("FEATURE_NOT_IMPLEMENTED", retryable = false),
+    STORAGE_BUSY("STORAGE_BUSY", retryable = true),
+    PHONE_VERIFICATION_UNAVAILABLE("PHONE_VERIFICATION_UNAVAILABLE", retryable = true),
+
+    // Marketplace listings, jobs, proposals, orders, milestones, revisions, reports, and disputes.
+    SELLER_AGREEMENT_REQUIRED("SELLER_AGREEMENT_REQUIRED", retryable = false),
+    LISTING_NOT_FOUND("LISTING_NOT_FOUND", retryable = false),
+    LISTING_STATE_CONFLICT("LISTING_STATE_CONFLICT", retryable = false),
+    LISTING_PUBLISH_BLOCKED("LISTING_PUBLISH_BLOCKED", retryable = false),
+    JOB_NOT_FOUND("JOB_NOT_FOUND", retryable = false),
+    JOB_STATE_CONFLICT("JOB_STATE_CONFLICT", retryable = false),
+    PROPOSAL_NOT_FOUND("PROPOSAL_NOT_FOUND", retryable = false),
+    PROPOSAL_STATE_CONFLICT("PROPOSAL_STATE_CONFLICT", retryable = false),
+    PROPOSAL_BLOCKED("PROPOSAL_BLOCKED", retryable = false),
+    ORDER_NOT_FOUND("ORDER_NOT_FOUND", retryable = false),
+    ORDER_STATE_CONFLICT("ORDER_STATE_CONFLICT", retryable = false),
+    ORDER_ROLE_DENIED("ORDER_ROLE_DENIED", retryable = false),
+    ORDER_COMPLETION_BLOCKED("ORDER_COMPLETION_BLOCKED", retryable = false),
+    MILESTONE_NOT_FOUND("MILESTONE_NOT_FOUND", retryable = false),
+    MILESTONE_STATE_CONFLICT("MILESTONE_STATE_CONFLICT", retryable = false),
+    REVISION_LIMIT_REACHED("REVISION_LIMIT_REACHED", retryable = false),
+    REPORT_NOT_FOUND("REPORT_NOT_FOUND", retryable = false),
+    REPORT_STATE_CONFLICT("REPORT_STATE_CONFLICT", retryable = false),
+    DISPUTE_NOT_FOUND("DISPUTE_NOT_FOUND", retryable = false),
+    DISPUTE_STATE_CONFLICT("DISPUTE_STATE_CONFLICT", retryable = false),
+    ORDER_DISPUTED("ORDER_DISPUTED", retryable = false),
+
+    // Marketplace blocklist and referrals.
+    MARKETPLACE_BLOCKED("MARKETPLACE_BLOCKED", retryable = false),
+    MARKETPLACE_BLOCK_NOT_FOUND("MARKETPLACE_BLOCK_NOT_FOUND", retryable = false),
+    REFERRAL_CLAIM_CONFLICT("REFERRAL_CLAIM_CONFLICT", retryable = false),
+
+    // Security Guardian (Phase 38).
+    SECURITY_EVENT_INVALID("SECURITY_EVENT_INVALID", retryable = false),
+    SECURITY_ACTION_UNKNOWN("SECURITY_ACTION_UNKNOWN", retryable = false),
+    SECURITY_ACTION_NOT_AUTHORIZED("SECURITY_ACTION_NOT_AUTHORIZED", retryable = false),
+    SECURITY_ACTION_ARGUMENTS_INVALID("SECURITY_ACTION_ARGUMENTS_INVALID", retryable = false),
+    SECURITY_INCIDENT_NOT_FOUND("SECURITY_INCIDENT_NOT_FOUND", retryable = false),
+    SECURITY_ENGINE_UNAVAILABLE("SECURITY_ENGINE_UNAVAILABLE", retryable = true),
     NETWORK_ERROR("NETWORK_ERROR", retryable = true),
     BACKEND_UNAVAILABLE("BACKEND_UNAVAILABLE", retryable = true),
     UNKNOWN_ERROR("UNKNOWN_ERROR", retryable = true);

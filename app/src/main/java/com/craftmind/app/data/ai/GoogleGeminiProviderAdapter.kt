@@ -44,6 +44,7 @@ import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody
@@ -139,7 +140,7 @@ class GoogleGeminiProviderAdapter internal constructor(
         } while (pageToken != null && pageCount < MAX_MODEL_PAGES)
 
         if (pageToken != null) throw providerFailure(AiErrorCode.INVALID_AI_RESPONSE)
-        models.values.toList()
+        return models.values.toList()
     }
 
     override suspend fun generateContent(
@@ -186,7 +187,7 @@ class GoogleGeminiProviderAdapter internal constructor(
             val maximumTotalBytes = if (images.size == 1) {
                 AiImageInput.MAX_PROVIDER_IMAGE_BYTES.toLong()
             } else {
-                MAX_MULTI_IMAGE_BYTES
+                MAX_MULTI_IMAGE_BYTES.toLong()
             }
             if (imageBytes > maximumTotalBytes) throw providerFailure(AiErrorCode.IMAGE_TOO_LARGE)
         }
@@ -228,7 +229,7 @@ class GoogleGeminiProviderAdapter internal constructor(
             if (images.isNotEmpty()) BuildImageAnalysisLimits.MAX_RESPONSE_BYTES else BuildPlanLimits.MAX_RESPONSE_BYTES,
             requestTooLargeCode = if (images.isNotEmpty()) AiErrorCode.IMAGE_TOO_LARGE else AiErrorCode.RESPONSE_TOO_LARGE,
         )
-        parseGenerationResponse(responseJson)
+        return parseGenerationResponse(responseJson)
     }
 
     private fun generationConfig(request: AiProviderRequest): JsonObject = buildJsonObject {
@@ -292,7 +293,7 @@ class GoogleGeminiProviderAdapter internal constructor(
                 }
                 throw providerFailure(code)
             }
-            httpResponse.body.readBounded(maxBytes)
+            httpResponse.body?.readBounded(maxBytes) ?: throw providerFailure(AiErrorCode.INVALID_AI_RESPONSE)
         }
         return try {
             json.parseToJsonElement(String(bytes, StandardCharsets.UTF_8)).jsonObject

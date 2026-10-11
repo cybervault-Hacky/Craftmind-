@@ -1,7 +1,6 @@
 package com.craftmind.app.presentation.app
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -161,18 +160,19 @@ fun CraftMindApp(
         }
     }
 
+    val navigate: (MainDestination) -> Unit = { target ->
+        aboutVisible = false
+        accountVisible = false
+        selectedRoute = target.route
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
         val wideLayout = maxWidth >= CraftMindLayout.mediumBreakpoint
-        val navigate: (MainDestination) -> Unit = { target ->
-            aboutVisible = false
-            accountVisible = false
-            selectedRoute = target.route
-        }
-        val destinationContent: @Composable AnimatedVisibilityScope.(MainDestination) -> Unit =
+        val destinationContent: @Composable (MainDestination) -> Unit =
             { current ->
                 DestinationContent(
                     destination = current,

@@ -93,7 +93,20 @@ class AccountSecurityBoundaryTest {
             "sign-up confirmation is temporary and must be erased before validation",
             confirmationClear >= 0 && confirmationClear < signUpValidation,
         )
-        assertTrue("a locally rejected sign-in must erase its defensive request copy", viewModel.contains("request.close()"))
+        // Sign-in validates first, so a locally rejected attempt never builds a secret copy at all; the copy that is
+        // built is owned by the state machine, which erases it on every path. Both halves are asserted, and the
+        // ordering assertion is strictly stronger than the older "build a copy, then erase it" shape.
+        val signInValidation = viewModel.indexOf("AccountFormValidator.validateSignIn")
+        val signInRequestCopy = viewModel.indexOf("AccountSignInRequest.emailPassword")
+
+        assertTrue(
+            "the password is validated before any defensive request copy is built",
+            signInValidation >= 0 && signInRequestCopy > signInValidation,
+        )
+        assertTrue(
+            "the owner of a request copy must erase it whatever the outcome",
+            sourceText("domain/account/AccountSessionManager.kt").contains("request.close()"),
+        )
 
         try {
             for (rendered in listOf(credential.toString(), request.toString())) {

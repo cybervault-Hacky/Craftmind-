@@ -57,7 +57,10 @@ import com.craftmind.app.domain.minecraft.compatibility.BuildPlanRequirements
 import com.craftmind.app.domain.minecraft.compatibility.DefaultMinecraftCompatibility
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityDiagnostic
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResolver
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityResult
 import com.craftmind.app.domain.minecraft.compatibility.MinecraftCompatibilityStatus
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeDescriptor
+import com.craftmind.app.domain.minecraft.compatibility.MinecraftRuntimeResolution
 import com.craftmind.app.presentation.settings.BridgePairingState
 import com.craftmind.app.presentation.settings.TARGET_RUNTIME_DETECTED_AUTOMATICALLY
 import com.craftmind.app.presentation.settings.adapterSummaryLines
@@ -398,6 +401,12 @@ fun PlanReviewScreen(
                         candidateReview = ready != null,
                         bridgeState = bridgeState,
                         executionState = executionState,
+                        bridgeConnection = bridgeConnection,
+                        runtimeDescriptor = runtimeDescriptor,
+                        planCompatibility = planCompatibility,
+                        runtimeResolution = runtimeResolution,
+                        planRequirements = planRequirements,
+                        registeredProfileSummary = registeredProfileSummary,
                         onEvent = onExecutionEvent,
                         onOpenMinecraft = {
                             dismissReview()
@@ -443,6 +452,14 @@ private fun ConstructionExecutionCard(
     candidateReview: Boolean,
     bridgeState: BridgePairingState,
     executionState: BuildExecutionState,
+    // Phase 13: the compatibility pipeline is resolved once, against the displayed plan and the authenticated bridge
+    // session, and passed in — the card renders those authoritative results, it never re-resolves or guesses them.
+    bridgeConnection: BridgeConnectionState.Connected?,
+    runtimeDescriptor: MinecraftRuntimeDescriptor?,
+    planCompatibility: MinecraftCompatibilityResult?,
+    runtimeResolution: MinecraftRuntimeResolution?,
+    planRequirements: BuildPlanRequirements,
+    registeredProfileSummary: String,
     onEvent: (BuildExecutionEvent) -> Unit,
     onOpenMinecraft: () -> Unit = {},
 ) {

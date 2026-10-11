@@ -65,7 +65,7 @@ fun CraftMindTextInput(
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
-                modifier = Modifier.padding(top = CraftMindLayout.XS, start = CraftMindLayout.SM),
+                modifier = Modifier.padding(top = CraftMindLayout.xs, start = CraftMindLayout.sm),
             )
         }
     }
