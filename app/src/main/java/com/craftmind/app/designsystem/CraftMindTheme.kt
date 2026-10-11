@@ -3,6 +3,7 @@ package com.craftmind.app.designsystem
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -94,12 +95,12 @@ object CraftMindLayout {
 
 /** Corner radii as ready-to-use shapes, mirroring [CraftMindRadius]. */
 object CraftMindShapes {
-    val xs: Shape = RoundedCornerShape(CraftMindRadius.XS.dp)
-    val sm: Shape = RoundedCornerShape(CraftMindRadius.SM.dp)
-    val md: Shape = RoundedCornerShape(CraftMindRadius.MD.dp)
-    val lg: Shape = RoundedCornerShape(CraftMindRadius.LG.dp)
-    val xl: Shape = RoundedCornerShape(CraftMindRadius.XL.dp)
-    val pill: Shape = RoundedCornerShape(CraftMindRadius.PILL.dp)
+    val xs: CornerBasedShape = RoundedCornerShape(CraftMindRadius.XS.dp)
+    val sm: CornerBasedShape = RoundedCornerShape(CraftMindRadius.SM.dp)
+    val md: CornerBasedShape = RoundedCornerShape(CraftMindRadius.MD.dp)
+    val lg: CornerBasedShape = RoundedCornerShape(CraftMindRadius.LG.dp)
+    val xl: CornerBasedShape = RoundedCornerShape(CraftMindRadius.XL.dp)
+    val pill: CornerBasedShape = RoundedCornerShape(CraftMindRadius.PILL.dp)
     val circle: Shape = CircleShape
 
     /** The Material 3 shape scale, so framework components inherit the same corner language. */
@@ -112,7 +113,7 @@ object CraftMindShapes {
     )
 }
 
-private fun CraftMindTypeStyle.textStyle(align: TextAlign? = null): TextStyle = TextStyle(
+private fun CraftMindTypeStyle.textStyle(align: TextAlign = TextAlign.Unspecified): TextStyle = TextStyle(
     fontFamily = FontFamily.SansSerif,
     fontWeight = FontWeight(weight),
     fontSize = sizeSp.sp,

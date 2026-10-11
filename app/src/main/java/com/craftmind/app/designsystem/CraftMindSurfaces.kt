@@ -235,7 +235,7 @@ fun CraftMindSectionHeader(
                 text = title,
                 style = CraftMindType.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.semantics { heading(level = 2) },
+                modifier = Modifier.semantics { heading() },
             )
             subtitle?.let {
                 Text(
