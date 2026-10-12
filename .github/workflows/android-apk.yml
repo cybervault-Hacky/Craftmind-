@@ -45,7 +45,8 @@ jobs:
   debug-apk:
     name: Debug APK (unit tests, then assembleDebug)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Two recent runs exhausted 45 minutes while the unit-test step was still active; give cold-cache CI room to finish.
+    timeout-minutes: 90
     steps:
       - name: Check out the exact commit being built
         uses: actions/checkout@v4
@@ -63,7 +64,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+
+      - name: Cache Gradle wrapper and dependencies
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          # Use the fully open-source cache backend; allow this manually dispatched branch to warm its own cache.
+          cache-provider: basic
+          cache-read-only: false
 
       - name: Ensure compileSdk 35 and build-tools 35.0.0 are present
         # No-op when the runner image already carries them. If they are missing AND sdkmanager is unavailable the
@@ -79,13 +86,16 @@ jobs:
           ls "$ANDROID_HOME/platforms"
           ls "$ANDROID_HOME/build-tools"
 
-      - name: Run the Android and bridge-protocol unit tests
-        # Runs before any artifact is uploaded, and a failure here stops the job: no test is skipped, and nothing
-        # that did not pass its own tests is offered for download.
-        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :bridge-protocol:test
+      # Keep the test suites in distinct steps: if a future timeout recurs, the Actions timeline will identify
+      # which suite was active. Both suites still run on every workflow execution, before any APK is uploaded.
+      - name: Run Android unit tests
+        run: ./gradlew --console=plain --stacktrace --info :app:testDebugUnitTest
+
+      - name: Run bridge-protocol unit tests
+        run: ./gradlew --console=plain --stacktrace --info :bridge-protocol:test
 
       - name: Assemble the debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+        run: ./gradlew --console=plain --stacktrace --info :app:assembleDebug
 
       - name: Verify the APK exists, is a real Android package, and record its checksum
         id: apk

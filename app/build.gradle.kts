@@ -122,7 +122,8 @@ android {
 // interrupted run still shows exactly which assertion failed instead of only the task-level result.
 tasks.withType<Test>().configureEach {
     testLogging {
-        events("failed")
+        // Keep per-test progress visible in CI so a timeout identifies the last test in flight, not just the task.
+        events("started", "passed", "skipped", "failed")
         setExceptionFormat("full")
         showStackTraces = true
     }
